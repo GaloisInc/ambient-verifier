@@ -14,6 +14,7 @@ The verifier will take three arguments: a set of user-provided requirements, a t
 - Reason about the behavioral difference between a program with and without a Weird Machine (i.e., it is patched out)
 - Support dynamically-linked binaries (with calls into shared libraries fully-executed)
 - Support for Windows
+- Ensure that the WM can be (or cannot be) triggered under different environmental configurations (e.g., operating system configurations)
 
 Note that neither the format nor scope of requirements has been determined. Simple properties like "does not crash" are certainly in scope.
 

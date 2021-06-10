@@ -18,10 +18,10 @@ One of our key requirements is to be able to interact with the environment and e
    - Run code discovery on the target executable and its (transitive) shared libraries
 2. Lift discovered functions into Crucible
    - Will require building models of some system calls
-3. Symbolically execute the program with the concrete input provided to trigger the weird machine
+3. Symbolically execute the program with the concrete input provided to trigger the Weird Machine
    - This will consume input *and* generate output
    - Symbolic branching in this phase would be potentially problematic for managing the state of the input generator (but we *can* split inputs---outputs are trickier)
-   - Simulate until we get to the weird machine (it may be very useful to have it labeled)
+   - Simulate until we get to the Weird Machine (it may be very useful to have it labeled)
    - Save the state of the input and output channels (environment) at each function entry (granularity to be evaluated)
 4. Translate the user-provided requirements into quantified/labeled assertions
    - We can start with some trivial requirements
@@ -31,9 +31,45 @@ One of our key requirements is to be able to interact with the environment and e
    - The assertions will become block postconditions to be proved
    - The collected state from step 3 (along with other state information like aliasing information) will be preconditions assumed
    - The other state information should be generated in a top-down and bottom-up traversal of the program that propagates *demand* and the necessary context to satisfy that demand
-6. Verify that the postconditions hold
+6. Verify that the postconditions hold (under various environmental configuration options)
 
-Later (hopefully in Phase 2), we can look at the problem of establishing (conditional) behavioral equivalence after the weird machine returns. This is a relational verification problem and could be addressed by extending the pate verifier build for AMP.
+Later (hopefully in Phase 2), we can look at the problem of establishing (conditional) behavioral equivalence after the Weird Machine returns. This is a relational verification problem and could be addressed by extending the pate verifier build for AMP.
 
 
+Major Features to Implement
+===========================
 
+Our tools are fairly robust, but need to be extended in various ways to support this project.
+
+- Support for command line argument initialization in symbolic execution (concrete required, symbolic optional)
+- Symbolic I/O interaction
+  - The major missing feature is adding input that is computed by an external source (which is itself based on processing symbolic output)
+  - Ultimately including network
+  - Adding environment variables
+- Lifting shared libraries and dynamically "linking" them (enabling dynamic library functions to be called during symbolic execution)
+- Symbolic models (crucible overrides) of system call behavior (arranged into profiles to support multiple operating systems)
+  - Note: we will also likely want symbolic overrides for *some* standard library functions to use where possible, but we are likely to need to simulate the entire function in cases where it is involved in a Weird Machine
+- Lazy re-analysis to identify gadgets and turn them into executable code
+  - It may be the case that we may want to analyze ahead to figure out what the program induced by the Weird Machine is instead of rediscovering it from first-principles
+- Windows support in macaw (including win32)
+  - This will require some Windows-specific system call overrides
+- Better support for stripped binaries in macaw
+- User-assisted jump table resolution in macaw
+  - Could come from reverse engineers or the testing team (i.e., answering the question "at the jump at PC=0xNNN, what are the observed targets)
+
+Minimum Viable Product
+======================
+
+We should start with a simple verifier that ignores the compositional/scalable verification problem. We can start by putting together a whole-program verifier based on macaw and crucible that takes as input:
+- The binary (linux/x86)
+- Triggering input
+- Command line arguments for the binary being verified
+Note that our initial requirement can be that the program just doesn't crash when the Weird Machine is triggered. Also note that our first triggering input can be static, but that we will want to quickly implement interaction after that.
+
+Initially, we can target some CTF problems and their solutions (e.g., https://github.com/perribus/mooosl)
+
+Notes
+=====
+
+Memory Allocation
+-----------------
