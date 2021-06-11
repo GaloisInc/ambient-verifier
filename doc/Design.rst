@@ -46,6 +46,12 @@ Our tools are fairly robust, but need to be extended in various ways to support 
   - The major missing feature is adding input that is computed by an external source (which is itself based on processing symbolic output)
   - Ultimately including network
   - Adding environment variables
+- Support for printing pointer values to output channels and reading them back in
+  - This is required to model interactions that take advantage of pointer disclosure attacks
+  - Some pointers are easy to handle because they are constant (e.g., pointers into the data section)
+  - Dynamic allocations are harder
+  - Observation: some Weird Machines rely on the relative ordering of allocations in order to work. Within a large slab we can guarantee that. Between slabs, it relies on OS behaviors
+- Support for (symbolic or virtual) ASLR, which would alter the addresses assigned to instructions (independently for the executable image and shared libraries)
 - Lifting shared libraries and dynamically "linking" them (enabling dynamic library functions to be called during symbolic execution)
 - Symbolic models (crucible overrides) of system call behavior (arranged into profiles to support multiple operating systems)
   - Note: we will also likely want symbolic overrides for *some* standard library functions to use where possible, but we are likely to need to simulate the entire function in cases where it is involved in a Weird Machine
@@ -73,3 +79,5 @@ Notes
 
 Memory Allocation
 -----------------
+
+Memory layouts are key to correctly understanding the execution of Weird Machines.
