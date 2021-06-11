@@ -3,6 +3,7 @@ module Options (
   , parser
   ) where
 
+import qualified Data.Text as T
 import qualified Options.Applicative as OA
 
 -- | The options structure for the command line interface to the verifier
@@ -16,7 +17,7 @@ data Options =
           -- If this is absent, no standard input will be provided
           --
           -- See Note [Future Improvements]
-          , commandLineArguments :: [String]
+          , commandLineArguments :: [T.Text]
           -- ^ A list of command line arguments to set up in the environment of
           -- the program (this should include argv[0] as the command name
           --
@@ -55,5 +56,9 @@ argv[0] is absolute or relative.  In that example, we could improve our
 diagnostics by just making argv[0] a mux on a fresh boolean variable that we
 record; if it is referenced in a counterexample, that would tell us that the
 condition is important for explaining a failure.
+
+Note that command line parameters are currently text; if we need to support
+binary data in command line arguments, that should be done through a separate
+(alternative) file-based mechanism.
 
 -}

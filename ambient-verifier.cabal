@@ -20,20 +20,29 @@ maintainer:         tristan@galois.com, boston@galois.com
 category:           Verification
 extra-source-files: CHANGELOG.md
 
+common shared
+    build-depends: base >= 4.10 && < 5,
+                   bytestring,
+                   lumberjack >= 1 && < 1.1,
+                   prettyprinter >= 1.7 && < 1.8,
+                   text
+
 library
-    exposed-modules:  MyLib
+    import: shared
+    exposed-modules:  Ambient.Diagnostic,
+                      Ambient.Verifier
 
     -- Modules included in this library but not exported.
     -- other-modules:
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
-    build-depends:    base >= 4.10 && < 5,
-                      lumberjack,
-                      pe-parser,
+    build-depends:    pe-parser,
                       elf-edit,
                       macaw-base,
                       macaw-symbolic,
+                      macaw-loader,
+                      macaw-loader-x86,
                       flexdis86,
                       macaw-x86,
                       macaw-x86-symbolic,
@@ -45,6 +54,7 @@ library
     ghc-options: -Wall -Wcompat
 
 executable ambient-verifier
+    import: shared
     main-is:          Main.hs
     other-modules:    Options
 
@@ -54,9 +64,7 @@ executable ambient-verifier
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:
-        base,
-        lumberjack,
-        pate,
+        async >= 2 && < 3,
         optparse-applicative,
         filepath,
         filemanip,

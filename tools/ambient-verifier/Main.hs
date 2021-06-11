@@ -1,8 +1,63 @@
 module Main ( main ) where
 
+import qualified Control.Concurrent as CC
+import qualified Control.Concurrent.Async as CCA
+import qualified Data.ByteString as BS
+import qualified Data.Text.Encoding as TE
+import qualified Data.Traversable as DT
+import qualified Lumberjack as LJ
 import qualified Options.Applicative as OA
+import qualified Prettyprinter as PP
+import qualified Prettyprinter.Render.Text as PPT
+import qualified System.IO as IO
+
+import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Verifier as AV
 
 import qualified Options as O
+
+-- | A simple logger that just sends diagnostics to a channel; an asynchronous
+-- thread will process these messages (different UIs can process them as needed)
+logAction :: CC.Chan (Maybe AD.Diagnostic) -> LJ.LogAction IO AD.Diagnostic
+logAction c = LJ.LogAction (CC.writeChan c . Just)
+
+-- | This log consumer prints log messages to the given handle
+printLogs :: IO.Handle -> CC.Chan (Maybe AD.Diagnostic) -> IO ()
+printLogs hdl chan = go
+  where
+    go = do
+      mdiag <- CC.readChan chan
+      case mdiag of
+        Nothing -> return ()
+        Just d -> do
+          PPT.hPutDoc hdl (PP.pretty d)
+          go
+
+-- | This is the real verification driver that takes the parsed out command line
+-- arguments and sets up the problem instance for the library core
+verify :: O.Options -> IO ()
+verify o = do
+  binary <- BS.readFile (O.binaryPath o)
+  standardInput <- DT.traverse BS.readFile (O.standardInputPath o)
+  -- See Note [Argument Encoding]
+  let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
+  let pinst = AV.ProgramInstance { AV.piBinary = binary
+                                 , AV.piStdin = standardInput
+                                 , AV.piCommandLineArguments = args
+                                 }
+
+  chan <- CC.newChan
+  logger <- CCA.async (printLogs IO.stdout chan)
+
+  AV.verify (logAction chan) pinst
+
+  -- Tear down the logger by sending the token that causes it to exit cleanly
+  --
+  -- Note that the log printer will
+  CC.writeChan chan Nothing
+  CCA.wait logger
+
+  return ()
 
 main :: IO ()
 main = verify =<< OA.execParser opts
@@ -13,6 +68,14 @@ main = verify =<< OA.execParser opts
                <> OA.header "A verifier for programs containing weird machines"
              )
 
-verify :: O.Options -> IO ()
-verify o = do
-  return ()
+{- Note [Argument Encoding]
+
+This current method of specifying command line arguments supports accepts
+textual arguments on the command line.  If we need to support binary arguments, we will need to add
+an alternative command line interface for providing them in a file.
+
+Note that we are unconditionally encoding arguments from Text to UTF8. This
+works for Linux and MacOS, but will not work for Windows, which will expect
+UTF16LE (or perhaps UCS-2).
+
+-}
