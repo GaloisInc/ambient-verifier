@@ -23,13 +23,19 @@ extra-source-files: CHANGELOG.md
 common shared
     build-depends: base >= 4.10 && < 5,
                    bytestring,
+                   containers,
+                   exceptions,
                    lumberjack >= 1 && < 1.1,
+                   mtl,
+                   parameterized-utils,
                    prettyprinter >= 1.7 && < 1.8,
                    text
 
 library
     import: shared
     exposed-modules:  Ambient.Diagnostic,
+                      Ambient.Exception,
+                      Ambient.Loader,
                       Ambient.Verifier
 
     -- Modules included in this library but not exported.
