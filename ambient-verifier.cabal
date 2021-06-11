@@ -31,13 +31,22 @@ library
     build-depends:    base >= 4.10 && < 5,
                       lumberjack,
                       pe-parser,
-                      pate
+                      elf-edit,
+                      macaw-base,
+                      macaw-symbolic,
+                      flexdis86,
+                      macaw-x86,
+                      macaw-x86-symbolic,
+                      crucible,
+                      crucible-llvm
+
     hs-source-dirs:   src
     default-language: Haskell2010
     ghc-options: -Wall -Wcompat
 
 executable ambient-verifier
     main-is:          Main.hs
+    other-modules:    Options
 
     -- Modules included in this executable, other than Main.
     -- other-modules:
@@ -48,6 +57,9 @@ executable ambient-verifier
         base,
         lumberjack,
         pate,
+        optparse-applicative,
+        filepath,
+        filemanip,
         ambient-verifier
 
     hs-source-dirs:   tools/ambient-verifier
