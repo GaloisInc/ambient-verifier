@@ -81,3 +81,8 @@ Memory Allocation
 -----------------
 
 Memory layouts are key to correctly understanding the execution of Weird Machines.
+
+Dynamic Loading
+---------------
+
+While we plan to address dynamic linking by collecting the transitive closure of all libraries accessed by a program, dynamic loading (i.e., via ``dlopen``) is trickier. We would prefer to leave this out of scope, but if we must address it, we can do so by adding a crucible-level override for the ``dlopen`` function that attempts to load the indicated shared library from the provided set of shared libraries. If it does not exist, the verifier can exit with a report on the missing library. As an alternative, it could simply return a failing exit code and emit a diagnostic recording the dynamic loading attempt.
