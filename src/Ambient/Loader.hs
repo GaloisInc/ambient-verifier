@@ -53,6 +53,8 @@ withBinary name bytes k =
         (DE.EM_X86_64, DE.ELFCLASS64) -> do
           lb :: DMB.LoadedBinary DMX.X86_64 (DE.ElfHeaderInfo 64)
              <- DMB.loadBinary MML.defaultLoadOptions ehi
+          -- Here we capture all of the necessary constraints required by the
+          -- callback and pass them down along with the architecture info
           k DMX.x86_64_linux_info lb
         (machine, klass) -> CMC.throwM (AE.UnsupportedELFArchitecture name machine klass)
     Left _ ->

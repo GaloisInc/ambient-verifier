@@ -66,11 +66,15 @@ verify
   -- ^ A description of the program (and its configuration) to verify
   -> m ()
 verify logAction pinst = do
+  -- Load up the binary, which existentially introduces the architecture of the
+  -- binary in the context of the continuation
   AL.withBinary (piPath pinst) (piBinary pinst) $ \archInfo loadedBinary -> do
     let mem = DMB.memoryImage loadedBinary
     let symMap = AL.symbolMap loadedBinary
     let s0 = DMD.emptyDiscoveryState mem symMap archInfo
     s1 <- DMA.withArchConstraints archInfo $ do
+      -- Run the code discovery procedure, streaming out diagnostics that
+      -- provide indications of progress
       DMUI.processIncCompLogs (logDiscoveryEvent logAction symMap) $ DMUI.runIncCompM $ do
         let discoveryOpts = DMD.defaultDiscoveryOptions
         DMD.incCompleteDiscovery s0 discoveryOpts
