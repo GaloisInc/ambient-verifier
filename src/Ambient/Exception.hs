@@ -5,8 +5,11 @@ module Ambient.Exception (
   ) where
 
 import qualified Control.Exception as X
+import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ElfEdit as DE
 import qualified Prettyprinter as PP
+
+import qualified Data.Macaw.Memory as DMM
 
 data AmbientException where
   -- | The given binary format is not supported
@@ -18,6 +21,10 @@ data AmbientException where
   UnsupportedELFArchitecture :: Maybe FilePath -> DE.ElfMachine -> DE.ElfClass w -> AmbientException
   -- | The file is a valid PE binary, but for an unsupported architecture
   UnsupportedPEArchitecture :: Maybe FilePath -> AmbientException
+  -- | The executable was missing an expected symbol
+  MissingExpectedSymbol :: BSC.ByteString -> AmbientException
+  -- | There was not function discovered at the given address (with an optional name)
+  MissingExpectedFunction :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -42,3 +49,9 @@ instance PP.Pretty AmbientException where
         PP.pretty "Unsupported PE file"
       UnsupportedPEArchitecture (Just p) ->
         PP.pretty "Unsupported PE file " <> PP.dquotes (PP.pretty p)
+      MissingExpectedSymbol sym ->
+        PP.pretty "Missing expected symbol: " <> PP.pretty (BSC.unpack sym)
+      MissingExpectedFunction Nothing addr ->
+        PP.pretty "A function was expected, but not discovered, at address " <> PP.pretty addr
+      MissingExpectedFunction (Just fname) addr ->
+        PP.pretty "Function " <> PP.pretty (BSC.unpack fname) <> PP.pretty " was expected, but not found, at address " <> PP.pretty addr

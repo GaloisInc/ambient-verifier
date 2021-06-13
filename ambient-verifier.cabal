@@ -25,9 +25,10 @@ common shared
                    bytestring,
                    containers,
                    exceptions,
+                   lens >= 4 && < 6,
                    lumberjack >= 1 && < 1.1,
-                   mtl,
-                   parameterized-utils,
+                   mtl >= 2 && < 3,
+                   parameterized-utils >= 2 && < 3,
                    prettyprinter >= 1.7 && < 1.8,
                    text
 
