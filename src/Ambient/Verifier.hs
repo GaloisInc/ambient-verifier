@@ -1,8 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
 -- | The main entry point of the AMBIENT binary verifier
 module Ambient.Verifier (
     ProgramInstance(..)
@@ -15,10 +13,7 @@ import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map.Strict as Map
-import qualified Data.Parameterized.Context as Ctx
 import           Data.Parameterized.Some ( Some(..) )
-import           Data.Proxy ( Proxy(..) )
-import qualified Data.Text as DT
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
 
@@ -27,15 +22,13 @@ import qualified Data.Macaw.BinaryLoader as DMB
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
-import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.Utils.IncComp as DMUI
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
-import qualified What4.FunctionName as WF
-import qualified What4.ProgramLoc as WP
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Exception as AE
+import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
 
 -- | A definition of the initial state of a program to be verified
@@ -123,56 +116,6 @@ getNamedFunction discoveryState fname = do
       | Just dfi <- Map.lookup entryAddr (discoveryState ^. DMD.funInfo) -> return dfi
       | otherwise -> CMC.throwM (AE.MissingExpectedFunction (Just entryPointName) entryAddr)
 
--- | Construct a 'WF.FunctionName' for the given discovered function
---
--- This uses the associated symbol, if any. Otherwise, it will synthesize a name
--- based on the function address
-discoveredFunName
-  :: (DMM.MemWidth (DMC.ArchAddrWidth arch))
-  => DMD.DiscoveryFunInfo arch ids
-  -> WF.FunctionName
-discoveredFunName dfi =
-  case DMD.discoveredFunSymbol dfi of
-    Just bytes ->
-      -- NOTE: This bytestring is not really guaranteed to be in any particular
-      -- encoding, so this conversion to text could fail
-      WF.functionNameFromText (DT.pack (BSC.unpack bytes))
-    Nothing -> WF.functionNameFromText (DT.pack (show (DMD.discoveredFunAddr dfi)))
-
--- | Convert machine addresses into Crucible positions
---
--- When possible, we map to the structured 'WP.BinaryPos' type. However, some
--- 'DMM.MemSegmentOff' cannot be mapped to an absolute position (e.g., some
--- addresses from shared libraries are in non-trivial segments). In those cases,
--- we map to the unstructured 'WP.Others' with a sufficiently descriptive string.
---
--- A more sophisticated program location data type could make this more flexible
-machineAddressToCruciblePosition
-  :: (DMM.MemWidth (DMC.ArchAddrWidth arch))
-  => proxy arch
-  -> FilePath
-  -> DMC.ArchSegmentOff arch
-  -> WP.Position
-machineAddressToCruciblePosition _ imageName segOff =
-  case DMM.segoffAsAbsoluteAddr segOff of
-    Just mw -> WP.BinaryPos (DT.pack imageName) (fromIntegral mw)
-    Nothing -> WP.OtherPos (DT.pack imageName <> DT.pack ": " <> DT.pack (show segOff))
-
--- | Lift a discovered macaw function into a Crucible CFG suitable for symbolic execution
-liftDiscoveredFunction
-  :: forall m arch ids
-   . (MonadIO m, DMM.MemWidth (DMC.ArchAddrWidth arch))
-  => LCF.HandleAllocator
-  -> String
-  -> DMS.MacawSymbolicArchFunctions arch
-  -> DMD.DiscoveryFunInfo arch ids
-  -> m (LCCC.SomeCFG (DMS.MacawExt arch) (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch))
-liftDiscoveredFunction hdlAlloc imageName symArchFuns dfi = do
-  let funName = discoveredFunName dfi
-  let posFn = machineAddressToCruciblePosition (Proxy @arch) imageName
-  liftIO $ DMS.mkFunCFG symArchFuns hdlAlloc funName posFn dfi
-
-
 -- | Verify that the given 'ProgramInstance' terminates (with the given input)
 -- without raising an error
 verify
@@ -190,7 +133,7 @@ verify logAction pinst = do
     -- See Note [Entry Point] for more details
     Some discoveredEntry <- getNamedFunction discoveryState "main"
     hdlAlloc <- liftIO LCF.newHandleAllocator
-    LCCC.SomeCFG cfg0 <- liftDiscoveredFunction hdlAlloc (piPath pinst) symArchFuns discoveredEntry
+    LCCC.SomeCFG cfg0 <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) symArchFuns discoveredEntry
     return ()
 
 {- Note [Entry Point]

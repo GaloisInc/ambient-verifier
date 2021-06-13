@@ -36,6 +36,7 @@ library
     import: shared
     exposed-modules:  Ambient.Diagnostic,
                       Ambient.Exception,
+                      Ambient.Lift,
                       Ambient.Loader,
                       Ambient.Verifier
 
