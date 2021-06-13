@@ -62,6 +62,8 @@ Our tools are fairly robust, but need to be extended in various ways to support 
 - Better support for stripped binaries in macaw
 - User-assisted jump table resolution in macaw
   - Could come from reverse engineers or the testing team (i.e., answering the question "at the jump at PC=0xNNN, what are the observed targets)
+- Alternative (parameterizable) memory models
+  - The current memory model assumes strong separation between allocations, which may not be expressive enough to correctly execute Weird Machines
 
 Minimum Viable Product
 ======================
@@ -72,7 +74,7 @@ We should start with a simple verifier that ignores the compositional/scalable v
 - Command line arguments for the binary being verified
 Note that our initial requirement can be that the program just doesn't crash when the Weird Machine is triggered. Also note that our first triggering input can be static, but that we will want to quickly implement interaction after that.
 
-Initially, we can target some CTF problems and their solutions (e.g., https://github.com/perribus/mooosl)
+Initially, we can target some CTF problems and their solutions (e.g., https://github.com/perribus/mooosl). Note that we will likely need to start symbolically executing from ``main`` instead of ``_start`` due to limitations in macaw.
 
 Notes
 =====
