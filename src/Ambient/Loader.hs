@@ -19,7 +19,9 @@ import           Data.Macaw.BinaryLoader.X86 ()
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory.LoadCommon as MML
+import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.X86 as DMX
+import qualified Data.Macaw.X86.Symbolic as DMXS
 import qualified PE.Parser as PE
 
 import qualified Ambient.Exception as AE
@@ -40,9 +42,14 @@ symbolMap = undefined
 -- macaw.
 withBinary
   :: (CMC.MonadThrow m)
-  => Maybe FilePath
+  => FilePath
   -> BS.ByteString
-  -> (forall arch binFmt . (DMB.BinaryLoader arch binFmt) => DMA.ArchitectureInfo arch -> DMB.LoadedBinary arch binFmt -> m a)
+  -> ( forall arch binFmt
+      . (DMB.BinaryLoader arch binFmt)
+     => DMA.ArchitectureInfo arch
+     -> DMS.MacawSymbolicArchFunctions arch
+     -> DMB.LoadedBinary arch binFmt
+     -> m a)
   -> m a
 withBinary name bytes k =
   case DE.decodeElfHeaderInfo bytes of
@@ -55,7 +62,7 @@ withBinary name bytes k =
              <- DMB.loadBinary MML.defaultLoadOptions ehi
           -- Here we capture all of the necessary constraints required by the
           -- callback and pass them down along with the architecture info
-          k DMX.x86_64_linux_info lb
+          k DMX.x86_64_linux_info DMXS.x86_64MacawSymbolicFns lb
         (machine, klass) -> CMC.throwM (AE.UnsupportedELFArchitecture name machine klass)
     Left _ ->
       case PE.decodePEHeaderInfo (BSL.fromStrict bytes) of

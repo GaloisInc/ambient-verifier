@@ -41,7 +41,7 @@ verify o = do
   standardInput <- DT.traverse BS.readFile (O.standardInputPath o)
   -- See Note [Argument Encoding]
   let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
-  let pinst = AV.ProgramInstance { AV.piPath = Just (O.binaryPath o)
+  let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath o
                                  , AV.piBinary = binary
                                  , AV.piStdin = standardInput
                                  , AV.piCommandLineArguments = args
