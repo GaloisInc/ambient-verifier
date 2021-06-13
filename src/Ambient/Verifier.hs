@@ -128,7 +128,7 @@ verify logAction pinst = do
   -- Load up the binary, which existentially introduces the architecture of the
   -- binary in the context of the continuation
   AL.withBinary (piPath pinst) (piBinary pinst) $ \archInfo loadedBinary -> do
-    discoveryState <- discoverFunctions logAction archInfo loadedBinary--
+    discoveryState <- discoverFunctions logAction archInfo loadedBinary
     -- See Note [Entry Point] for more details
     Some discoveredEntry <- getNamedFunction discoveryState "main"
     return ()
