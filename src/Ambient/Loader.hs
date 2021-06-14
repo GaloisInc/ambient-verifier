@@ -4,7 +4,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Ambient.Loader (
     withBinary
-  , symbolMap
   ) where
 
 import qualified Control.Monad.Catch as CMC
@@ -16,8 +15,6 @@ import qualified Data.ElfEdit as DE
 import qualified Data.Macaw.Architecture.Info as DMA
 import qualified Data.Macaw.BinaryLoader as DMB
 import           Data.Macaw.BinaryLoader.X86 ()
-import qualified Data.Macaw.CFG as DMC
-import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory.LoadCommon as MML
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.X86 as DMX
@@ -25,12 +22,6 @@ import qualified Data.Macaw.X86.Symbolic as DMXS
 import qualified PE.Parser as PE
 
 import qualified Ambient.Exception as AE
-
-symbolMap
-  :: (DMB.BinaryLoader arch binFmt)
-  => DMB.LoadedBinary arch binFmt
-  -> DMD.AddrSymMap (DMC.ArchAddrWidth arch)
-symbolMap = undefined
 
 -- | Load a bytestring as a binary image and associate it with a macaw
 -- 'DMA.ArchitectureInfo' suitable for analyzing it

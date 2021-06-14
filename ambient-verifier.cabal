@@ -35,6 +35,7 @@ common shared
 library
     import: shared
     exposed-modules:  Ambient.Diagnostic,
+                      Ambient.Discovery,
                       Ambient.Exception,
                       Ambient.Lift,
                       Ambient.Loader,

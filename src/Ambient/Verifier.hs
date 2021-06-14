@@ -17,16 +17,14 @@ import           Data.Parameterized.Some ( Some(..) )
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
 
-import qualified Data.Macaw.Architecture.Info as DMA
-import qualified Data.Macaw.BinaryLoader as DMB
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
-import qualified Data.Macaw.Utils.IncComp as DMUI
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Discovery as ADi
 import qualified Ambient.Exception as AE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
@@ -56,40 +54,6 @@ data ProgramInstance =
                   -- is how they must be represented in the memory model.
                   }
   deriving (Show)
-
--- | We pass this log function to macaw to wrap discovery events in a custom
--- wrapper that we stream out with the rest of our diagnostics.
---
--- The default logger in macaw just prints to stderr, which is not very helpful
-logDiscoveryEvent
-  :: (MonadIO m, DMM.MemWidth w)
-  => LJ.LogAction IO AD.Diagnostic
-  -> DMD.AddrSymMap w
-  -> DMD.DiscoveryEvent w
-  -> m ()
-logDiscoveryEvent logAction symMap evt =
-  liftIO $ LJ.writeLog logAction (AD.DiscoveryEvent symMap evt)
-
--- | Run the code discovery procedure, streaming out diagnostics that
--- provide indications of progress.
---
--- Note that this is just the initial run; we may re-invoke code discovery later
--- if we identify call targets (via symbolic execution) that macaw did not
--- initially find.
-discoverFunctions
-  :: (MonadIO m, DMB.BinaryLoader arch binFmt)
-  => LJ.LogAction IO AD.Diagnostic
-  -> DMA.ArchitectureInfo arch
-  -> DMB.LoadedBinary arch binFmt
-  -> m (DMD.DiscoveryState arch)
-discoverFunctions logAction archInfo loadedBinary = do
-  let mem = DMB.memoryImage loadedBinary
-  let symMap = AL.symbolMap loadedBinary
-  let s0 = DMD.emptyDiscoveryState mem symMap archInfo
-  DMA.withArchConstraints archInfo $ do
-    DMUI.processIncCompLogs (logDiscoveryEvent logAction symMap) $ DMUI.runIncCompM $ do
-      let discoveryOpts = DMD.defaultDiscoveryOptions
-      DMD.incCompleteDiscovery s0 discoveryOpts
 
 -- | Retrieve the named function (in its 'DMD.DiscoveryFunInfo' form) from the code
 -- discovery information
@@ -129,7 +93,7 @@ verify logAction pinst = do
   -- Load up the binary, which existentially introduces the architecture of the
   -- binary in the context of the continuation
   AL.withBinary (piPath pinst) (piBinary pinst) $ \archInfo symArchFuns loadedBinary -> do
-    discoveryState <- discoverFunctions logAction archInfo loadedBinary
+    discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
     -- See Note [Entry Point] for more details
     Some discoveredEntry <- getNamedFunction discoveryState "main"
     hdlAlloc <- liftIO LCF.newHandleAllocator
