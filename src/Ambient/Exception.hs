@@ -25,6 +25,8 @@ data AmbientException where
   MissingExpectedSymbol :: BSC.ByteString -> AmbientException
   -- | There was not function discovered at the given address (with an optional name)
   MissingExpectedFunction :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> AmbientException
+  -- | The requested solver and float mode representation is not supported
+  UnsupportedSolverCombination :: String -> String -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -47,3 +49,5 @@ instance PP.Pretty AmbientException where
         PP.pretty "A function was expected, but not discovered, at address " <> PP.pretty addr
       MissingExpectedFunction (Just fname) addr ->
         PP.pretty "Function " <> PP.pretty (BSC.unpack fname) <> PP.pretty " was expected, but not found, at address " <> PP.pretty addr
+      UnsupportedSolverCombination solver fm ->
+        PP.pretty "The " <> PP.pretty solver <> PP.pretty " SMT solver does not support the " <> PP.pretty fm <> PP.pretty " floating point mode"

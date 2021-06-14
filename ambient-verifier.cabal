@@ -38,6 +38,7 @@ library
                       Ambient.Exception,
                       Ambient.Lift,
                       Ambient.Loader,
+                      Ambient.Solver,
                       Ambient.Verifier
 
     -- Modules included in this library but not exported.
