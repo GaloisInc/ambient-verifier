@@ -1,4 +1,7 @@
--- | Functions
+-- | Functions for running the macaw code discovery on a binary
+--
+-- Ideally, the initial and incremental code discovery logic can be maintained
+-- entirely within this module without details leaking to other subsystems.
 module Ambient.Discovery (
   discoverFunctions
   ) where
