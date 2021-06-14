@@ -82,7 +82,9 @@ Notes
 Memory Allocation
 -----------------
 
-Memory layouts are key to correctly understanding the execution of Weird Machines.
+Memory layouts are key to correctly understanding the execution of Weird Machines. Many Weird Machines depend on exact pointer values and relationships between pointer values to work (e.g., the relationships are used to compute distances and leak secrets). Our standard verification memory model uses completely abstract pointers precisely to hide these details. This may require us to build a new memory model (or parameterized family of memory models) to explore different possible system memory allocation behaviors (at a level below the ``malloc`` implementation---specifically the addresses returned by ``mmap`` and ``sbrk``).
+
+It may be very useful if Weird Machines could explicitly label the places where they are attempting to leak a pointer and reconstruct a pointer, as that would enable symbolic reasoning, rather than dealing with just concrete values.
 
 Dynamic Loading
 ---------------
