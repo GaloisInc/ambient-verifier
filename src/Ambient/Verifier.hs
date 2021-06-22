@@ -13,21 +13,28 @@ import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map.Strict as Map
+import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
 
+import qualified Data.Macaw.Architecture.Info as DMA
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
+import qualified Data.Macaw.Symbolic as DMS
+import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
+import qualified Lang.Crucible.Simulator.PathSatisfiability as LCSP
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Discovery as ADi
 import qualified Ambient.Exception as AE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
+import qualified Ambient.Solver as AS
+import qualified Ambient.Verifier.SymbolicExecution as AVS
 
 -- | A definition of the initial state of a program to be verified
 --
@@ -52,6 +59,11 @@ data ProgramInstance =
                   -- Note that the command line UI can take textual arguments;
                   -- the real arguments here are 'BS.ByteString's because that
                   -- is how they must be represented in the memory model.
+                  , piSolver :: AS.Solver
+                  -- ^ The solver to use for path satisfiability checking and
+                  -- goals
+                  , piFloatMode :: AS.FloatMode
+                  -- ^ The interpretation of floating point operations in SMT
                   }
   deriving (Show)
 
@@ -83,7 +95,10 @@ getNamedFunction discoveryState fname = do
 -- | Verify that the given 'ProgramInstance' terminates (with the given input)
 -- without raising an error
 verify
-  :: (MonadIO m, CMC.MonadThrow m, HasCallStack)
+  :: ( MonadIO m
+     , CMC.MonadMask m
+     , CMC.MonadThrow m
+     , HasCallStack)
   => LJ.LogAction IO AD.Diagnostic
   -- ^ A logger to report diagnostic information to the caller
   -> ProgramInstance
@@ -92,13 +107,21 @@ verify
 verify logAction pinst = do
   -- Load up the binary, which existentially introduces the architecture of the
   -- binary in the context of the continuation
-  AL.withBinary (piPath pinst) (piBinary pinst) $ \archInfo symArchFuns loadedBinary -> do
+  AL.withBinary (piPath pinst) (piBinary pinst) $ \archInfo archVals loadedBinary -> DMA.withArchConstraints archInfo $ do
     discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
     -- See Note [Entry Point] for more details
     Some discoveredEntry <- getNamedFunction discoveryState "main"
     hdlAlloc <- liftIO LCF.newHandleAllocator
-    LCCC.SomeCFG cfg0 <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) symArchFuns discoveredEntry
-    return ()
+    LCCC.SomeCFG cfg0 <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) discoveredEntry
+    Some ng <- liftIO PN.newIONonceGenerator
+    AS.withOnlineSolver (piSolver pinst) (piFloatMode pinst) ng $ \sym -> do
+      -- We set up path satisfiability checking here so that we do not have to
+      -- require the online backend constraints in the body of our symbolic
+      -- execution code
+      psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability sym)
+      let execFeatures = [psf]
+      AVS.symbolicallyExecute sym hdlAlloc archInfo archVals loadedBinary execFeatures cfg0
+
 
 {- Note [Entry Point]
 

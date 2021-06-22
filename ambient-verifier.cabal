@@ -23,11 +23,13 @@ extra-source-files: CHANGELOG.md
 common shared
     build-depends: base >= 4.10 && < 5,
                    bytestring,
+                   bv-sized,
                    containers,
                    exceptions,
                    lens >= 4 && < 6,
                    lumberjack >= 1 && < 1.1,
                    mtl >= 2 && < 3,
+                   panic >= 0.4 && < 0.5,
                    parameterized-utils >= 2 && < 3,
                    prettyprinter >= 1.7 && < 1.8,
                    text
@@ -39,8 +41,10 @@ library
                       Ambient.Exception,
                       Ambient.Lift,
                       Ambient.Loader,
+                      Ambient.Panic,
                       Ambient.Solver,
-                      Ambient.Verifier
+                      Ambient.Verifier,
+                      Ambient.Verifier.SymbolicExecution
 
     -- Modules included in this library but not exported.
     -- other-modules:

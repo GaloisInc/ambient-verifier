@@ -6,6 +6,8 @@ module Options (
 import qualified Data.Text as T
 import qualified Options.Applicative as OA
 
+import qualified Ambient.Solver as AS
+
 -- | The options structure for the command line interface to the verifier
 data Options =
   Options { binaryPath :: FilePath
@@ -22,6 +24,12 @@ data Options =
           -- the program (this should include argv[0] as the command name
           --
           -- See Note [Future Improvements]
+          , solver :: AS.Solver
+          -- ^ The SMT solver to use for path satisfiability checking and
+          -- discharging verification conditions
+          , floatMode :: AS.FloatMode
+          -- ^ The interpretation of floating point values to use during both
+          -- path satisfiability checking and discharging verification conditions
           }
   deriving ( Show )
 
@@ -38,6 +46,18 @@ parser = Options <$> OA.strOption ( OA.long "binary"
                  <*> OA.many (OA.strOption ( OA.long "argv"
                                            <> OA.metavar "STRING"
                                            <> OA.help "A command line argument to pass to the process"))
+                 <*> OA.option OA.auto ( OA.long "solver"
+                                         <> OA.value AS.Yices
+                                         <> OA.showDefault
+                                         <> OA.metavar "SOLVER"
+                                         <> OA.help "The solver to use for solving goals (including path satisfiability checking)"
+                                       )
+                 <*> OA.option OA.auto ( OA.long "float-mode"
+                                         <> OA.value AS.Real
+                                         <> OA.showDefault
+                                         <> OA.metavar "FLOAT-MODE"
+                                         <> OA.help "The interpretation of floating point operations at the SMT level"
+                                       )
 
 {- Note [Future Improvements]
 

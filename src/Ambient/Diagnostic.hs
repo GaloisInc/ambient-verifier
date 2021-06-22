@@ -17,6 +17,10 @@ data Diagnostic where
   --
   -- Note: We may want to enhance this with an indicator of the module being loaded (e.g., a filename)
   DiscoveryEvent :: (DMM.MemWidth w) => DMD.AddrSymMap w -> DMD.DiscoveryEvent w -> Diagnostic
+  -- | A solver interaction event generated during symbolic execution
+  --
+  -- The 'Int' is the verbosity level associated with the message
+  SolverInteractionEvent :: Int -> String -> Diagnostic
 
 ppSymbol :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> String
 ppSymbol (Just fnName) addr = show addr ++ " (" ++ BSC.unpack fnName ++ ")"
@@ -39,3 +43,5 @@ instance PP.Pretty Diagnostic where
                     ]
           DMD.ReportAnalyzeBlock _ baddr ->
             PP.pretty "Analyzing a block at address " <> PP.pretty baddr
+      SolverInteractionEvent verb msg ->
+        PP.pretty "Solver response " <> PP.parens (PP.pretty verb) <> PP.pretty ": " <> PP.pretty msg

@@ -17,6 +17,7 @@ import           Control.Monad.IO.Class ( MonadIO )
 import qualified Data.Parameterized.Nonce as PN
 import qualified What4.Expr as WE
 import qualified What4.ProblemFeatures as WP
+import qualified What4.Protocol.Online as WPO
 
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
@@ -58,7 +59,7 @@ withOnlineSolver
   => Solver
   -> FloatMode
   -> PN.NonceGenerator IO scope
-  -> (forall sym solver fs . (sym ~ LCBO.OnlineBackend scope solver fs, LCB.IsSymInterface sym) => sym -> m a)
+  -> (forall sym solver fs . (sym ~ LCBO.OnlineBackend scope solver fs, LCB.IsSymInterface sym, WPO.OnlineSolver solver) => sym -> m a)
   -> m a
 withOnlineSolver solver fm ng k =
   case solver of

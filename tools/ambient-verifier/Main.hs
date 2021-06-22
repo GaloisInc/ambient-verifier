@@ -45,6 +45,8 @@ verify o = do
                                  , AV.piBinary = binary
                                  , AV.piStdin = standardInput
                                  , AV.piCommandLineArguments = args
+                                 , AV.piSolver = O.solver o
+                                 , AV.piFloatMode = O.floatMode o
                                  }
 
   chan <- CC.newChan
