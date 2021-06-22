@@ -1,0 +1,37 @@
+default:
+  image: ubuntu:20.04
+  before_script:
+    - apt update
+    - DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends tzdata
+    - apt install -y software-properties-common wget unzip openssh-client git zlib1g-dev curl build-essential libtinfo5 libgmp10 libgmp-dev locales
+    - locale-gen en_US.UTF-8
+    - update-locale LANG=en_US.UTF-8
+    - export LANG=en_US.UTF-8
+    - export LC_ALL=en_US.UTF-8
+    - mkdir -p $HOME/.ghcup/bin
+    - export PATH=$HOME/.ghcup/bin:$PATH
+    - wget https://downloads.haskell.org/~ghcup/0.1.14/x86_64-linux-ghcup-0.1.14 -O $HOME/.ghcup/bin/ghcup
+    - chmod +x $HOME/.ghcup/bin/ghcup
+    - ghcup install cabal
+    - git config --global url."https://github.com/".insteadOf "git@github.com:"
+    - git config --global url."https://".insteadOf "git://"
+    - git submodule update --init
+
+ambient-verifier:
+  tags:
+    - docker
+  cache:
+    key: ${CI_JOB_NAME}-${GHCVER}
+    paths:
+      - dist-newstyle/
+      - ~/.cabal/store
+  script:
+    - ghcup install ghc --platform x86_64-deb8-linux $GHCVER --verbose
+    - cp cabal.project.dist cabal.project
+    - cabal update
+    - cabal configure -w ghc-$GHCVER --enable-tests pkg:ambient-verifier
+    - cabal build pkg:ambient-verifier
+  parallel:
+    matrix:
+      - GHCVER: [8.6.5, 8.8.4, 8.10.5]
+        CABALVER: [1]
