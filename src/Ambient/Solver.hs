@@ -10,6 +10,7 @@ module Ambient.Solver (
     Solver(..)
   , FloatMode(..)
   , withOnlineSolver
+  , offlineSolver
   ) where
 
 import qualified Control.Monad.Catch as CMC
@@ -18,6 +19,7 @@ import qualified Data.Parameterized.Nonce as PN
 import qualified What4.Expr as WE
 import qualified What4.ProblemFeatures as WP
 import qualified What4.Protocol.Online as WPO
+import qualified What4.Solver as WS
 
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
@@ -49,6 +51,15 @@ data FloatMode = IEEE
                -- This can yield false positive models, and is usually only
                -- suitable for syntactic equivalence queries
                deriving (Read, Show, Eq, Ord)
+
+-- | Get the offline adapter for the requested solver
+offlineSolver :: Solver -> WS.SolverAdapter st
+offlineSolver s =
+  case s of
+    Boolector -> WS.boolectorAdapter
+    CVC4 -> WS.cvc4Adapter
+    Yices -> WS.yicesAdapter
+    Z3 -> WS.z3Adapter
 
 -- | Run a continuation with the selected solver and floating point interpretation
 --

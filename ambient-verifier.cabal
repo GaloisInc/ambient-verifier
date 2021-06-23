@@ -21,18 +21,20 @@ category:           Verification
 extra-source-files: CHANGELOG.md
 
 common shared
-    build-depends: base >= 4.10 && < 5,
-                   bytestring,
-                   bv-sized,
-                   containers,
-                   exceptions,
-                   lens >= 4 && < 6,
-                   lumberjack >= 1 && < 1.1,
-                   mtl >= 2 && < 3,
-                   panic >= 0.4 && < 0.5,
-                   parameterized-utils >= 2 && < 3,
-                   prettyprinter >= 1.7 && < 1.8,
-                   text
+    build-depends:
+        async >= 2 && < 3,
+        base >= 4.10 && < 5,
+        bytestring,
+        bv-sized,
+        containers,
+        exceptions,
+        lens >= 4 && < 6,
+        lumberjack >= 1 && < 1.1,
+        mtl >= 2 && < 3,
+        panic >= 0.4 && < 0.5,
+        parameterized-utils >= 2 && < 3,
+        prettyprinter >= 1.7 && < 1.8,
+        text
 
 library
     import: shared
@@ -44,6 +46,7 @@ library
                       Ambient.Panic,
                       Ambient.Solver,
                       Ambient.Verifier,
+                      Ambient.Verifier.Prove,
                       Ambient.Verifier.SymbolicExecution
 
     -- Modules included in this library but not exported.
@@ -51,7 +54,8 @@ library
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
-    build-depends:    pe-parser,
+    build-depends:    time,
+                      pe-parser,
                       elf-edit,
                       macaw-base,
                       macaw-symbolic,
@@ -79,7 +83,6 @@ executable ambient-verifier
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:
-        async >= 2 && < 3,
         optparse-applicative,
         filepath,
         filemanip,

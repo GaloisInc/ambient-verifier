@@ -34,6 +34,7 @@ import qualified Ambient.Exception as AE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
 import qualified Ambient.Solver as AS
+import qualified Ambient.Verifier.Prove as AVP
 import qualified Ambient.Verifier.SymbolicExecution as AVS
 
 -- | A definition of the initial state of a program to be verified
@@ -121,6 +122,18 @@ verify logAction pinst = do
       psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability sym)
       let execFeatures = [psf]
       AVS.symbolicallyExecute sym hdlAlloc archInfo archVals loadedBinary execFeatures cfg0
+
+      -- Prove all of the side conditions asserted during symbolic execution;
+      -- these are captured in the symbolic backend (sym)
+      --
+      -- NOTE: In the longer term, we will want to separate proving from this
+      -- symbolic execution pass.
+      --
+      -- NOTE: We currently use the same solver for goal solving as we do for
+      -- symbolic execution/path sat checking. This is not required, and we
+      -- could easily support allowing the user to choose two different solvers.
+      AVP.proveObligations logAction sym (AS.offlineSolver (piSolver pinst))
+
 
 
 {- Note [Entry Point]

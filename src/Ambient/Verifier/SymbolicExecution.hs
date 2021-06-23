@@ -194,5 +194,5 @@ symbolicallyExecute sym halloc archInfo archVals loadedBinary execFeatures cfg =
   let ?recordLLVMAnnotation = \_ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
   let globalMap = DMSM.mapRegionPointers memPtrTbl
-  (memVar, execResult) <- simulateFunction sym execFeatures halloc archVals initMem globalMap cfg
+  (_memVar, _execResult) <- simulateFunction sym execFeatures halloc archVals initMem globalMap cfg
   return ()
