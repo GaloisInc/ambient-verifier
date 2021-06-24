@@ -7,6 +7,9 @@ module Ambient.Discovery (
   ) where
 
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
+import qualified Data.Foldable as F
+import qualified Data.Map.Strict as Map
+import           Data.Maybe ( maybeToList )
 import qualified Lumberjack as LJ
 
 import qualified Data.Macaw.Architecture.Info as DMA
@@ -18,11 +21,16 @@ import qualified Data.Macaw.Utils.IncComp as DMUI
 
 import qualified Ambient.Diagnostic as AD
 
+-- | Extract any available symbols from the 'DMB.LoadedBinary'
 symbolMap
   :: (DMB.BinaryLoader arch binFmt)
   => DMB.LoadedBinary arch binFmt
   -> DMD.AddrSymMap (DMC.ArchAddrWidth arch)
-symbolMap = undefined
+symbolMap bin =
+  Map.fromList [ (addr, symName)
+               | addr <- maybe [] F.toList (DMB.entryPoints bin)
+               , symName <- maybeToList (DMB.symbolFor bin (DMM.segoffAddr addr))
+               ]
 
 -- | We pass this log function to macaw to wrap discovery events in a custom
 -- wrapper that we stream out with the rest of our diagnostics.
