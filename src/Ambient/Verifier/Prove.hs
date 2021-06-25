@@ -24,6 +24,7 @@ import qualified What4.Solver as WS
 import qualified Lang.Crucible.Backend as LCB
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Timeout as AT
 
 -- | Stream logs produced by the SMT solver connection out as diagnostics
 --
@@ -40,10 +41,6 @@ streamLogData logAction =
                  LJ.writeLog logAction (AD.SolverInteractionEvent level msg)
              }
 
--- Hard-code a 30 second timeout for now
-timeoutUSeconds :: Int
-timeoutUSeconds = 30 * 1000000
-
 -- | A tag to report when a solver thread has been canceled via a timeout
 data Timeout = Timeout
 
@@ -51,8 +48,6 @@ data Timeout = Timeout
 --
 -- This function manages mapping threads to capabilities in a scalable way while
 -- also managing per-goal timeouts.
---
--- NOTE: The timeout is currently hard-coded
 proveOneGoal
   :: ( LCB.IsSymInterface sym
      , sym ~ WE.ExprBuilder t st fs
@@ -70,8 +65,10 @@ proveOneGoal
   -- ^ Assumptions in scope for this goal
   -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) msg1
   -- ^ The goal to prove
+  -> AT.Timeout
+  -- ^ The solver timeout for proving the goal
   -> IO ()
-proveOneGoal logAction sym adapter workers sem assumptionsInScope p = do
+proveOneGoal logAction sym adapter workers sem assumptionsInScope p timeoutDuration = do
   -- We spawn a thread that waits until there is an available capability
   --
   -- That thread implements the timeout logic and invokes the solver under that timeout
@@ -98,7 +95,7 @@ proveOneGoal logAction sym adapter workers sem assumptionsInScope p = do
             WS.Unknown -> LJ.writeLog logAction (AD.GoalTimeout sym p)
             WS.Sat _model -> LJ.writeLog logAction (AD.DisprovedGoal sym p (t1 `DTC.diffUTCTime` t0))
       timeout <- CCA.async $ do
-        CC.threadDelay timeoutUSeconds
+        CC.threadDelay (AT.microsAsInt (AT.timeoutAsMicros timeoutDuration))
         CCA.cancel worker
         return Timeout
 
@@ -126,8 +123,9 @@ proveObligations
   => LJ.LogAction IO AD.Diagnostic
   -> sym
   -> WS.SolverAdapter st
+  -> AT.Timeout
   -> m ()
-proveObligations logAction sym adapter = do
+proveObligations logAction sym adapter timeoutDuration = do
   mobligations <- liftIO (LCB.getProofObligations sym)
   case mobligations of
     Nothing -> return ()
@@ -150,4 +148,4 @@ proveObligations logAction sym adapter = do
         LCB.ProveConj children1 children2 -> do
           go workers sem assumptionsInScope children1
           go workers sem assumptionsInScope children2
-        LCB.Prove p -> liftIO $ proveOneGoal logAction sym adapter workers sem assumptionsInScope p
+        LCB.Prove p -> liftIO $ proveOneGoal logAction sym adapter workers sem assumptionsInScope p timeoutDuration

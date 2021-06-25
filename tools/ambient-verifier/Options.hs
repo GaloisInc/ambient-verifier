@@ -5,8 +5,10 @@ module Options (
 
 import qualified Data.Text as T
 import qualified Options.Applicative as OA
+import           Text.Read (readMaybe)
 
 import qualified Ambient.Solver as AS
+import qualified Ambient.Timeout as AT
 
 -- | The options structure for the command line interface to the verifier
 data Options =
@@ -30,8 +32,18 @@ data Options =
           , floatMode :: AS.FloatMode
           -- ^ The interpretation of floating point values to use during both
           -- path satisfiability checking and discharging verification conditions
+          , timeoutDuration :: AT.Timeout
+          -- ^ The solver timeout for each goal
           }
   deriving ( Show )
+
+-- | Parse a string representation of an integer number of seconds into an
+-- AT.Timeout
+timeoutReader :: String -> Maybe AT.Timeout
+timeoutReader str =
+  case readMaybe str of
+    Nothing -> Nothing
+    Just x  -> Just (AT.Seconds x)
 
 -- | A parser for the 'Options' type
 parser :: OA.Parser Options
@@ -58,6 +70,13 @@ parser = Options <$> OA.strOption ( OA.long "binary"
                                          <> OA.metavar "FLOAT-MODE"
                                          <> OA.help "The interpretation of floating point operations at the SMT level"
                                        )
+                 <*> OA.option (OA.maybeReader timeoutReader)
+                               ( OA.long "timeout"
+                                 <> OA.value AT.defaultTimeout
+                                 <> OA.showDefault
+                                 <> OA.metavar "SECONDS"
+                                 <> OA.help "The solver timeout to use for each goal"
+                               )
 
 {- Note [Future Improvements]
 

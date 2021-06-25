@@ -34,6 +34,7 @@ import qualified Ambient.Exception as AE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
 import qualified Ambient.Solver as AS
+import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier.Prove as AVP
 import qualified Ambient.Verifier.SymbolicExecution as AVS
 
@@ -104,8 +105,10 @@ verify
   -- ^ A logger to report diagnostic information to the caller
   -> ProgramInstance
   -- ^ A description of the program (and its configuration) to verify
+  -> AT.Timeout
+  -- ^ The solver timeout for each goal
   -> m ()
-verify logAction pinst = do
+verify logAction pinst timeoutDuration = do
   -- Load up the binary, which existentially introduces the architecture of the
   -- binary in the context of the continuation
   AL.withBinary (piPath pinst) (piBinary pinst) $ \archInfo archVals loadedBinary -> DMA.withArchConstraints archInfo $ do
@@ -132,7 +135,7 @@ verify logAction pinst = do
       -- NOTE: We currently use the same solver for goal solving as we do for
       -- symbolic execution/path sat checking. This is not required, and we
       -- could easily support allowing the user to choose two different solvers.
-      AVP.proveObligations logAction sym (AS.offlineSolver (piSolver pinst))
+      AVP.proveObligations logAction sym (AS.offlineSolver (piSolver pinst)) timeoutDuration
 
 
 

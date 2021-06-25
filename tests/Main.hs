@@ -15,6 +15,7 @@ import qualified Test.Tasty.HUnit as TTH
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Solver as AS
+import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier as AV
 
 data ExpectedGoals =
@@ -79,7 +80,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
 
   chan <- CC.newChan
   logger <- CCA.async (analyzeSolvedGoals chan)
-  AV.verify (logAction chan) pinst
+  AV.verify (logAction chan) pinst AT.defaultTimeout
 
   CC.writeChan chan Nothing
   res <- CCA.wait logger

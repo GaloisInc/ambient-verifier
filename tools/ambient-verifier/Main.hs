@@ -52,7 +52,7 @@ verify o = do
   chan <- CC.newChan
   logger <- CCA.async (printLogs IO.stdout chan)
 
-  AV.verify (logAction chan) pinst
+  AV.verify (logAction chan) pinst (O.timeoutDuration o)
 
   -- Tear down the logger by sending the token that causes it to exit cleanly
   --
