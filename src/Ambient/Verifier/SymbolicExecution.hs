@@ -89,10 +89,6 @@ lookupFunction :: DMS.LookupFunctionHandle sym arch
 lookupFunction = DMS.LookupFunctionHandle $ \_s _mem _regs -> do
   AP.panic AP.SymbolicExecution "lookupFunction" ["Function handle lookup is not yet implemented"]
 
--- | We don't want to enforce any additional pointer validity checks in this verifier
-validityCheck :: DMS.MkGlobalPointerValidityAssertion sym w
-validityCheck _ _ _ _ = return Nothing
-
 simulateFunction
   :: ( CMC.MonadThrow m
      , MonadIO m
@@ -114,10 +110,12 @@ simulateFunction
   -- the global variable map passed to crucible, as it is only used for
   -- initializing the macaw extension
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
+  -> DMS.MkGlobalPointerValidityAssertion sym w
+  -- ^ Additional pointer validity checks to enforce
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        )
-simulateFunction sym execFeatures halloc archVals initMem globalMap cfg = do
+simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validityCheck = do
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
   let regsRepr = LCT.StructRepr crucRegTypes
@@ -193,6 +191,7 @@ symbolicallyExecute sym halloc archInfo archVals loadedBinary execFeatures cfg =
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
+  let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
-  (_memVar, _execResult) <- simulateFunction sym execFeatures halloc archVals initMem globalMap cfg
+  (_memVar, _execResult) <- simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validityCheck
   return ()

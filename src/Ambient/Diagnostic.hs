@@ -50,27 +50,28 @@ instance PP.Pretty Diagnostic where
       DiscoveryEvent symMap de ->
         case de of
           DMD.ReportAnalyzeFunction memOff ->
-            PP.pretty "Starting to analyze a function at address " <> PP.pretty memOff
+            PP.pretty "Starting to analyze a function at address " <> PP.pretty memOff <> PP.line
           DMD.ReportAnalyzeFunctionDone memOff ->
-            PP.pretty "Finished analyzing a function at address " <> PP.pretty memOff
+            PP.pretty "Finished analyzing a function at address " <> PP.pretty memOff <> PP.line
           DMD.ReportIdentifyFunction _ tgt rsn ->
             PP.hcat [ PP.pretty "Identified a candidate function entry point for function "
                     , PP.pretty (ppSymbol (Map.lookup tgt symMap) tgt)
                     , PP.pretty " because "
                     , PP.pretty (DMD.ppFunReason rsn)
+                    , PP.line
                     ]
           DMD.ReportAnalyzeBlock _ baddr ->
-            PP.pretty "Analyzing a block at address " <> PP.pretty baddr
+            PP.pretty "Analyzing a block at address " <> PP.pretty baddr <> PP.line
       SolverInteractionEvent verb msg ->
-        PP.pretty "Solver response " <> PP.parens (PP.pretty verb) <> PP.pretty ": " <> PP.pretty msg
+        PP.pretty "Solver response " <> PP.parens (PP.pretty verb) <> PP.pretty ": " <> PP.pretty msg <> PP.line
       GoalTimeout _sym _p ->
         -- FIXME: Add some more detail here, but probably don't print the entire term
         --
         -- It would be nice to be able to provide context in the timeout message
-        PP.pretty "Timeout while solving goal"
+        PP.pretty "Timeout while solving goal" <> PP.line
       ErrorProvingGoal _sym _p exn ->
-        PP.pretty "Error while proving goal: " <> PP.viaShow exn
+        PP.pretty "Error while proving goal: " <> PP.viaShow exn <> PP.line
       ProvedGoal _sym _p elapsed ->
-        PP.pretty "Proved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds"
+        PP.pretty "Proved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
       DisprovedGoal _sym _p elapsed ->
-        PP.pretty "Disproved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds"
+        PP.pretty "Disproved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
