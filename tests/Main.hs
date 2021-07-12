@@ -11,6 +11,7 @@ import qualified Lumberjack as LJ
 import qualified System.FilePath as SF
 import qualified System.FilePath.Glob as SFG
 import qualified Test.Tasty as TT
+import qualified Test.Tasty.ExpectedFailure as TTE
 import qualified Test.Tasty.HUnit as TTH
 
 import qualified Ambient.Diagnostic as AD
@@ -89,7 +90,19 @@ toTest expectedOutputFile = TTH.testCase testName $ do
     testName = SF.dropExtension expectedOutputFile
     binaryFilePath = testName
 
+-- | Create a test that is expected to fail for a given output
+--
+-- See the documentation for 'toTest' for details on the contents of the
+-- expected output file.
+toFailingTest :: FilePath -> TT.TestTree
+toFailingTest = TTE.expectFail . toTest
+
 main :: IO ()
 main = do
   testExpectedOutputs <- SFG.namesMatching "tests/binaries/*.expected"
-  TT.defaultMain $ TT.testGroup "VerifierTests" (map toTest testExpectedOutputs)
+  failingTestExpectedOutputs <- SFG.namesMatching
+                                "tests/binaries/*.expected-failing"
+  TT.defaultMain $ TT.testGroup
+                   "VerifierTests"
+                   ((map toTest testExpectedOutputs) ++
+                    (map toFailingTest failingTestExpectedOutputs))
