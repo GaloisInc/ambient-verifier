@@ -12,6 +12,7 @@ module Ambient.Verifier.SymbolicExecution (
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(..) )
 import qualified Data.BitVector.Sized as BVS
+import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.List as PL
 import           Data.Proxy ( Proxy(..) )
@@ -28,7 +29,6 @@ import qualified Data.Macaw.Memory.ElfLoader as DMME
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.Symbolic.Memory as DMSM
 import qualified Data.Macaw.Types as DMT
-import qualified Lang.Crucible.Analysis.Postdom as LCAP
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.CFG.Extension as LCCE
 import qualified Lang.Crucible.FunctionHandle as LCF
@@ -82,12 +82,49 @@ mkInitialRegVal symArchFns sym r = do
 
 -- | This function is used to look up a function handle when a call is encountered
 --
--- FIXME: It should look at the value in the instruction pointer register and
--- translate the callee if required.  Note that this function receives (and
--- returns) a 'CrucibleState', so it is able to add functions to the handle map.
-lookupFunction :: DMS.LookupFunctionHandle sym arch
-lookupFunction = DMS.LookupFunctionHandle $ \_s _mem _regs -> do
-  AP.panic AP.SymbolicExecution "lookupFunction" ["Function handle lookup is not yet implemented"]
+-- NOTE: This currently only works for concrete function addresses, but once
+-- https://github.com/GaloisInc/crucible/pull/615 lands, we should update it to
+-- return a mux of all possible targets.
+lookupFunction :: forall sym arch w args ret
+   . ( LCB.IsSymInterface sym
+     , LCCE.IsSyntaxExtension (DMS.MacawExt arch)
+     , DMS.SymArchConstraints arch
+     , w ~ DMC.ArchAddrWidth arch
+     , args ~ (LCT.EmptyCtx LCT.::>
+               LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
+     , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
+   => DMS.GenArchVals DMS.LLVMMemory arch
+   -> DMM.Memory w
+   -- ^ Memory from function discovery
+   -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
+   -- ^ Mapping from function addresses to function handles
+   -> DMS.LookupFunctionHandle sym arch
+lookupFunction archVals discoveryMem addressToFnHandle = DMS.LookupFunctionHandle $ \s _mem regs -> do
+  let symArchFns = DMS.archFunctions archVals
+  let crucRegTypes = DMS.crucArchRegTypes symArchFns
+  let regsRepr = LCT.StructRepr crucRegTypes
+  let regsEntry = LCS.RegEntry regsRepr regs
+  -- Extract instruction pointer value and look the address up in
+  -- 'addressToFnHandle'
+  case LCS.regValue (DMS.lookupReg archVals regsEntry DMC.ip_reg) of
+    LCLM.LLVMPointer _ offset ->
+      case BVS.asUnsigned <$> WI.asBV offset of
+        Nothing -> AP.panic AP.SymbolicExecution
+                            "lookupFunction"
+                            ["Attempted to call function with non-concrete address"]
+        Just funcAddr ->
+          case DMM.resolveRegionOff discoveryMem 0 (fromIntegral funcAddr) of
+            Nothing -> AP.panic AP.SymbolicExecution
+                                "lookupFunction"
+                                ["Failed to resolve function address"]
+            Just funcAddrOff ->
+              case Map.lookup funcAddrOff addressToFnHandle of
+                -- TODO: Rather than panicking, we should re-run code discovery
+                -- to attempt to locate the function (see issue #13)
+                Nothing -> AP.panic AP.SymbolicExecution
+                                    "lookupFunction"
+                                    ["Failed to find function in function handle mapping"]
+                Just handle -> return (handle, s)
 
 simulateFunction
   :: ( CMC.MonadThrow m
@@ -99,6 +136,8 @@ simulateFunction
      , DMS.SymArchConstraints arch
      , w ~ DMC.ArchAddrWidth arch
      , 16 <= w
+     , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+     , args ~ (LCT.EmptyCtx LCT.::> ret)
      )
   => sym
   -> [LCS.GenericExecutionFeature sym]
@@ -112,10 +151,16 @@ simulateFunction
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
   -> DMS.MkGlobalPointerValidityAssertion sym w
   -- ^ Additional pointer validity checks to enforce
+  -> DMM.Memory w
+  -- ^ Memory from function discovery
+  -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
+  -- ^ Mapping from discovered function addresses to function handles
+  -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
+  -- ^ Function bindings to insert into the simulation context
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        )
-simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validityCheck = do
+simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings = do
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
   let regsRepr = LCT.StructRepr crucRegTypes
@@ -145,11 +190,10 @@ simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validity
   -- FIXME: We might want to add all known functions to the map here. As an
   -- alternative design, we might be able to lazily add functions as they are
   -- encountered in calls
-  let fnBindings = LCF.insertHandleMap (LCCC.cfgHandle cfg) (LCS.UseCFG cfg (LCAP.postdomInfo cfg)) LCF.emptyHandleMap
   let simAction = LCS.runOverrideSim regsRepr (LCS.regValue <$> LCS.callCFG cfg arguments)
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = DMS.macawExtensions archEvalFn memVar globalMap lookupFunction validityCheck
+    let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction archVals discoveryMem addressToFnHandle) validityCheck
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
@@ -166,7 +210,7 @@ simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validity
 -- default memory model for machine code); we will almost certainly need a
 -- modified memory model.
 symbolicallyExecute
-  :: forall m sym arch binFmt w blocks
+  :: forall m sym arch binFmt w blocks args ret
    . ( CMC.MonadThrow m
      , MonadIO m
      , LCB.IsSymInterface sym
@@ -177,6 +221,8 @@ symbolicallyExecute
      , DMM.MemWidth w
      , 16 <= w
      , KnownNat w
+     , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+     , args ~ (LCT.EmptyCtx LCT.::> ret)
      )
   => sym
   -> LCF.HandleAllocator
@@ -185,13 +231,19 @@ symbolicallyExecute
   -> DMB.LoadedBinary arch binFmt
   -> [LCS.GenericExecutionFeature sym]
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
+  -> DMM.Memory w
+  -- ^ Memory from function discovery
+  -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
+  -- ^ Mapping from discovered function addresses to function handles
+  -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
+  -- ^ Function bindings to insert into the simulation context
   -> m ()
-symbolicallyExecute sym halloc archInfo archVals loadedBinary execFeatures cfg = do
+symbolicallyExecute sym halloc archInfo archVals loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings = do
   let mem = DMB.memoryImage loadedBinary
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
-  (_memVar, _execResult) <- simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validityCheck
+  (_memVar, _execResult) <- simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings
   return ()

@@ -1,4 +1,5 @@
 {-# LANGUAGE EmptyCase #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE StandaloneDeriving #-}
 module Ambient.Diagnostic (
@@ -13,6 +14,7 @@ import qualified Prettyprinter as PP
 import qualified What4.Expr as WE
 import qualified What4.Interface as WI
 
+import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
 
@@ -22,7 +24,12 @@ data Diagnostic where
   -- | Report an event from the code discovery phase
   --
   -- Note: We may want to enhance this with an indicator of the module being loaded (e.g., a filename)
-  DiscoveryEvent :: (DMM.MemWidth w) => DMD.AddrSymMap w -> DMD.DiscoveryEvent w -> Diagnostic
+  DiscoveryEvent :: ( DMM.MemWidth (DMD.ArchAddrWidth arch)
+                    , DMC.ArchConstraints arch
+                    , w ~ (DMC.RegAddrWidth (DMC.ArchReg arch)) )
+                    => DMD.AddrSymMap w
+                    -> DMD.DiscoveryEvent arch
+                    -> Diagnostic
   -- | A solver interaction event generated during symbolic execution
   --
   -- The 'Int' is the verbosity level associated with the message

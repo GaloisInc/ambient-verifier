@@ -1,3 +1,6 @@
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+
 -- | Functions for running the macaw code discovery on a binary
 --
 -- Ideally, the initial and incremental code discovery logic can be maintained
@@ -37,10 +40,13 @@ symbolMap bin =
 --
 -- The default logger in macaw just prints to stderr, which is not very helpful
 logDiscoveryEvent
-  :: (MonadIO m, DMM.MemWidth w)
+  :: ( MonadIO m
+     , DMM.MemWidth w
+     , DMC.ArchConstraints arch
+     , w ~ DMC.RegAddrWidth (DMC.ArchReg arch) )
   => LJ.LogAction IO AD.Diagnostic
   -> DMD.AddrSymMap w
-  -> DMD.DiscoveryEvent w
+  -> DMD.DiscoveryEvent arch
   -> m ()
 logDiscoveryEvent logAction symMap evt =
   liftIO $ LJ.writeLog logAction (AD.DiscoveryEvent symMap evt)

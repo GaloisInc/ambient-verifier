@@ -10,10 +10,8 @@ import qualified Control.Concurrent.Async as CCA
 import qualified Control.Concurrent.QSem as CCQ
 import qualified Control.Exception as X
 import           Control.Lens ( (^.) )
-import qualified Control.Lens as L
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.IORef as IORef
-import qualified Data.Sequence as Seq
 import qualified Data.Time.Clock as DTC
 import qualified GHC.Conc as GC
 import qualified Lumberjack as LJ
@@ -61,7 +59,7 @@ proveOneGoal
   -> CCQ.QSem
   -- ^ A count of available capabilities, which will block workers until
   -- capabilities become available to avoid swamping the system
-  -> [Seq.Seq (LCB.LabeledPred (WE.Expr t WI.BaseBoolType) msg0)]
+  -> LCB.Assumptions sym
   -- ^ Assumptions in scope for this goal
   -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) msg1
   -- ^ The goal to prove
@@ -85,7 +83,7 @@ proveOneGoal logAction sym adapter workers sem assumptionsInScope p timeoutDurat
     -- The actual worker races the solver thread against a timeout thread
     spawnWorker = do
       worker <- CCA.async $ do
-        assumptions <- WI.andAllOf sym (L.folded . id) (fmap (^. LCB.labeledPred) (mconcat assumptionsInScope))
+        assumptions <- LCB.assumptionsPred sym assumptionsInScope
         goal <- WI.notPred sym (p ^. LCB.labeledPred)
         t0 <- DTC.getCurrentTime
         WS.solver_adapter_check_sat adapter sym (streamLogData logAction) [assumptions, goal] $ \satRes -> do
@@ -135,7 +133,7 @@ proveObligations logAction sym adapter timeoutDuration = do
       sem <- liftIO (CCQ.newQSem caps)
 
       -- Traverse the proof obligations and spawn off threads to attempt to prove them
-      go workersRef sem [] obligations
+      go workersRef sem mempty obligations
 
       -- Block until all of the workers finish (possibly by timing out)
       workers <- liftIO $ IORef.readIORef workersRef
@@ -144,7 +142,7 @@ proveObligations logAction sym adapter timeoutDuration = do
     go workers sem assumptionsInScope goals =
       case goals of
         LCB.Assuming asumps childGoals ->
-          go workers sem (asumps : assumptionsInScope) childGoals
+          go workers sem (asumps <> assumptionsInScope) childGoals
         LCB.ProveConj children1 children2 -> do
           go workers sem assumptionsInScope children1
           go workers sem assumptionsInScope children2
