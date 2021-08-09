@@ -10,6 +10,7 @@ import qualified Control.Exception as X
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map as Map
 import qualified Data.Time.Clock as DTC
+import           Numeric ( showHex )
 import qualified Prettyprinter as PP
 import qualified What4.Expr as WE
 import qualified What4.Interface as WI
@@ -46,6 +47,8 @@ data Diagnostic where
   -- fully grounded here, as the solver connection will be closed by the time we
   -- process the exception
   DisprovedGoal :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) msg -> DTC.NominalDiffTime -> Diagnostic
+  -- | Execution has reached a Weird Machine at the given address
+  ExecutingWeirdMachineAt :: Integer -> Diagnostic
 
 ppSymbol :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> String
 ppSymbol (Just fnName) addr = show addr ++ " (" ++ BSC.unpack fnName ++ ")"
@@ -82,3 +85,5 @@ instance PP.Pretty Diagnostic where
         PP.pretty "Proved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
       DisprovedGoal _sym _p elapsed ->
         PP.pretty "Disproved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
+      ExecutingWeirdMachineAt addr ->
+        PP.pretty "Execution transferred to a Weird Machine at 0x" <> PP.pretty (showHex addr "") <> PP.line

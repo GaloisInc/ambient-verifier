@@ -16,6 +16,7 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
+import           Data.Word ( Word64 )
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
 
@@ -24,9 +25,11 @@ import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Symbolic as DMS
+import qualified Lang.Crucible.Analysis.Postdom as LCAP
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
+import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.PathSatisfiability as LCSP
 
 import qualified Ambient.Diagnostic as AD
@@ -38,9 +41,8 @@ import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier.Prove as AVP
 import qualified Ambient.Verifier.SymbolicExecution as AVS
+import qualified Ambient.Verifier.WMM as AVW
 
-import qualified Lang.Crucible.Analysis.Postdom as LCAP
-import qualified Lang.Crucible.Simulator as LCS
 
 -- | A definition of the initial state of a program to be verified
 --
@@ -70,8 +72,15 @@ data ProgramInstance =
                   -- goals
                   , piFloatMode :: AS.FloatMode
                   -- ^ The interpretation of floating point operations in SMT
+                  , piWeirdMachineEntries :: [Word64]
+                  -- ^ Expected entry points to Weird Machines; if execution
+                  -- reaches here, a Weird Machine needs to be executed via the
+                  -- 'AVW.WMMCallback'
+                  , piWeirdMachineCallback :: AVW.WMMCallback
+                  -- ^ The action to run when a Weird Machine is entered; this
+                  -- could launch a new symbolic execution process for the Weird
+                  -- Machine
                   }
-  deriving (Show)
 
 -- | Retrieve the named function (in its 'DMD.DiscoveryFunInfo' form) from the code
 -- discovery information.  Returns a pair containing the address of the named
@@ -191,7 +200,11 @@ verify logAction pinst timeoutDuration = do
       -- execution code
       psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability sym)
       let execFeatures = [psf]
-      AVS.symbolicallyExecute sym hdlAlloc archInfo archVals loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings
+      let seConf = AVS.SymbolicExecutionConfig { AVS.secWMEntries = piWeirdMachineEntries pinst
+                                               , AVS.secWMMCallback = piWeirdMachineCallback pinst
+                                               , AVS.secSolver = piSolver pinst
+                                               }
+      AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings
 
       -- Prove all of the side conditions asserted during symbolic execution;
       -- these are captured in the symbolic backend (sym)

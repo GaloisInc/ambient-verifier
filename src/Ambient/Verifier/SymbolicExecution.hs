@@ -6,7 +6,8 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 module Ambient.Verifier.SymbolicExecution (
-  symbolicallyExecute
+    SymbolicExecutionConfig(..)
+  , symbolicallyExecute
   ) where
 
 import qualified Control.Monad.Catch as CMC
@@ -17,8 +18,10 @@ import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.List as PL
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
+import           Data.Word ( Word64 )
 import           GHC.TypeNats ( KnownNat, type (<=) )
 import qualified Lang.Crucible.CFG.Core as LCCC
+import qualified Lumberjack as LJ
 import qualified System.IO as IO
 
 import qualified Data.Macaw.Architecture.Info as DMA
@@ -38,11 +41,21 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.Expr as WE
 import qualified What4.Interface as WI
 import qualified What4.Symbol as WSym
 import qualified What4.BaseTypes as WT
 
+import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Panic as AP
+import qualified Ambient.Solver as AS
+import qualified Ambient.Verifier.WMM as AVW
+
+data SymbolicExecutionConfig =
+  SymbolicExecutionConfig { secWMEntries :: [Word64]
+                          , secWMMCallback :: AVW.WMMCallback
+                          , secSolver :: AS.Solver
+                          }
 
 -- | Convert from macaw endianness to the LLVM memory model endianness
 toCrucibleEndian :: DMME.Endianness -> LCLD.EndianForm
@@ -138,11 +151,14 @@ simulateFunction
      , 16 <= w
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , args ~ (LCT.EmptyCtx LCT.::> ret)
+     , sym ~ WE.ExprBuilder t st fs
      )
-  => sym
+  => LJ.LogAction IO AD.Diagnostic
+  -> sym
   -> [LCS.GenericExecutionFeature sym]
   -> LCF.HandleAllocator
   -> DMS.GenArchVals DMS.LLVMMemory arch
+  -> SymbolicExecutionConfig
   -> LCLM.MemImpl sym
   -> DMS.GlobalMap sym LCLM.Mem w
   -- ^ Globals used by the macaw translation; note that this is separate from
@@ -160,7 +176,7 @@ simulateFunction
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        )
-simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings = do
+simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings = do
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
   let regsRepr = LCT.StructRepr crucRegTypes
@@ -199,7 +215,13 @@ simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validity
     -- capture the output over a pipe.
     let ctx = LCS.initSimContext sym LCLI.llvmIntrinsicTypes halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
     let s0 = LCS.InitialState ctx initGlobals LCS.defaultAbortHandler regsRepr simAction
-    res <- liftIO $ LCS.executeCrucible (fmap LCS.genericToExecutionFeature execFeatures) s0
+
+    let wmEntries = secWMEntries seConf
+    let wmCallback = secWMMCallback seConf
+    let wmSolver = secSolver seConf
+    let wmm = AVW.wmmFeature logAction wmSolver archVals wmEntries wmCallback
+    let executionFeatures = wmm : fmap LCS.genericToExecutionFeature execFeatures
+    res <- liftIO $ LCS.executeCrucible executionFeatures s0
     return (memVar, res)
 
 -- | Symbolically execute a function
@@ -210,7 +232,7 @@ simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validity
 -- default memory model for machine code); we will almost certainly need a
 -- modified memory model.
 symbolicallyExecute
-  :: forall m sym arch binFmt w blocks args ret
+  :: forall m sym arch binFmt w blocks args ret t st fs
    . ( CMC.MonadThrow m
      , MonadIO m
      , LCB.IsSymInterface sym
@@ -223,11 +245,14 @@ symbolicallyExecute
      , KnownNat w
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , args ~ (LCT.EmptyCtx LCT.::> ret)
+     , sym ~ WE.ExprBuilder t st fs
      )
-  => sym
+  => LJ.LogAction IO AD.Diagnostic
+  -> sym
   -> LCF.HandleAllocator
   -> DMA.ArchitectureInfo arch
   -> DMS.GenArchVals DMS.LLVMMemory arch
+  -> SymbolicExecutionConfig
   -> DMB.LoadedBinary arch binFmt
   -> [LCS.GenericExecutionFeature sym]
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
@@ -238,12 +263,12 @@ symbolicallyExecute
   -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
   -- ^ Function bindings to insert into the simulation context
   -> m ()
-symbolicallyExecute sym halloc archInfo archVals loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings = do
+symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings = do
   let mem = DMB.memoryImage loadedBinary
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
-  (_memVar, _execResult) <- simulateFunction sym execFeatures halloc archVals initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings
+  (_memVar, _execResult) <- simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings
   return ()

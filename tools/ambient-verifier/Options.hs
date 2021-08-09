@@ -4,6 +4,7 @@ module Options (
   ) where
 
 import qualified Data.Text as T
+import           Data.Word ( Word64 )
 import qualified Options.Applicative as OA
 import           Text.Read (readMaybe)
 
@@ -23,7 +24,7 @@ data Options =
           -- See Note [Future Improvements]
           , commandLineArguments :: [T.Text]
           -- ^ A list of command line arguments to set up in the environment of
-          -- the program (this should include argv[0] as the command name
+          -- the program (this should include argv[0] as the command name)
           --
           -- See Note [Future Improvements]
           , solver :: AS.Solver
@@ -34,6 +35,9 @@ data Options =
           -- path satisfiability checking and discharging verification conditions
           , timeoutDuration :: AT.Timeout
           -- ^ The solver timeout for each goal
+          , weirdMachineEntries :: [Word64]
+          -- ^ The entry points to any weird machines that are expected to be
+          -- encountered
           }
   deriving ( Show )
 
@@ -77,6 +81,10 @@ parser = Options <$> OA.strOption ( OA.long "binary"
                                  <> OA.metavar "SECONDS"
                                  <> OA.help "The solver timeout to use for each goal"
                                )
+                 <*> OA.many (OA.option OA.auto ( OA.long "weird-machine-entry"
+                                                <> OA.metavar "ADDRESS"
+                                                <> OA.help ""
+                                                ))
 
 {- Note [Future Improvements]
 

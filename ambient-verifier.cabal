@@ -48,7 +48,8 @@ library
                       Ambient.Timeout,
                       Ambient.Verifier,
                       Ambient.Verifier.Prove,
-                      Ambient.Verifier.SymbolicExecution
+                      Ambient.Verifier.SymbolicExecution,
+                      Ambient.Verifier.WMM
 
     -- Modules included in this library but not exported.
     -- other-modules:

@@ -10,9 +10,11 @@ import qualified Options.Applicative as OA
 import qualified Prettyprinter as PP
 import qualified Prettyprinter.Render.Text as PPT
 import qualified System.IO as IO
+import           Text.Printf ( printf )
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Verifier as AV
+import qualified Ambient.Verifier.WMM as AVW
 
 import qualified Options as O
 
@@ -33,6 +35,11 @@ printLogs hdl chan = go
           PPT.hPutDoc hdl (PP.pretty d)
           go
 
+wmmCallback :: AVW.WMMCallback
+wmmCallback = AVW.WMMCallback $ \addr st -> do
+  printf "Encountered a Weird Machine at 0x%x\n" addr
+  return st
+
 -- | This is the real verification driver that takes the parsed out command line
 -- arguments and sets up the problem instance for the library core
 verify :: O.Options -> IO ()
@@ -47,6 +54,8 @@ verify o = do
                                  , AV.piCommandLineArguments = args
                                  , AV.piSolver = O.solver o
                                  , AV.piFloatMode = O.floatMode o
+                                 , AV.piWeirdMachineCallback = wmmCallback
+                                 , AV.piWeirdMachineEntries = O.weirdMachineEntries o
                                  }
 
   chan <- CC.newChan
