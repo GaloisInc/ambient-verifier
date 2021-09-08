@@ -45,6 +45,8 @@ library
                       Ambient.Loader,
                       Ambient.Panic,
                       Ambient.Solver,
+                      Ambient.Syscall,
+                      Ambient.Syscall.X86_64.Linux,
                       Ambient.Timeout,
                       Ambient.Verifier,
                       Ambient.Verifier.Prove,

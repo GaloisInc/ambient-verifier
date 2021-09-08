@@ -28,6 +28,8 @@ import           Data.Macaw.X86.Symbolic ()
 import qualified PE.Parser as PE
 
 import qualified Ambient.Exception as AE
+import qualified Ambient.Syscall as AS
+import qualified Ambient.Syscall.X86_64.Linux as ASXL
 
 -- | Load a bytestring as a binary image and associate it with a macaw
 -- 'DMA.ArchitectureInfo' suitable for analyzing it
@@ -49,6 +51,7 @@ withBinary
       . (DMB.BinaryLoader arch binFmt, 16 <= DMC.ArchAddrWidth arch, DMS.SymArchConstraints arch, mem ~ DMS.LLVMMemory)
      => DMA.ArchitectureInfo arch
      -> DMS.GenArchVals mem arch
+     -> AS.SyscallABI arch
      -> DMB.LoadedBinary arch binFmt
      -> m a)
   -> m a
@@ -64,7 +67,7 @@ withBinary name bytes k =
                <- DMB.loadBinary MML.defaultLoadOptions ehi
             -- Here we capture all of the necessary constraints required by the
             -- callback and pass them down along with the architecture info
-            k DMX.x86_64_linux_info archVals lb
+            k DMX.x86_64_linux_info archVals ASXL.x86_64LinuxSyscallABI lb
         (machine, klass) -> CMC.throwM (AE.UnsupportedELFArchitecture name machine klass)
     Left _ ->
       case PE.decodePEHeaderInfo (BSL.fromStrict bytes) of

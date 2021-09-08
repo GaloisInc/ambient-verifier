@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 -- | The main entry point of the AMBIENT binary verifier
@@ -29,6 +30,7 @@ import qualified Lang.Crucible.Analysis.Postdom as LCAP
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
+import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.PathSatisfiability as LCSP
 
@@ -180,7 +182,7 @@ verify
 verify logAction pinst timeoutDuration = do
   -- Load up the binary, which existentially introduces the architecture of the
   -- binary in the context of the continuation
-  AL.withBinary (piPath pinst) (piBinary pinst) $ \archInfo archVals loadedBinary -> DMA.withArchConstraints archInfo $ do
+  AL.withBinary (piPath pinst) (piBinary pinst) $ \archInfo archVals syscallABI loadedBinary -> DMA.withArchConstraints archInfo $ do
     discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
     -- See Note [Entry Point] for more details
     (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState "main"
@@ -204,7 +206,8 @@ verify logAction pinst timeoutDuration = do
                                                , AVS.secWMMCallback = piWeirdMachineCallback pinst
                                                , AVS.secSolver = piSolver pinst
                                                }
-      AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings
+      let ?memOpts = LCLM.defaultMemOptions
+      AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI
 
       -- Prove all of the side conditions asserted during symbolic execution;
       -- these are captured in the symbolic backend (sym)

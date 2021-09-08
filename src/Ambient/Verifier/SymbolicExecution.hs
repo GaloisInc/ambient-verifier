@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -10,6 +11,7 @@ module Ambient.Verifier.SymbolicExecution (
   , symbolicallyExecute
   ) where
 
+import           Control.Lens ( (^.), set )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(..) )
 import qualified Data.BitVector.Sized as BVS
@@ -40,6 +42,7 @@ import qualified Lang.Crucible.LLVM.Intrinsics as LCLI
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
+import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Expr as WE
 import qualified What4.Interface as WI
@@ -49,6 +52,7 @@ import qualified What4.BaseTypes as WT
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Panic as AP
 import qualified Ambient.Solver as AS
+import qualified Ambient.Syscall as ASy
 import qualified Ambient.Verifier.WMM as AVW
 
 data SymbolicExecutionConfig =
@@ -139,6 +143,83 @@ lookupFunction archVals discoveryMem addressToFnHandle = DMS.LookupFunctionHandl
                                     ["Failed to find function in function handle mapping"]
                 Just handle -> return (handle, s)
 
+-- | This function builds a function handle for an override and inserts it into
+-- a state's function bindings
+bindOverrideHandle :: MonadIO m
+                   => LCS.SimState p sym ext r f a
+                   -- ^ State to insert function handle into
+                   -> LCF.HandleAllocator
+                   -> Ctx.Assignment LCT.TypeRepr args
+                   -- ^ Types of arguments to override
+                   -> LCT.CtxRepr ctx
+                   -- ^ Override return type
+                   -> LCSO.Override p sym ext args (LCT.StructType ctx)
+                   -- ^ Override to build binding for
+                   -> m ( LCF.FnHandle args (LCT.StructType ctx)
+                       -- ^ New function handle for override
+                        , LCS.SimState p sym ext r f a)
+                       -- ^ Updated state containing new function handle
+bindOverrideHandle state hdlAlloc atps rtps ov = do
+  let LCS.FnBindings curHandles = state ^. LCS.stateContext ^. LCS.functionBindings
+  handle <- liftIO $ LCF.mkHandle' hdlAlloc
+                                   (LCS.overrideName ov)
+                                   atps
+                                   (LCT.StructRepr rtps)
+  let newHandles = LCS.FnBindings $
+                   LCF.insertHandleMap handle
+                                       (LCS.UseOverride ov)
+                                       curHandles
+  let state' = set (LCS.stateContext . LCS.functionBindings)
+                   newHandles
+                   state
+  return (handle, state')
+
+-- | This function is used to generate a function handle for an override once a
+-- syscall is encountered
+lookupSyscall
+  :: ( WI.IsExpr (WI.SymExpr sym)
+     , LCB.IsSymInterface sym
+     , p ~ DMS.MacawSimulatorState sym
+     , ext ~ DMS.MacawExt arch )
+  => sym
+  -> ASy.SyscallABI arch
+  -- ^ System call ABI specification for 'arch'
+  -> LCF.HandleAllocator
+  -> DMS.LookupSyscallHandle sym arch
+lookupSyscall sym abi hdlAlloc = DMS.LookupSyscallHandle $ \atps rtps state reg -> do
+  -- Extract system call number from register state
+  syscallReg <- liftIO $ ASy.syscallNumberRegister abi sym atps reg
+  let regVal = LCS.regValue syscallReg
+  case BVS.asUnsigned <$> WI.asBV regVal of
+    Nothing -> AP.panic AP.SymbolicExecution
+                        "lookupSyscall"
+                        ["Attempted to make system call with non-concrete syscall number"]
+    Just syscallNum ->
+      -- Look for override associated with system call number
+      case Map.lookup syscallNum (ASy.syscallMapping abi) of
+        Nothing -> AP.panic AP.SymbolicExecution
+                            "lookupSyscall"
+                            [ "Failed to find override for syscall: " ++
+                              show syscallNum ]
+        Just (ASy.SomeSyscall syscall) -> do
+          -- Construct an override for the system call
+          let args = ASy.syscallArgumentRegisters abi atps reg (ASy.syscallArgTypes syscall)
+          let ov   = LCSO.mkOverride' (ASy.syscallName syscall)
+                                      (LCT.StructRepr rtps)
+                                      (ASy.syscallReturnRegisters
+                                        abi
+                                        (ASy.syscallReturnType syscall)
+                                        ((ASy.syscallOverride syscall)
+                                         sym
+                                         args)
+                                        atps
+                                        reg
+                                        rtps)
+          -- Build a function handle for the override and insert it into the
+          -- state
+          bindOverrideHandle state hdlAlloc atps rtps ov
+
+
 simulateFunction
   :: ( CMC.MonadThrow m
      , MonadIO m
@@ -152,6 +233,7 @@ simulateFunction
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , args ~ (LCT.EmptyCtx LCT.::> ret)
      , sym ~ WE.ExprBuilder t st fs
+     , ?memOpts :: LCLM.MemOptions
      )
   => LJ.LogAction IO AD.Diagnostic
   -> sym
@@ -172,11 +254,12 @@ simulateFunction
   -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
   -- ^ Mapping from discovered function addresses to function handles
   -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
+  -> ASy.SyscallABI arch
   -- ^ Function bindings to insert into the simulation context
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        )
-simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings = do
+simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings syscallABI = do
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
   let regsRepr = LCT.StructRepr crucRegTypes
@@ -209,7 +292,7 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
   let simAction = LCS.runOverrideSim regsRepr (LCS.regValue <$> LCS.callCFG cfg arguments)
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction archVals discoveryMem addressToFnHandle) validityCheck
+    let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction archVals discoveryMem addressToFnHandle) (lookupSyscall sym syscallABI halloc) validityCheck
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
@@ -246,6 +329,7 @@ symbolicallyExecute
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , args ~ (LCT.EmptyCtx LCT.::> ret)
      , sym ~ WE.ExprBuilder t st fs
+     , ?memOpts :: LCLM.MemOptions
      )
   => LJ.LogAction IO AD.Diagnostic
   -> sym
@@ -261,14 +345,15 @@ symbolicallyExecute
   -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
   -- ^ Mapping from discovered function addresses to function handles
   -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
+  -> ASy.SyscallABI arch
   -- ^ Function bindings to insert into the simulation context
   -> m ()
-symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings = do
+symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings syscallABI = do
   let mem = DMB.memoryImage loadedBinary
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
-  (_memVar, _execResult) <- simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings
+  (_memVar, _execResult) <- simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings syscallABI
   return ()
