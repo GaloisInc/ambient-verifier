@@ -9,5 +9,8 @@ CC=gcc
 syscall.exe: syscall.c
 	$(CC) -nostartfiles -static $< -o $@
 
+fsbase.exe: fsbase.c
+	$(CC) -nostartfiles -static $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static $< -o $@

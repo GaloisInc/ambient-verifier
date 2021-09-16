@@ -43,6 +43,8 @@ library
                       Ambient.Exception,
                       Ambient.Lift,
                       Ambient.Loader,
+                      Ambient.Memory,
+                      Ambient.Memory.X86_64.Linux,
                       Ambient.Panic,
                       Ambient.Solver,
                       Ambient.Syscall,

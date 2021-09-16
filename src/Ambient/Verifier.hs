@@ -180,13 +180,13 @@ verify
   -- ^ The solver timeout for each goal
   -> m ()
 verify logAction pinst timeoutDuration = do
+  hdlAlloc <- liftIO LCF.newHandleAllocator
   -- Load up the binary, which existentially introduces the architecture of the
   -- binary in the context of the continuation
-  AL.withBinary (piPath pinst) (piBinary pinst) $ \archInfo archVals syscallABI loadedBinary -> DMA.withArchConstraints archInfo $ do
+  AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc $ \archInfo archVals syscallABI buildGlobals loadedBinary -> DMA.withArchConstraints archInfo $ do
     discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
     -- See Note [Entry Point] for more details
     (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState "main"
-    hdlAlloc <- liftIO LCF.newHandleAllocator
     (LCCC.SomeCFG cfg0) <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) discoveredEntry
     Some ng <- liftIO PN.newIONonceGenerator
     AS.withOnlineSolver (piSolver pinst) (piFloatMode pinst) ng $ \sym -> do
@@ -207,7 +207,7 @@ verify logAction pinst timeoutDuration = do
                                                , AVS.secSolver = piSolver pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions
-      AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI
+      AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI buildGlobals
 
       -- Prove all of the side conditions asserted during symbolic execution;
       -- these are captured in the symbolic backend (sym)

@@ -50,6 +50,7 @@ import qualified What4.Symbol as WSym
 import qualified What4.BaseTypes as WT
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
 import qualified Ambient.Solver as AS
 import qualified Ambient.Syscall as ASy
@@ -254,12 +255,15 @@ simulateFunction
   -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
   -- ^ Mapping from discovered function addresses to function handles
   -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
-  -> ASy.SyscallABI arch
   -- ^ Function bindings to insert into the simulation context
+  -> ASy.SyscallABI arch
+  -- ^ ABI specification for system calls
+  -> AM.InitArchSpecificGlobals arch
+  -- ^ Function to initialize special global variables needed for 'arch'
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        )
-simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings syscallABI = do
+simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings syscallABI (AM.InitArchSpecificGlobals initGlobals) = do
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
   let regsRepr = LCT.StructRepr crucRegTypes
@@ -284,7 +288,8 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
   let regsWithStack = DMS.updateReg archVals initialRegsEntry DMC.sp_reg sp
 
   memVar <- liftIO $ LCLM.mkMemVar (DT.pack "ambient-verifier::memory") halloc
-  let initGlobals = LCSG.insertGlobal memVar mem2 LCS.emptyGlobals
+  (mem3, globals0) <- liftIO $ initGlobals sym mem2
+  let globals1 = LCSG.insertGlobal memVar mem3 globals0
   let arguments = LCS.RegMap (Ctx.singleton regsWithStack)
   -- FIXME: We might want to add all known functions to the map here. As an
   -- alternative design, we might be able to lazily add functions as they are
@@ -297,7 +302,7 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
     let ctx = LCS.initSimContext sym LCLI.llvmIntrinsicTypes halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
-    let s0 = LCS.InitialState ctx initGlobals LCS.defaultAbortHandler regsRepr simAction
+    let s0 = LCS.InitialState ctx globals1 LCS.defaultAbortHandler regsRepr simAction
 
     let wmEntries = secWMEntries seConf
     let wmCallback = secWMMCallback seConf
@@ -345,15 +350,18 @@ symbolicallyExecute
   -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
   -- ^ Mapping from discovered function addresses to function handles
   -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
-  -> ASy.SyscallABI arch
   -- ^ Function bindings to insert into the simulation context
+  -> ASy.SyscallABI arch
+  -- ^ ABI specification for system calls
+  -> AM.InitArchSpecificGlobals arch
+  -- ^ Function to initialize special global variables needed for 'arch'
   -> m ()
-symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings syscallABI = do
+symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings syscallABI initGlobals = do
   let mem = DMB.memoryImage loadedBinary
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
-  (_memVar, _execResult) <- simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings syscallABI
+  (_memVar, _execResult) <- simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings syscallABI initGlobals
   return ()

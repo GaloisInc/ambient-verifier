@@ -131,6 +131,7 @@ x86_64LinuxSyscallReturnRegisters ovTyp ovSim atps argRegs rtps =
               , Just WI.Refl <- WI.testEquality wrdx (WI.knownNat @64) ->
       case ovTyp of
         LCT.UnitRepr -> do
+          ovSim
           let rax = x86_64LinuxGetReg atps argRegs DMXR.RAX
           let rdx = x86_64LinuxGetReg atps argRegs DMXR.RDX
           return (Ctx.empty Ctx.:> rax Ctx.:> rdx)
