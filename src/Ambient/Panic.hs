@@ -6,7 +6,7 @@ module Ambient.Panic (
 
 import qualified Panic as P
 
-data Component = Memory | SymbolicExecution | Syscall
+data Component = Memory | SymbolicExecution | Syscall | Verifier | WME | WMM
   deriving (Show)
 
 instance P.PanicComponent Component where

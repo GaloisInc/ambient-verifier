@@ -65,9 +65,9 @@ import qualified Ambient.Solver as AS
 import qualified Ambient.Syscall as ASy
 import qualified Ambient.Verifier.WMM as AVW
 
-data SymbolicExecutionConfig =
+data SymbolicExecutionConfig arch sym =
   SymbolicExecutionConfig { secWMEntries :: [Word64]
-                          , secWMMCallback :: AVW.WMMCallback
+                          , secWMMCallback :: AVW.WMMCallback arch sym
                           , secSolver :: AS.Solver
                           }
 
@@ -295,7 +295,7 @@ simulateFunction
   -> [LCS.GenericExecutionFeature sym]
   -> LCF.HandleAllocator
   -> DMS.GenArchVals DMS.LLVMMemory arch
-  -> SymbolicExecutionConfig
+  -> SymbolicExecutionConfig arch sym
   -> LCLM.MemImpl sym
   -> DMS.GlobalMap sym LCLM.Mem w
   -- ^ Globals used by the macaw translation; note that this is separate from
@@ -319,6 +319,7 @@ simulateFunction
   -- will be empty
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
+       , AVW.WMConfig
        )
 simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings (ASy.BuildSyscallABI buildSyscallABI) (AM.InitArchSpecificGlobals initGlobals) mFsRoot = do
   let symArchFns = DMS.archFunctions archVals
@@ -357,27 +358,29 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
   (fs, globals2, LCLS.SomeOverrideSim initFSOverride) <- liftIO $
     LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] globals1
 
+  (wmConfig, globals3) <- liftIO $ AVW.initWMConfig sym halloc globals2
+
   -- FIXME: We might want to add all known functions to the map here. As an
   -- alternative design, we might be able to lazily add functions as they are
   -- encountered in calls
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let syscallABI = buildSyscallABI fs memVar
+    let syscallABI = buildSyscallABI fs memVar (AVW.hitExecveGlob wmConfig)
     let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction archVals discoveryMem addressToFnHandle) (lookupSyscall sym syscallABI halloc) validityCheck
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
     let ctx = LCS.initSimContext sym (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
-    let s0 = LCS.InitialState ctx globals2 LCS.defaultAbortHandler regsRepr simAction
+    let s0 = LCS.InitialState ctx globals3 LCS.defaultAbortHandler regsRepr simAction
 
     let wmEntries = secWMEntries seConf
     let wmCallback = secWMMCallback seConf
     let wmSolver = secSolver seConf
-    let wmm = AVW.wmmFeature logAction wmSolver archVals wmEntries wmCallback
+    let wmm = AVW.wmmFeature logAction wmSolver archVals wmEntries wmCallback (AVW.hitWmGlob wmConfig)
     let executionFeatures = wmm : fmap LCS.genericToExecutionFeature execFeatures
     res <- liftIO $ LCS.executeCrucible executionFeatures s0
-    return (memVar, res)
+    return (memVar, res, wmConfig)
 
 -- | Symbolically execute a function
 --
@@ -387,11 +390,13 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
 -- default memory model for machine code); we will almost certainly need a
 -- modified memory model.
 symbolicallyExecute
-  :: forall m sym arch binFmt w blocks args ret scope solver fs
+  :: forall m sym arch binFmt w blocks args ret scope solver fs ext
    . ( CMC.MonadThrow m
      , MonadIO m
      , LCB.IsSymInterface sym
      , LCCE.IsSyntaxExtension (DMS.MacawExt arch)
+     , ext ~ DMS.MacawExt arch
+     , LCCE.IsSyntaxExtension ext
      , DMB.BinaryLoader arch binFmt
      , DMS.SymArchConstraints arch
      , w ~ DMC.ArchAddrWidth arch
@@ -409,7 +414,7 @@ symbolicallyExecute
   -> LCF.HandleAllocator
   -> DMA.ArchitectureInfo arch
   -> DMS.GenArchVals DMS.LLVMMemory arch
-  -> SymbolicExecutionConfig
+  -> SymbolicExecutionConfig arch sym
   -> DMB.LoadedBinary arch binFmt
   -> [LCS.GenericExecutionFeature sym]
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
@@ -426,7 +431,10 @@ symbolicallyExecute
   -> Maybe FilePath
   -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
   -- will be empty
-  -> m ()
+  -> m ( LCS.GlobalVar LCLM.Mem
+       , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
+       , AVW.WMConfig
+       )
 symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI initGlobals mFsRoot = do
   let mem = DMB.memoryImage loadedBinary
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
@@ -434,5 +442,4 @@ symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary e
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
-  (_memVar, _execResult) <- simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings buildSyscallABI initGlobals mFsRoot
-  return ()
+  simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings buildSyscallABI initGlobals mFsRoot

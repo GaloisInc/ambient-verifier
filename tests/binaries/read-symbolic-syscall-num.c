@@ -4,6 +4,11 @@
 /**
  * This is a variant of read.c which relies on the syscall number being a
  * symbolic value. This serves as a regression test for issue #17.
+ *
+ * While the concrete read test has 1 expected failing goal (for failing to
+ * reach an execve), the symbolic test has 2 expected failing goals:
+ * 1. for failing to reach an execve, and
+ * 2. for having branches that do not reach the weird machine.
  */
 
 // Use a struct to force the `trusted` flag to be placed in memory immediately

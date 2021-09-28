@@ -1,5 +1,4 @@
 successful: 0
-failed: 0
-wmAddrs: [0x401000]
+failed: 2
 wmTargets: [0x401000]
 fsRoot: tests/filesystems/read

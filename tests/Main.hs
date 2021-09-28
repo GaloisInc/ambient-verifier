@@ -6,7 +6,6 @@ import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Data.ByteString as BS
 import qualified Data.Foldable as F
-import qualified Data.IORef as IORef
 import qualified Data.Set as Set
 import qualified Data.Yaml as DY
 import           GHC.Generics ( Generic )
@@ -21,12 +20,10 @@ import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier as AV
-import qualified Ambient.Verifier.WMM as AVW
 
 data ExpectedGoals =
   ExpectedGoals { successful :: Int
                 , failed :: Int
-                , wmAddrs :: Set.Set Integer
                 , wmTargets :: Set.Set Integer
                 , fsRoot :: Maybe FilePath
                 }
@@ -37,7 +34,6 @@ instance DY.FromJSON ExpectedGoals
 emptyExpectedGoals :: ExpectedGoals
 emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , failed = 0
-                                   , wmAddrs = Set.empty
                                    , wmTargets = Set.empty
                                    , fsRoot = Nothing
                                    }
@@ -81,10 +77,6 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   -- Create a problem instance; note that we are currently providing no
   -- arguments and no standard input.  The expected output file could include
   -- those things (or they could be drawn from other optional input files)
-  wmAddrsRef <- IORef.newIORef Set.empty
-  let wmmCallback = AVW.WMMCallback $ \addr st -> do
-        IORef.modifyIORef' wmAddrsRef (Set.insert addr)
-        return st
   let pinst = AV.ProgramInstance { AV.piPath = binaryFilePath
                                  , AV.piBinary = binBytes
                                  , AV.piFsRoot = fsRoot expectedResult
@@ -92,7 +84,6 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piFloatMode = AS.Real
                                  , AV.piCommandLineArguments = []
                                  , AV.piWeirdMachineEntries = fmap fromIntegral (F.toList (wmTargets expectedResult))
-                                 , AV.piWeirdMachineCallback = wmmCallback
                                  }
 
   chan <- CC.newChan
@@ -102,15 +93,11 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   CC.writeChan chan Nothing
   res <- CCA.wait logger
 
-  -- Fill in the actual Weird Machine addresses we found
-  --
   -- This is a bit odd since we are using the .expected file to specify both the
   -- expected result and the list of candidate Weird Machine targets
   -- (wmTargets), so we just copy the targets over to make the comparison work
   -- out.  Similarly, we also copy 'fsRoot' over.
-  foundWMAddrs <- IORef.readIORef wmAddrsRef
-  let res' = res { wmAddrs = foundWMAddrs
-                 , wmTargets = wmTargets expectedResult
+  let res' = res { wmTargets = wmTargets expectedResult
                  , fsRoot = fsRoot expectedResult
                  }
   TTH.assertEqual "Expected Output" expectedResult res'

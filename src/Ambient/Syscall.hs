@@ -12,6 +12,7 @@ module Ambient.Syscall (
   , SomeSyscall(..)
   , SyscallABI(..)
   , BuildSyscallABI(..)
+  , buildExecveOverride
   , exitOverride
   , getppidOverride
   , buildReadOverride
@@ -58,6 +59,30 @@ data Syscall p sym args ext ret =
 
 data SomeSyscall p sym ext =
   forall args ret . SomeSyscall (Syscall p sym args ext ret)
+
+-- | Override for the 'execve' system call.  Currently this override records
+-- that it was invoked through the 'hitExec' global, then aborts.
+--
+-- See Note [Argument and Return Widths] for a discussion on the type of the
+-- 'execve' arguments.
+callExecve :: (LCB.IsSymInterface sym)
+           => LCS.GlobalVar LCT.BoolType
+           -> sym
+           -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
+callExecve hitExec sym = do
+  LCS.writeGlobal hitExec (WI.truePred sym)
+  loc <- liftIO $ WI.getCurrentProgramLoc sym
+  liftIO $ LCB.abortExecBecause $ LCB.EarlyExit loc
+
+buildExecveOverride :: (LCB.IsSymInterface sym)
+                    => LCS.GlobalVar LCT.BoolType
+                    -> Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType 64)
+buildExecveOverride hitExec = Syscall {
+    syscallName = fromString "execve"
+  , syscallArgTypes = Ctx.empty
+  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
+  , syscallOverride = (\sym _args -> callExecve hitExec sym)
+}
 
 -- | Override for the 'exit' system call.
 --
@@ -234,10 +259,15 @@ data SyscallABI arch =
      => Map.Map Integer (SomeSyscall p sym ext)
   }
 
--- A function to construct a SyscallABI with file system and memory access
+-- A function to construct a SyscallABI with file system and memory access, as
+-- well as the ability to track whether an 'execve' call has been reached
 newtype BuildSyscallABI arch = BuildSyscallABI (
     LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
+    -- ^ File system to use in syscalls
     -> LCS.GlobalVar LCLM.Mem
+    -- ^ MemVar for the execution
+    -> LCS.GlobalVar LCT.BoolType
+    -- ^ A boolean indicating whether or not an 'execve' call has been reached
     -> SyscallABI arch
   )
 

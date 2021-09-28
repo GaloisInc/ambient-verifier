@@ -6,7 +6,8 @@
 -- Ideally, the initial and incremental code discovery logic can be maintained
 -- entirely within this module without details leaking to other subsystems.
 module Ambient.Discovery (
-  discoverFunctions
+    discoverFunctions
+  , symbolMap
   ) where
 
 import           Control.Monad.IO.Class ( MonadIO, liftIO )

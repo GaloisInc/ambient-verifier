@@ -53,6 +53,7 @@ library
                       Ambient.Verifier,
                       Ambient.Verifier.Prove,
                       Ambient.Verifier.SymbolicExecution,
+                      Ambient.Verifier.WME,
                       Ambient.Verifier.WMM
 
     -- Modules included in this library but not exported.

@@ -27,22 +27,28 @@ import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.Analysis.Postdom as LCAP
+import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.PathSatisfiability as LCSP
+import qualified Lang.Crucible.Simulator.SimError as LCSS
+import qualified What4.Interface as WI
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Discovery as ADi
 import qualified Ambient.Exception as AE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
+import qualified Ambient.Panic as AP
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier.Prove as AVP
 import qualified Ambient.Verifier.SymbolicExecution as AVS
+import qualified Ambient.Verifier.WME as AVWme
 import qualified Ambient.Verifier.WMM as AVW
 
 
@@ -78,10 +84,6 @@ data ProgramInstance =
                   -- ^ Expected entry points to Weird Machines; if execution
                   -- reaches here, a Weird Machine needs to be executed via the
                   -- 'AVW.WMMCallback'
-                  , piWeirdMachineCallback :: AVW.WMMCallback
-                  -- ^ The action to run when a Weird Machine is entered; this
-                  -- could launch a new symbolic execution process for the Weird
-                  -- Machine
                   }
 
 -- | Retrieve the named function (in its 'DMD.DiscoveryFunInfo' form) from the code
@@ -164,6 +166,56 @@ buildBindings fns hdlAlloc pinst archVals entryAddr cfg0 = do
         LCCC.SomeCFG cfg <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) fn
         return $ buildBindingFromCfg cfg handleMap
 
+-- | Extract a global predicate from an 'ExecResult'
+getGlobalPred :: ( WI.IsExprBuilder sym
+                 , LCS.RegValue sym tp ~ WI.Pred sym )
+                 => LCS.ExecResult p sym ext u
+                 -- ^ ExecResult to extract global from
+                 -> LCS.GlobalVar tp
+                 -- ^ Global predicate to lookup
+                 -> sym
+                 -> IO (WI.Pred sym)
+getGlobalPred execResult global sym =
+  case execResult of
+    LCS.AbortedResult _ res -> handleAbortedResult res
+    LCS.FinishedResult _ res ->
+      case res of
+        LCS.TotalRes gp -> return $ getPred global gp
+        LCS.PartialRes _ cond gp abortedRes -> do
+          let truePred = getPred global gp
+          falsePred <- handleAbortedResult abortedRes
+          mergeBranches cond truePred falsePred
+    LCS.TimeoutResult{} -> AP.panic AP.Verifier
+                                    "getGlobalPred"
+                                    ["Cannot get global from a timed out execution"]
+  where
+    -- Generates the predicate '(cond -> truePred) /\ (!cond -> falsePred)'
+    mergeBranches cond truePred falsePred = do
+      condTruePred <- WI.impliesPred sym cond truePred
+      notCond <- WI.notPred sym cond
+      condFalsePred <- WI.impliesPred sym notCond falsePred
+      WI.andPred sym condTruePred condFalsePred
+
+    -- Recursively process 'AbortedResult's
+    handleAbortedResult res =
+      case res of
+        LCS.AbortedExec _ gp -> return $ getPred global gp
+        LCS.AbortedBranch _ cond trueBranch falseBranch -> do
+          truePred <- handleAbortedResult trueBranch
+          falsePred <- handleAbortedResult falseBranch
+          mergeBranches cond truePred falsePred
+        LCS.AbortedExit{} -> AP.panic AP.Verifier
+                                      "getGlobalPred"
+                                      ["Cannot get global from an AbortedExit"]
+
+    -- Lookup a global and panic if it cannot be found
+    getPred glob gp =
+      case LCSG.lookupGlobal glob (gp ^. LCS.gpGlobals) of
+        Just value -> value
+        Nothing ->  AP.panic AP.Verifier
+                             "getGlobalPred"
+                             ["Could not find global"]
+
 
 -- | Verify that the given 'ProgramInstance' terminates (with the given input)
 -- without raising an error
@@ -203,11 +255,18 @@ verify logAction pinst timeoutDuration = do
       psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability sym)
       let execFeatures = [psf]
       let seConf = AVS.SymbolicExecutionConfig { AVS.secWMEntries = piWeirdMachineEntries pinst
-                                               , AVS.secWMMCallback = piWeirdMachineCallback pinst
+                                               , AVS.secWMMCallback = AVWme.wmExecutor archInfo loadedBinary hdlAlloc archVals execFeatures sym
                                                , AVS.secSolver = piSolver pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions
-      AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI buildGlobals (piFsRoot pinst)
+      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI buildGlobals (piFsRoot pinst)
+
+      -- Assert that 'execve' and weird machines were encountered in all
+      -- execution traces
+      hitExecvePred <- liftIO $ getGlobalPred execResult (AVW.hitExecveGlob wmConfig) sym
+      liftIO $ LCB.assert sym hitExecvePred (LCSS.AssertFailureSimError "execve not hit in all executions" "")
+      hitWmPred <- liftIO $ getGlobalPred execResult (AVW.hitWmGlob wmConfig) sym
+      liftIO $ LCB.assert sym hitWmPred (LCSS.AssertFailureSimError "weird machine not encountered in all executions" "")
 
       -- Prove all of the side conditions asserted during symbolic execution;
       -- these are captured in the symbolic backend (sym)

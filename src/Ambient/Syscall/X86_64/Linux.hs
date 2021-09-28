@@ -152,12 +152,13 @@ x86_64LinuxSyscallReturnRegisters ovTyp ovSim atps argRegs rtps =
 
 -- | An ABI for Linux syscalls on x86_64 processors
 x86_64LinuxSyscallABI :: AS.BuildSyscallABI DMX.X86_64
-x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar ->
+x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar hitExecve ->
   AS.SyscallABI { AS.syscallArgumentRegisters = x86_64LinuxSyscallArgumentRegisters
                 , AS.syscallNumberRegister = x86_64LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = x86_64LinuxSyscallReturnRegisters
                 , AS.syscallMapping = Map.fromList
                     [ (0, AS.SomeSyscall (AS.buildReadOverride fs memVar))
+                    , (59, AS.SomeSyscall (AS.buildExecveOverride hitExecve))
                     , (60, AS.SomeSyscall AS.exitOverride)
                     , (110, AS.SomeSyscall AS.getppidOverride) ]
                 }
