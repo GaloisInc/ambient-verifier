@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -150,15 +151,15 @@ x86_64LinuxSyscallReturnRegisters ovTyp ovSim atps argRegs rtps =
                   ["Unexpected shape of return registers"]
 
 -- | An ABI for Linux syscalls on x86_64 processors
-x86_64LinuxSyscallABI :: AS.SyscallABI DMX.X86_64
-x86_64LinuxSyscallABI =
+x86_64LinuxSyscallABI :: AS.BuildSyscallABI DMX.X86_64
+x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar ->
   AS.SyscallABI { AS.syscallArgumentRegisters = x86_64LinuxSyscallArgumentRegisters
                 , AS.syscallNumberRegister = x86_64LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = x86_64LinuxSyscallReturnRegisters
-                , AS.syscallMapping =
-                    Map.fromList [ (60, AS.SomeSyscall AS.exitOverride)
-                                 , (110, AS.SomeSyscall AS.getppidOverride)
-                                 ]
+                , AS.syscallMapping = Map.fromList
+                    [ (0, AS.SomeSyscall (AS.buildReadOverride fs memVar))
+                    , (60, AS.SomeSyscall AS.exitOverride)
+                    , (110, AS.SomeSyscall AS.getppidOverride) ]
                 }
 
 -- | Extract the value of a given register from the x86_64 argument register

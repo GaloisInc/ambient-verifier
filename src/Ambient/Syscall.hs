@@ -1,8 +1,9 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -10,8 +11,10 @@ module Ambient.Syscall (
     Syscall(..)
   , SomeSyscall(..)
   , SyscallABI(..)
+  , BuildSyscallABI(..)
   , exitOverride
   , getppidOverride
+  , buildReadOverride
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
@@ -19,11 +22,14 @@ import qualified Data.BitVector.Sized as BVS
 import qualified Data.Map.Strict as Map
 import           Data.String ( fromString )
 import qualified Data.Parameterized.Context as Ctx
+import qualified Data.Parameterized.Vector as Vector
 
 import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.LLVM.Intrinsics as LCLI
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.SimError as LCSS
 import qualified Lang.Crucible.Types as LCT
@@ -109,6 +115,61 @@ getppidOverride = Syscall {
   , syscallOverride = (\sym _args -> callGetppid sym)
   }
 
+-- | Override for the read(2) system call
+--
+-- See Note [Argument and Return Widths] for a discussion on the type of the
+-- argument and return values.
+callRead :: ( LCLM.HasLLVMAnn sym
+            , LCB.IsSymInterface sym )
+         => LCLS.LLVMFileSystem 64
+         -> LCS.GlobalVar LCLM.Mem
+         -> sym
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -- ^ File descriptor to read from
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -- ^ Pointer to buffer to read into
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -- ^ Maximum number of bytes to read
+         -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
+callRead fs memVar sym fd buf count = do
+  let ?ptrWidth = WI.knownRepr
+  -- Drop upper 32 bits from fd to create a 32 bit file descriptor
+  fd64Bv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue fd)
+  fdSplit <- liftIO $ WI.bvSplitVector sym (WI.knownNat @2) (WI.knownNat @32) fd64Bv
+  let fdReg = LCS.RegEntry LCT.knownRepr (Vector.elemAt (WI.knownNat @1) fdSplit)
+
+  -- Convert 'count' to a bitvector
+  countBv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue count)
+  let countReg = LCS.RegEntry LCT.knownRepr countBv
+
+  -- Use llvm override for read
+  let readLlvmOv = LCLI.llvmOverride_def (LCLS.readFileHandle fs)
+  resBv <- readLlvmOv memVar sym (Ctx.empty Ctx.:> fdReg Ctx.:> buf Ctx.:> countReg)
+
+  liftIO $ LCLM.llvmPointer_bv sym resBv
+
+-- | Given a filesystem and a memvar, construct an override for read(2)
+buildReadOverride :: ( LCLM.HasLLVMAnn sym
+                     , LCB.IsSymInterface sym )
+                  => LCLS.LLVMFileSystem 64
+                  -> LCS.GlobalVar LCLM.Mem
+                  -> Syscall p
+                             sym
+                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
+                                           Ctx.::> LCLM.LLVMPointerType 64
+                                           Ctx.::> LCLM.LLVMPointerType 64)
+                             ext
+                             (LCLM.LLVMPointerType 64)
+buildReadOverride fs memVar = Syscall {
+    syscallName = fromString "read"
+  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
+  , syscallOverride =
+      \sym args -> Ctx.uncurryAssignment (callRead fs memVar sym) args
+  }
+
 -------------------------------------------------------------------------------
 -- System Call ABI Specification
 -------------------------------------------------------------------------------
@@ -168,9 +229,17 @@ data SyscallABI arch =
     -- A mapping from syscall numbers to overrides
   , syscallMapping
      :: forall p sym ext
-      . (LCB.IsSymInterface sym)
+      . ( LCB.IsSymInterface sym
+        , LCLM.HasLLVMAnn sym )
      => Map.Map Integer (SomeSyscall p sym ext)
   }
+
+-- A function to construct a SyscallABI with file system and memory access
+newtype BuildSyscallABI arch = BuildSyscallABI (
+    LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
+    -> LCS.GlobalVar LCLM.Mem
+    -> SyscallABI arch
+  )
 
 {- Note [Argument and Return Widths]
 

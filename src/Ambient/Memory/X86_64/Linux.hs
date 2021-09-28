@@ -38,8 +38,7 @@ segmentBaseOffset = segmentSize `div` 2
 
 -- | Create an initialize a new memory segment
 initSegmentMemory :: ( LCB.IsSymInterface sym
-                     , LCLM.HasLLVMAnn sym
-                     , ?ptrWidth::WI.NatRepr (DMC.ArchAddrWidth DMX.X86_64) )
+                     , LCLM.HasLLVMAnn sym )
                   => sym
                   -> LCLM.MemImpl sym
                   -- ^ MemImpl to add the memory segment to
@@ -50,6 +49,7 @@ initSegmentMemory :: ( LCB.IsSymInterface sym
                         , LCLM.MemImpl sym )
                        -- ^ Updated MemImpl containing new memory segment
 initSegmentMemory sym mem0 symbol = do
+  let ?ptrWidth = WI.knownRepr
   arrayStorage <- WI.freshConstant sym (WSym.safeSymbol symbol) WI.knownRepr
   segmentSizeBV <- WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr segmentSize)
   oneByte <- WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr 1)
@@ -79,8 +79,7 @@ initSegmentMemory sym mem0 symbol = do
 -- and returns an 'InitArchSpecificGlobals' that initializes those globals
 -- and inserts them into the global variable state.
 x86_64LinuxInitGlobals
-  :: ( ?ptrWidth::WI.NatRepr 64 )
-  => LCCC.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth DMX.X86_64))
+  :: LCCC.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth DMX.X86_64))
   -- ^ Global variable for FSBASE pointer
   -> LCCC.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth DMX.X86_64))
   -- ^ Global variable for GSBASE pointer

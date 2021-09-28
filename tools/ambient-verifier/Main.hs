@@ -4,7 +4,6 @@ import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Data.ByteString as BS
 import qualified Data.Text.Encoding as TE
-import qualified Data.Traversable as DT
 import qualified Lumberjack as LJ
 import qualified Options.Applicative as OA
 import qualified Prettyprinter as PP
@@ -45,12 +44,11 @@ wmmCallback = AVW.WMMCallback $ \addr st -> do
 verify :: O.Options -> IO ()
 verify o = do
   binary <- BS.readFile (O.binaryPath o)
-  standardInput <- DT.traverse BS.readFile (O.standardInputPath o)
   -- See Note [Argument Encoding]
   let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
   let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath o
                                  , AV.piBinary = binary
-                                 , AV.piStdin = standardInput
+                                 , AV.piFsRoot = O.fsRoot o
                                  , AV.piCommandLineArguments = args
                                  , AV.piSolver = O.solver o
                                  , AV.piFloatMode = O.floatMode o

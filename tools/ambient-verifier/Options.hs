@@ -15,13 +15,9 @@ import qualified Ambient.Timeout as AT
 data Options =
   Options { binaryPath :: FilePath
           -- ^ The path to the binary to verify
-          , standardInputPath :: Maybe FilePath
-          -- ^ The path to a file that contains the standard input that should
-          -- be fed to the binary as it is being verified
-          --
-          -- If this is absent, no standard input will be provided
-          --
-          -- See Note [Future Improvements]
+          , fsRoot :: Maybe FilePath
+          -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file
+          -- system will be empty
           , commandLineArguments :: [T.Text]
           -- ^ A list of command line arguments to set up in the environment of
           -- the program (this should include argv[0] as the command name)
@@ -55,9 +51,9 @@ parser = Options <$> OA.strOption ( OA.long "binary"
                                   <> OA.metavar "FILE"
                                   <> OA.help "The path to the binary to verify"
                                   )
-                 <*> OA.optional (OA.strOption ( OA.long "stdin"
+                 <*> OA.optional (OA.strOption ( OA.long "fsroot"
                                                <> OA.metavar "FILE"
-                                               <> OA.help "The path to a file containing the stdin for the process"
+                                               <> OA.help "The path to the symbolic filesystem for the process"
                                                ))
                  <*> OA.many (OA.strOption ( OA.long "argv"
                                            <> OA.metavar "STRING"

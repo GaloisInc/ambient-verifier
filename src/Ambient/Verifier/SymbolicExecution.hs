@@ -18,6 +18,7 @@ import qualified Data.BitVector.Sized as BVS
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.List as PL
+import qualified Data.Parameterized.Map as MapF
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
 import           Data.Word ( Word64 )
@@ -40,9 +41,12 @@ import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.Intrinsics as LCLI
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
+import qualified Lang.Crucible.SymIO as LCSy
+import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Expr as WE
 import qualified What4.Interface as WI
@@ -180,6 +184,7 @@ bindOverrideHandle state hdlAlloc atps rtps ov = do
 lookupSyscall
   :: ( WI.IsExpr (WI.SymExpr sym)
      , LCB.IsSymInterface sym
+     , LCLM.HasLLVMAnn sym
      , p ~ DMS.MacawSimulatorState sym
      , ext ~ DMS.MacawExt arch )
   => sym
@@ -256,14 +261,17 @@ simulateFunction
   -- ^ Mapping from discovered function addresses to function handles
   -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
   -- ^ Function bindings to insert into the simulation context
-  -> ASy.SyscallABI arch
-  -- ^ ABI specification for system calls
+  -> ASy.BuildSyscallABI arch
+  -- ^ Function to construct an ABI specification for system calls
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
+  -> Maybe FilePath
+  -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
+  -- will be empty
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        )
-simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings syscallABI (AM.InitArchSpecificGlobals initGlobals) = do
+simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings (ASy.BuildSyscallABI buildSyscallABI) (AM.InitArchSpecificGlobals initGlobals) mFsRoot = do
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
   let regsRepr = LCT.StructRepr crucRegTypes
@@ -291,18 +299,28 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
   (mem3, globals0) <- liftIO $ initGlobals sym mem2
   let globals1 = LCSG.insertGlobal memVar mem3 globals0
   let arguments = LCS.RegMap (Ctx.singleton regsWithStack)
+
+  -- Initialize the file system
+  fileContents <- liftIO $
+    case mFsRoot of
+      Nothing -> return LCSy.emptyInitialFileSystemContents
+      Just fsRoot -> LCSL.loadInitialFiles sym fsRoot
+  (fs, globals2, LCLS.SomeOverrideSim initFSOverride) <- liftIO $
+    LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] globals1
+
   -- FIXME: We might want to add all known functions to the map here. As an
   -- alternative design, we might be able to lazily add functions as they are
   -- encountered in calls
-  let simAction = LCS.runOverrideSim regsRepr (LCS.regValue <$> LCS.callCFG cfg arguments)
+  let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
+    let syscallABI = buildSyscallABI fs memVar
     let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction archVals discoveryMem addressToFnHandle) (lookupSyscall sym syscallABI halloc) validityCheck
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
-    let ctx = LCS.initSimContext sym LCLI.llvmIntrinsicTypes halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
-    let s0 = LCS.InitialState ctx globals1 LCS.defaultAbortHandler regsRepr simAction
+    let ctx = LCS.initSimContext sym (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
+    let s0 = LCS.InitialState ctx globals2 LCS.defaultAbortHandler regsRepr simAction
 
     let wmEntries = secWMEntries seConf
     let wmCallback = secWMMCallback seConf
@@ -351,17 +369,20 @@ symbolicallyExecute
   -- ^ Mapping from discovered function addresses to function handles
   -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
   -- ^ Function bindings to insert into the simulation context
-  -> ASy.SyscallABI arch
-  -- ^ ABI specification for system calls
+  -> ASy.BuildSyscallABI arch
+  -- ^ Function to construct an ABI specification for system calls
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
+  -> Maybe FilePath
+  -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
+  -- will be empty
   -> m ()
-symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings syscallABI initGlobals = do
+symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI initGlobals mFsRoot = do
   let mem = DMB.memoryImage loadedBinary
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
-  (_memVar, _execResult) <- simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings syscallABI initGlobals
+  (_memVar, _execResult) <- simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings buildSyscallABI initGlobals mFsRoot
   return ()

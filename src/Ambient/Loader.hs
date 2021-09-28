@@ -61,7 +61,7 @@ withBinary
       . (DMB.BinaryLoader arch binFmt, 16 <= DMC.ArchAddrWidth arch, DMS.SymArchConstraints arch, mem ~ DMS.LLVMMemory)
      => DMA.ArchitectureInfo arch
      -> DMS.GenArchVals mem arch
-     -> AS.SyscallABI arch
+     -> AS.BuildSyscallABI arch
      -> AM.InitArchSpecificGlobals arch
      -> DMB.LoadedBinary arch binFmt
      -> m a)
@@ -90,7 +90,6 @@ withBinary name bytes hdlAlloc k =
                  <- DMB.loadBinary MML.defaultLoadOptions ehi
               -- Here we capture all of the necessary constraints required by the
               -- callback and pass them down along with the architecture info
-              let ?ptrWidth = WI.knownRepr
               k DMX.x86_64_linux_info
                 archVals
                 ASXL.x86_64LinuxSyscallABI

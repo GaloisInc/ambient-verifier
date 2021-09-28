@@ -88,8 +88,10 @@ withOnlineSolver solver fm ng k =
     Yices ->
       case fm of
         IEEE -> CMC.throwM (AE.UnsupportedSolverCombination (show solver) (show fm))
-        Real -> LCBO.withYicesOnlineBackend WE.FloatRealRepr ng LCBO.NoUnsatFeatures WP.noFeatures k
-        UF -> LCBO.withYicesOnlineBackend WE.FloatUninterpretedRepr ng LCBO.NoUnsatFeatures WP.noFeatures k
+        -- Without 'useSymbolicArrays' what4 attempts to generate terms that
+        -- Yices doesn't support and throws an exception
+        Real -> LCBO.withYicesOnlineBackend WE.FloatRealRepr ng LCBO.NoUnsatFeatures WP.useSymbolicArrays k
+        UF -> LCBO.withYicesOnlineBackend WE.FloatUninterpretedRepr ng LCBO.NoUnsatFeatures WP.useSymbolicArrays k
     Z3 ->
       case fm of
         IEEE -> LCBO.withZ3OnlineBackend WE.FloatIEEERepr ng LCBO.NoUnsatFeatures WP.noFeatures k

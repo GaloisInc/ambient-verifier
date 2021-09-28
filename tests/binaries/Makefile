@@ -12,5 +12,8 @@ syscall.exe: syscall.c
 fsbase.exe: fsbase.c
 	$(CC) -nostartfiles -static $< -o $@
 
+read.exe: read.c
+	$(CC) -nostartfiles -static $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static $< -o $@

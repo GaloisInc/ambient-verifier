@@ -28,6 +28,7 @@ data ExpectedGoals =
                 , failed :: Int
                 , wmAddrs :: Set.Set Integer
                 , wmTargets :: Set.Set Integer
+                , fsRoot :: Maybe FilePath
                 }
   deriving (Eq, Ord, Read, Show, Generic)
 
@@ -38,6 +39,7 @@ emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , failed = 0
                                    , wmAddrs = Set.empty
                                    , wmTargets = Set.empty
+                                   , fsRoot = Nothing
                                    }
 
 -- | A simple logger that just sends diagnostics to a channel; an asynchronous
@@ -85,7 +87,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
         return st
   let pinst = AV.ProgramInstance { AV.piPath = binaryFilePath
                                  , AV.piBinary = binBytes
-                                 , AV.piStdin = Nothing
+                                 , AV.piFsRoot = fsRoot expectedResult
                                  , AV.piSolver = AS.Yices
                                  , AV.piFloatMode = AS.Real
                                  , AV.piCommandLineArguments = []
@@ -105,10 +107,11 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   -- This is a bit odd since we are using the .expected file to specify both the
   -- expected result and the list of candidate Weird Machine targets
   -- (wmTargets), so we just copy the targets over to make the comparison work
-  -- out.
+  -- out.  Similarly, we also copy 'fsRoot' over.
   foundWMAddrs <- IORef.readIORef wmAddrsRef
   let res' = res { wmAddrs = foundWMAddrs
                  , wmTargets = wmTargets expectedResult
+                 , fsRoot = fsRoot expectedResult
                  }
   TTH.assertEqual "Expected Output" expectedResult res'
   where

@@ -57,9 +57,9 @@ data ProgramInstance =
                   , piBinary :: BS.ByteString
                   -- ^ The contents of the binary to verify, which will be
                   -- parsed and lifted into the verification IR
-                  , piStdin :: Maybe BS.ByteString
-                  -- ^ The contents to be passed to the program via standard
-                  -- input, which can be empty
+                  , piFsRoot :: Maybe FilePath
+                  -- ^ Path to the symbolic file system.  If this is 'Nothing',
+                  -- the file system will be empty.
                   , piCommandLineArguments :: [BS.ByteString]
                   -- ^ The command line arguments to pass to the program
                   --
@@ -207,7 +207,7 @@ verify logAction pinst timeoutDuration = do
                                                , AVS.secSolver = piSolver pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions
-      AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI buildGlobals
+      AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI buildGlobals (piFsRoot pinst)
 
       -- Prove all of the side conditions asserted during symbolic execution;
       -- these are captured in the symbolic backend (sym)
