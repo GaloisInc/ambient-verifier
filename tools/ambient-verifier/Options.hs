@@ -79,7 +79,7 @@ parser = Options <$> OA.strOption ( OA.long "binary"
                                )
                  <*> OA.many (OA.option OA.auto ( OA.long "weird-machine-entry"
                                                 <> OA.metavar "ADDRESS"
-                                                <> OA.help ""
+                                                <> OA.help "Specify the address of a Weird Machine that is intended to be triggered"
                                                 ))
 
 {- Note [Future Improvements]
