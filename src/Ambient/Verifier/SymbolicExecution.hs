@@ -36,6 +36,7 @@ import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.Symbolic.Memory as DMSM
 import qualified Data.Macaw.Types as DMT
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Extension as LCCE
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
@@ -48,8 +49,8 @@ import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
 import qualified Lang.Crucible.SymIO as LCSy
 import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
-import qualified What4.Expr as WE
 import qualified What4.Interface as WI
+import qualified What4.Protocol.Online as WPO
 import qualified What4.Symbol as WSym
 import qualified What4.BaseTypes as WT
 
@@ -186,7 +187,10 @@ lookupSyscall
      , LCB.IsSymInterface sym
      , LCLM.HasLLVMAnn sym
      , p ~ DMS.MacawSimulatorState sym
-     , ext ~ DMS.MacawExt arch )
+     , ext ~ DMS.MacawExt arch
+     , sym ~ LCBO.OnlineBackend scope solver fs
+     , WPO.OnlineSolver solver
+     )
   => sym
   -> ASy.SyscallABI arch
   -- ^ System call ABI specification for 'arch'
@@ -238,7 +242,8 @@ simulateFunction
      , 16 <= w
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , args ~ (LCT.EmptyCtx LCT.::> ret)
-     , sym ~ WE.ExprBuilder t st fs
+     , sym ~ LCBO.OnlineBackend scope solver fs
+     , WPO.OnlineSolver solver
      , ?memOpts :: LCLM.MemOptions
      )
   => LJ.LogAction IO AD.Diagnostic
@@ -338,7 +343,7 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
 -- default memory model for machine code); we will almost certainly need a
 -- modified memory model.
 symbolicallyExecute
-  :: forall m sym arch binFmt w blocks args ret t st fs
+  :: forall m sym arch binFmt w blocks args ret scope solver fs
    . ( CMC.MonadThrow m
      , MonadIO m
      , LCB.IsSymInterface sym
@@ -351,7 +356,8 @@ symbolicallyExecute
      , KnownNat w
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , args ~ (LCT.EmptyCtx LCT.::> ret)
-     , sym ~ WE.ExprBuilder t st fs
+     , sym ~ LCBO.OnlineBackend scope solver fs
+     , WPO.OnlineSolver solver
      , ?memOpts :: LCLM.MemOptions
      )
   => LJ.LogAction IO AD.Diagnostic
