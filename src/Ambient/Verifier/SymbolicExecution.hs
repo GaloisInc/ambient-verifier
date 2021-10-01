@@ -49,8 +49,11 @@ import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
 import qualified Lang.Crucible.SymIO as LCSy
 import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.Expr.GroundEval as WEG
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
+import qualified What4.Protocol.SMTWriter as WPS
+import qualified What4.SatResult as WSat
 import qualified What4.Symbol as WSym
 import qualified What4.BaseTypes as WT
 
@@ -186,6 +189,7 @@ lookupSyscall
   :: ( WI.IsExpr (WI.SymExpr sym)
      , LCB.IsSymInterface sym
      , LCLM.HasLLVMAnn sym
+     , DMS.SymArchConstraints arch
      , p ~ DMS.MacawSimulatorState sym
      , ext ~ DMS.MacawExt arch
      , sym ~ LCBO.OnlineBackend scope solver fs
@@ -196,38 +200,81 @@ lookupSyscall
   -- ^ System call ABI specification for 'arch'
   -> LCF.HandleAllocator
   -> DMS.LookupSyscallHandle sym arch
-lookupSyscall sym abi hdlAlloc = DMS.LookupSyscallHandle $ \atps rtps state reg -> do
-  -- Extract system call number from register state
-  syscallReg <- liftIO $ ASy.syscallNumberRegister abi sym atps reg
-  let regVal = LCS.regValue syscallReg
-  case BVS.asUnsigned <$> WI.asBV regVal of
-    Nothing -> AP.panic AP.SymbolicExecution
-                        "lookupSyscall"
-                        ["Attempted to make system call with non-concrete syscall number"]
-    Just syscallNum ->
-      -- Look for override associated with system call number
-      case Map.lookup syscallNum (ASy.syscallMapping abi) of
-        Nothing -> AP.panic AP.SymbolicExecution
-                            "lookupSyscall"
-                            [ "Failed to find override for syscall: " ++
-                              show syscallNum ]
-        Just (ASy.SomeSyscall syscall) -> do
-          -- Construct an override for the system call
-          let args = ASy.syscallArgumentRegisters abi atps reg (ASy.syscallArgTypes syscall)
-          let ov   = LCSO.mkOverride' (ASy.syscallName syscall)
-                                      (LCT.StructRepr rtps)
-                                      (ASy.syscallReturnRegisters
-                                        abi
-                                        (ASy.syscallReturnType syscall)
-                                        ((ASy.syscallOverride syscall)
-                                         sym
-                                         args)
-                                        atps
-                                        reg
-                                        rtps)
-          -- Build a function handle for the override and insert it into the
-          -- state
-          bindOverrideHandle state hdlAlloc atps rtps ov
+lookupSyscall sym abi hdlAlloc =
+  DMS.LookupSyscallHandle $ \atps rtps state reg ->
+  LCBO.withSolverProcess sym (panic ["Online solving not enabled"]) $ \proc -> do
+    -- Extract system call number from register state
+    syscallReg <- liftIO $ ASy.syscallNumberRegister abi sym atps reg
+    let regVal = LCS.regValue syscallReg
+
+    -- Resolving a syscall number as concrete requires some fancy footwork.
+    -- See Note [Resolving concrete syscall numbers].
+    regVal' <- WPO.inNewFrame proc $ do
+      msat <- WPO.checkAndGetModel proc "lookupSyscall (check with initial assumptions)"
+      model <- case msat of
+        WSat.Unknown   -> unknownPanic
+        WSat.Unsat{}   -> panic ["Initial assumptions are unsatisfiable"]
+        WSat.Sat model -> pure model
+      WEG.groundEval model regVal
+    syscallNum <- WPO.inNewFrame proc $ do
+        block <- WI.notPred sym =<< WI.bvEq sym regVal =<< WI.bvLit sym WT.knownNat regVal'
+        WPS.assume (WPO.solverConn proc) block
+        msat <- WPO.check proc "lookupSyscall (check under assumption that model cannot happen)"
+        case msat of
+          WSat.Unknown -> unknownPanic
+          WSat.Sat{}   -> panic ["Attempted to make system call with non-concrete syscall number"]
+          WSat.Unsat{} -> pure $ BVS.asUnsigned regVal'
+
+    -- Look for override associated with system call number
+    case Map.lookup syscallNum (ASy.syscallMapping abi) of
+      Nothing -> panic [ "Failed to find override for syscall: " ++
+                         show syscallNum ]
+      Just (ASy.SomeSyscall syscall) -> do
+        -- Construct an override for the system call
+        let args = ASy.syscallArgumentRegisters abi atps reg (ASy.syscallArgTypes syscall)
+        let ov   = LCSO.mkOverride' (ASy.syscallName syscall)
+                                    (LCT.StructRepr rtps)
+                                    (ASy.syscallReturnRegisters
+                                      abi
+                                      (ASy.syscallReturnType syscall)
+                                      ((ASy.syscallOverride syscall)
+                                       sym
+                                       args)
+                                      atps
+                                      reg
+                                      rtps)
+        -- Build a function handle for the override and insert it into the
+        -- state
+        bindOverrideHandle state hdlAlloc atps rtps ov
+  where
+    panic :: [String] -> a
+    panic = AP.panic AP.SymbolicExecution "lookupSyscall"
+
+    unknownPanic :: a
+    unknownPanic = panic ["Solving syscall number yielded UNKNOWN"]
+
+{-
+Note [Resolving concrete syscall numbers]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Resolving a syscall number as concrete isn't quite as straightforward as
+calling `asBV`. This is because we use the SMT array memory model, if we spill
+the value of a syscall number to the stack, then it's not directly possible to
+resolve that value as concrete. This is because the value consists of reads
+from an SMT array concatenated together.
+
+Instead of using `asBV`, we can query the SMT solver directly to figure out if
+a syscall number value is concrete or symbolic. To do so, we.
+
+1. Ask the online solver for a model of the system call number (using
+   `checkAndGetModel`), and
+2. Send a second query that forbids that model. That is, `assume` that
+   bvEq <original-syscall-num-value> <modelled-syscall-num-value> is false,
+   and then `check`.
+
+If the second step yields `Unsat`, then we have a concrete syscall number. If
+the second step yields `Sat`, however, we have a truly symbolic syscall number.
+For now, we fail when given truly symbolic syscall numbers.
+-}
 
 
 simulateFunction
