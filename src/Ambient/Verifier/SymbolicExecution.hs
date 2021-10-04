@@ -58,6 +58,7 @@ import qualified What4.Symbol as WSym
 import qualified What4.BaseTypes as WT
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Exception as AE
 import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
 import qualified Ambient.Solver as AS
@@ -212,7 +213,7 @@ lookupSyscall sym abi hdlAlloc =
     regVal' <- WPO.inNewFrame proc $ do
       msat <- WPO.checkAndGetModel proc "lookupSyscall (check with initial assumptions)"
       model <- case msat of
-        WSat.Unknown   -> unknownPanic
+        WSat.Unknown   -> CMC.throwM AE.SolverUnknownSyscallNumber
         WSat.Unsat{}   -> panic ["Initial assumptions are unsatisfiable"]
         WSat.Sat model -> pure model
       WEG.groundEval model regVal
@@ -221,14 +222,13 @@ lookupSyscall sym abi hdlAlloc =
         WPS.assume (WPO.solverConn proc) block
         msat <- WPO.check proc "lookupSyscall (check under assumption that model cannot happen)"
         case msat of
-          WSat.Unknown -> unknownPanic
-          WSat.Sat{}   -> panic ["Attempted to make system call with non-concrete syscall number"]
+          WSat.Unknown -> CMC.throwM AE.SolverUnknownSyscallNumber
+          WSat.Sat{}   -> CMC.throwM AE.SymbolicSyscallNumber
           WSat.Unsat{} -> pure $ BVS.asUnsigned regVal'
 
     -- Look for override associated with system call number
     case Map.lookup syscallNum (ASy.syscallMapping abi) of
-      Nothing -> panic [ "Failed to find override for syscall: " ++
-                         show syscallNum ]
+      Nothing -> CMC.throwM $ AE.UnsupportedSyscallNumber syscallNum
       Just (ASy.SomeSyscall syscall) -> do
         -- Construct an override for the system call
         let args = ASy.syscallArgumentRegisters abi atps reg (ASy.syscallArgTypes syscall)
@@ -249,9 +249,6 @@ lookupSyscall sym abi hdlAlloc =
   where
     panic :: [String] -> a
     panic = AP.panic AP.SymbolicExecution "lookupSyscall"
-
-    unknownPanic :: a
-    unknownPanic = panic ["Solving syscall number yielded UNKNOWN"]
 
 {-
 Note [Resolving concrete syscall numbers]

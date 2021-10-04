@@ -27,6 +27,12 @@ data AmbientException where
   MissingExpectedFunction :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> AmbientException
   -- | The requested solver and float mode representation is not supported
   UnsupportedSolverCombination :: String -> String -> AmbientException
+  -- | A symbolic syscall number could not be resolved as concrete
+  SymbolicSyscallNumber :: AmbientException
+  -- | The solver returned @UNKNOWN@ when trying to resolve a syscall number
+  SolverUnknownSyscallNumber :: AmbientException
+  -- | There is no model for this syscall number
+  UnsupportedSyscallNumber :: Integer -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -51,3 +57,9 @@ instance PP.Pretty AmbientException where
         PP.pretty "Function " <> PP.pretty (BSC.unpack fname) <> PP.pretty " was expected, but not found, at address " <> PP.pretty addr
       UnsupportedSolverCombination solver fm ->
         PP.pretty "The " <> PP.pretty solver <> PP.pretty " SMT solver does not support the " <> PP.pretty fm <> PP.pretty " floating point mode"
+      SymbolicSyscallNumber ->
+        PP.pretty "Attempted to make system call with non-concrete syscall number"
+      SolverUnknownSyscallNumber ->
+        PP.pretty "Solving syscall number yielded UNKNOWN"
+      UnsupportedSyscallNumber syscallNum ->
+        PP.pretty "Failed to find override for syscall:" PP.<+> PP.viaShow syscallNum
