@@ -1,0 +1,4 @@
+successful: 0
+failed: 0
+wmTargets: [0x401000]
+fsRoot: tests/filesystems/rop-read

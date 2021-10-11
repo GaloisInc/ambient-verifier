@@ -15,6 +15,9 @@ fsbase.exe: fsbase.c
 rop.exe: rop.c
 	$(CC) -nostartfiles -static $< -o $@
 
+rop-read.exe: rop-read.c
+	$(CC) -nostartfiles -static $< -o $@
+
 read.exe: read.c
 	$(CC) -nostartfiles -static $< -o $@
 
