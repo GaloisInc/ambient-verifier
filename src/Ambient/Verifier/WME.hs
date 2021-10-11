@@ -6,10 +6,6 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
--- GHC flags 'ids' in 'buildCfgFromAddr' as unused, even though it is necessary
--- for a local variable type declaration in a local variable binding
-{-# OPTIONS_GHC -Wno-unused-foralls #-}
-
 module Ambient.Verifier.WME (wmExecutor) where
 
 import           Control.Lens ( (^.) )
@@ -93,7 +89,7 @@ wmeReturnFeature archInfo loadedBinary hdlAlloc archVals sym = LCSEv.ExecutionFe
 
 -- | Given an address and a binary, this function builds a CFG for the function
 -- at the given address.  Returns 'Nothing' on failure.
-buildCfgFromAddr :: forall arch binFmt ids w
+buildCfgFromAddr :: forall arch binFmt w
                   . ( w ~ DMC.ArchAddrWidth arch
                     , DMB.BinaryLoader arch binFmt
                     , KnownNat w
@@ -111,7 +107,8 @@ buildCfgFromAddr :: forall arch binFmt ids w
 buildCfgFromAddr archInfo loadedBinary hdlAlloc addr symArchFns = do
   let mem = DMB.memoryImage loadedBinary
   let symMap = AD.symbolMap loadedBinary
-  let (bvAddr :: DMC.Value arch ids (DMT.BVType (DMC.RegAddrWidth (DMC.ArchReg arch)))) = DMC.CValue (DMC.BVCValue (WI.knownNat @(DMC.ArchAddrWidth arch)) addr)
+  let bvAddr :: forall ids. DMC.Value arch ids (DMT.BVType (DMC.RegAddrWidth (DMC.ArchReg arch)))
+      bvAddr = DMC.CValue (DMC.BVCValue (WI.knownNat @(DMC.ArchAddrWidth arch)) addr)
   let mOff = DMC.valueAsSegmentOff mem bvAddr
   case mOff of
     Just off -> do
