@@ -8,18 +8,21 @@ module Ambient.Diagnostic (
 
 import qualified Control.Exception as X
 import qualified Data.ByteString.Char8 as BSC
+import           Control.Lens ( (^.) )
 import qualified Data.Map as Map
 import qualified Data.Time.Clock as DTC
 import           Numeric ( showHex )
 import qualified Prettyprinter as PP
 import qualified What4.Expr as WE
 import qualified What4.Interface as WI
+import qualified What4.LabeledPred as WL
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
 
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Simulator.SimError as LCSS
 
 data Diagnostic where
   -- | Report an event from the code discovery phase
@@ -46,7 +49,7 @@ data Diagnostic where
   -- NOTE: We don't currently capture the counterexample; it would need to be
   -- fully grounded here, as the solver connection will be closed by the time we
   -- process the exception
-  DisprovedGoal :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) msg -> DTC.NominalDiffTime -> Diagnostic
+  DisprovedGoal :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) LCSS.SimError -> DTC.NominalDiffTime -> Diagnostic
   -- | Execution has reached a Weird Machine at the given address
   ExecutingWeirdMachineAt :: Integer -> Diagnostic
 
@@ -83,7 +86,9 @@ instance PP.Pretty Diagnostic where
         PP.pretty "Error while proving goal: " <> PP.viaShow exn <> PP.line
       ProvedGoal _sym _p elapsed ->
         PP.pretty "Proved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
-      DisprovedGoal _sym _p elapsed ->
-        PP.pretty "Disproved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
+      DisprovedGoal _sym p elapsed ->
+        mconcat [ PP.pretty "Disproved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
+                , PP.indent 2 (PP.viaShow (p ^. WL.labeledPredMsg)) <> PP.line
+                ]
       ExecutingWeirdMachineAt addr ->
         PP.pretty "Execution transferred to a Weird Machine at 0x" <> PP.pretty (showHex addr "") <> PP.line

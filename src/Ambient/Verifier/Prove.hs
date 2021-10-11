@@ -20,6 +20,7 @@ import qualified What4.Interface as WI
 import qualified What4.Solver as WS
 
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Simulator.SimError as LCSS
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Timeout as AT
@@ -61,7 +62,7 @@ proveOneGoal
   -- capabilities become available to avoid swamping the system
   -> LCB.Assumptions sym
   -- ^ Assumptions in scope for this goal
-  -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) msg1
+  -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) LCSS.SimError
   -- ^ The goal to prove
   -> AT.Timeout
   -- ^ The solver timeout for proving the goal
