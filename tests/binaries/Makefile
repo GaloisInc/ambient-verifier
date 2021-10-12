@@ -21,6 +21,9 @@ rop-read.exe: rop-read.c
 read.exe: read.c
 	$(CC) -nostartfiles -static $< -o $@
 
+read-musl.exe: read-musl.c
+	musl-gcc -nostartfiles -static $< -o $@
+
 read-symbolic-syscall-num.exe: read-symbolic-syscall-num.c
 	$(CC) -nostartfiles -static $< -o $@
 
