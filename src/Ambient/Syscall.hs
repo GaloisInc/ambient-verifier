@@ -16,6 +16,7 @@ module Ambient.Syscall (
   , exitOverride
   , getppidOverride
   , buildReadOverride
+  , buildWriteOverride
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
@@ -193,6 +194,65 @@ buildReadOverride fs memVar = Syscall {
   , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
   , syscallOverride =
       \sym args -> Ctx.uncurryAssignment (callRead fs memVar sym) args
+  }
+
+-- | The memory options used to configure the memory model for system calls
+--
+-- We use the most lax memory options possible, as machine code breaks many of
+-- the C-level rules.
+syscallMemOptions :: LCLM.MemOptions
+syscallMemOptions = LCLM.laxPointerMemOptions
+
+-- | Override for the write(2) system call
+callWrite :: ( LCLM.HasLLVMAnn sym
+             , LCB.IsSymInterface sym )
+          => LCLS.LLVMFileSystem 64
+          -> LCS.GlobalVar LCLM.Mem
+          -> sym
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+          -- ^ File descriptor to write to
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+          -- ^ Pointer to buffer to read from
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+          -- ^ Number of bytes to write
+          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
+callWrite fs memVar sym fd buf count = do
+  let ?ptrWidth = WI.knownRepr
+  let ?memOpts = syscallMemOptions
+  -- Drop upper 32 bits from fd to create a 32 bit file descriptor
+  fd64Bv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue fd)
+  fdSplit <- liftIO $ WI.bvSplitVector sym (WI.knownNat @2) (WI.knownNat @32) fd64Bv
+  let fdReg = LCS.RegEntry LCT.knownRepr (Vector.elemAt (WI.knownNat @1) fdSplit)
+
+  -- Convert 'count' to a bitvector
+  countBv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue count)
+  let countReg = LCS.RegEntry LCT.knownRepr countBv
+
+  -- Use the llvm override for write
+  let writeLlvmOv = LCLI.llvmOverride_def (LCLS.writeFileHandle fs)
+  resBv <- writeLlvmOv memVar sym (Ctx.empty Ctx.:> fdReg Ctx.:> buf Ctx.:> countReg)
+
+  liftIO $ LCLM.llvmPointer_bv sym resBv
+
+buildWriteOverride :: ( LCLM.HasLLVMAnn sym
+                     , LCB.IsSymInterface sym )
+                   => LCLS.LLVMFileSystem 64
+                   -> LCS.GlobalVar LCLM.Mem
+                   -> Syscall p
+                             sym
+                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
+                                           Ctx.::> LCLM.LLVMPointerType 64
+                                           Ctx.::> LCLM.LLVMPointerType 64)
+                             ext
+                             (LCLM.LLVMPointerType 64)
+buildWriteOverride fs memVar = Syscall {
+    syscallName = fromString "write"
+  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
+  , syscallOverride =
+      \sym args -> Ctx.uncurryAssignment (callWrite fs memVar sym) args
   }
 
 -------------------------------------------------------------------------------

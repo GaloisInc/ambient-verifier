@@ -158,9 +158,11 @@ x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar hitExecve ->
                 , AS.syscallReturnRegisters = x86_64LinuxSyscallReturnRegisters
                 , AS.syscallMapping = Map.fromList
                     [ (0, AS.SomeSyscall (AS.buildReadOverride fs memVar))
+                    , (1, AS.SomeSyscall (AS.buildWriteOverride fs memVar))
                     , (59, AS.SomeSyscall (AS.buildExecveOverride hitExecve))
                     , (60, AS.SomeSyscall AS.exitOverride)
-                    , (110, AS.SomeSyscall AS.getppidOverride) ]
+                    , (110, AS.SomeSyscall AS.getppidOverride)
+                    ]
                 }
 
 -- | Extract the value of a given register from the x86_64 argument register

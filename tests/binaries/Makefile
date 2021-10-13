@@ -21,6 +21,9 @@ rop-read.exe: rop-read.c
 read.exe: read.c
 	$(CC) -nostartfiles -static $< -o $@
 
+write.exe: write.c
+	$(CC) -nostartfiles -static $< -o $@
+
 read-musl.exe: read-musl.c
 	musl-gcc -nostartfiles -static $< -o $@
 
