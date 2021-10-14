@@ -21,6 +21,8 @@ module Ambient.FunctionOverride (
   , hackyFreeOverride
   , hackyGdErrorExOverride
   , hackyPrintfOverride
+  , buildHackyBumpMallocOverride
+  , buildHackyBumpCallocOverride
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
@@ -28,6 +30,7 @@ import qualified Data.BitVector.Sized as BVS
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 
+import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
@@ -121,6 +124,73 @@ callMalloc sym mvar (LCS.regValue -> sz) =
 -- These are crude overrides that are primarily meant as a shortcut to getting
 -- something to work. We should replace these with proper solutions later.
 -- See #19 for one possible way to do this.
+
+hackyBumpMalloc :: LCB.IsSymInterface sym
+                => sym
+                -> LCS.GlobalVar (LCLM.LLVMPointerType 64)
+                -- ^ Global pointing to end of heap bump allocation
+                -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+                -- ^ The number of bytes to allocate
+                -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
+hackyBumpMalloc sym endGlob (LCS.regValue -> sz) = do
+  szBv <- liftIO $ LCLM.projectLLVM_bv sym sz
+  LCS.modifyGlobal endGlob $ \endPtr -> liftIO $ do
+    -- Bump up end pointer
+    endPtr' <- LCLM.ptrSub sym (LCT.knownNat @64) endPtr szBv
+    return (endPtr', endPtr')
+
+buildHackyBumpMallocOverride
+  :: LCB.IsSymInterface sym
+  => LCS.GlobalVar (LCLM.LLVMPointerType 64)
+  -- ^ Global pointing to end of heap bump allocation
+  -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64) ext
+                                              (LCLM.LLVMPointerType 64)
+buildHackyBumpMallocOverride endGlob = FunctionOverride
+  { functionName = "malloc"
+  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+  , functionReturnType = LCLM.LLVMPointerRepr LCT.knownNat
+  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyBumpMalloc sym endGlob) args
+  }
+
+hackyBumpCalloc :: (LCB.IsSymInterface sym, LCLM.HasLLVMAnn sym)
+                => sym
+                -> LCS.GlobalVar (LCLM.LLVMPointerType 64)
+                -- ^ Global pointing to end of heap bump allocation
+                -> LCS.GlobalVar LCLM.Mem
+                -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+                -- ^ The number of elements in the array
+                -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+                -- ^ The number of bytes to allocate
+                -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
+hackyBumpCalloc sym endGlob memVar (LCS.regValue -> num) (LCS.regValue -> sz) = do
+  let ?ptrWidth = LCT.knownNat @64
+  LCS.modifyGlobal endGlob $ \endPtr -> do
+    res <- LCS.modifyGlobal memVar $ \mem -> liftIO $ do
+      -- Bump up end pointer
+      numBV <- LCLM.projectLLVM_bv sym num
+      szBV  <- LCLM.projectLLVM_bv sym sz
+      allocSzBv <- WI.bvMul sym numBV szBV
+      endPtr' <- LCLM.ptrSub sym (LCT.knownNat @64) endPtr allocSzBv
+
+      -- Zero memory
+      zero <- WI.bvLit sym WI.knownNat (BVS.zero WI.knownNat)
+      mem' <- LCLM.doMemset sym LCT.knownNat mem endPtr' zero allocSzBv
+      return (endPtr', mem')
+    return (res, res)
+
+buildHackyBumpCallocOverride
+  :: (LCB.IsSymInterface sym, LCLM.HasLLVMAnn sym)
+  => LCS.GlobalVar (LCLM.LLVMPointerType 64)
+  -> LCS.GlobalVar LCLM.Mem
+  -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
+                                          Ctx.::> LCLM.LLVMPointerType 64) ext
+                            (LCLM.LLVMPointerType 64)
+buildHackyBumpCallocOverride endGlob memVar = FunctionOverride
+  { functionName = "calloc"
+  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr (LCT.knownNat @64) Ctx.:> LCLM.LLVMPointerRepr (LCT.knownNat @64)
+  , functionReturnType = LCLM.LLVMPointerRepr (LCT.knownNat @64)
+  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyBumpCalloc sym endGlob memVar) args
+  }
 
 -- | Mock @free@ by doing nothing.
 hackyFreeOverride :: LCB.IsSymInterface sym
@@ -231,7 +301,8 @@ data FunctionABI arch =
 
 -- A function to construct a FunctionABI with memory access
 newtype BuildFunctionABI arch = BuildFunctionABI (
-    LCS.GlobalVar LCLM.Mem
+       LCS.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth arch))
+    -> LCS.GlobalVar LCLM.Mem
     -- ^ MemVar for the execution
     -> FunctionABI arch
   )

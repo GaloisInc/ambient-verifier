@@ -73,15 +73,15 @@ x86_64LinuxIntegerReturnRegisters ovTyp ovSim initRegs =
     -- need to add support for that here
 
 x86_64LinuxFunctionABI :: AF.BuildFunctionABI DMX.X86_64
-x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \memVar ->
+x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ->
   AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
                  , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
                  , AF.functionNameMapping = Map.fromList $
                      map (\sfo@(AF.SomeFunctionOverride fo) -> (AF.functionName fo, sfo))
-                         [ AF.SomeFunctionOverride (AF.buildCallocOverride memVar)
-                         , AF.SomeFunctionOverride (AF.buildMallocOverride memVar)
                            -- Hacky overrides
                            -- TODO: Remove these (see #19)
+                         [ AF.SomeFunctionOverride (AF.buildHackyBumpMallocOverride bumpEndVar)
+                         , AF.SomeFunctionOverride (AF.buildHackyBumpCallocOverride bumpEndVar memVar)
                          , AF.SomeFunctionOverride AF.hackyFreeOverride
                          , AF.SomeFunctionOverride AF.hackyGdErrorExOverride
                          , AF.SomeFunctionOverride AF.hackyPrintfOverride

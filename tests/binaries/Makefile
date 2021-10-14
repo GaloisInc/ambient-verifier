@@ -33,5 +33,8 @@ read-musl.exe: read-musl.c
 read-symbolic-syscall-num.exe: read-symbolic-syscall-num.c
 	$(CC) -nostartfiles -static $< -o $@
 
+alloc.exe: alloc.c
+	musl-gcc -nostartfiles -static $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static $< -o $@

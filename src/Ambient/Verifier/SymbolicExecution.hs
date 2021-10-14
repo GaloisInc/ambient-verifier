@@ -87,6 +87,10 @@ stackSize = 2 * 1024 * 1024
 stackOffset :: Integer
 stackOffset = stackSize `div` 2
 
+-- | Heap size in bytes
+heapSize :: Integer
+heapSize = 2 * 1024 * 1024 * 1024
+
 mkInitialRegVal
   :: (LCB.IsSymInterface sym, DMT.HasRepr (DMC.ArchReg arch) DMT.TypeRepr)
   => DMS.MacawSymbolicArchFunctions arch
@@ -400,9 +404,18 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
   let initialRegsEntry = LCS.RegEntry regsRepr initialRegs
   let regsWithStack = DMS.updateReg archVals initialRegsEntry DMC.sp_reg sp
 
+  -- Initialize heap memory
+  heapSizeBv <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr heapSize)
+  (heapBasePtr, mem3) <- liftIO $ LCLM.doMalloc sym LCLM.HeapAlloc LCLM.Mutable "<malloc bump>" mem2 heapSizeBv LCLD.noAlignment
+  heapEndPtr <- liftIO $ LCLM.ptrAdd sym WI.knownRepr heapBasePtr heapSizeBv
+  heapEndGlob <- liftIO $ LCCC.freshGlobalVar halloc
+                                              (DT.pack "heapFreeEnd")
+                                              (LCLM.LLVMPointerRepr WI.knownNat)
+
   memVar <- liftIO $ LCLM.mkMemVar (DT.pack "ambient-verifier::memory") halloc
-  (mem3, globals0) <- liftIO $ initGlobals sym mem2
-  let globals1 = LCSG.insertGlobal memVar mem3 globals0
+  (mem4, globals0) <- liftIO $ initGlobals sym mem3
+  let globals1 = LCSG.insertGlobal memVar mem4 $
+                 LCSG.insertGlobal heapEndGlob heapEndPtr globals0
   let arguments = LCS.RegMap (Ctx.singleton regsWithStack)
 
   -- Initialize the file system
@@ -422,7 +435,7 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
     let syscallABI = buildSyscallABI fs memVar (AVW.wmProperties wmConfig)
-    let functionABI = buildFunctionABI memVar
+    let functionABI = buildFunctionABI heapEndGlob memVar
     let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction sym archVals discoveryMem addressToFnHandle functionABI halloc) (lookupSyscall sym syscallABI halloc) validityCheck
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
