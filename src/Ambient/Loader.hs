@@ -35,6 +35,8 @@ import qualified PE.Parser as PE
 import qualified What4.Interface as WI
 
 import qualified Ambient.Exception as AE
+import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.FunctionOverride.X86_64.Linux as AFXL
 import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.X86_64.Linux as AMXL
 import qualified Ambient.Syscall as AS
@@ -62,6 +64,7 @@ withBinary
      => DMA.ArchitectureInfo arch
      -> DMS.GenArchVals mem arch
      -> AS.BuildSyscallABI arch
+     -> AF.BuildFunctionABI arch
      -> AM.InitArchSpecificGlobals arch
      -> DMB.LoadedBinary arch binFmt
      -> m a)
@@ -93,6 +96,7 @@ withBinary name bytes hdlAlloc k =
               k DMX.x86_64_linux_info
                 archVals
                 ASXL.x86_64LinuxSyscallABI
+                AFXL.x86_64LinuxFunctionABI
                 (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
                 lb
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_X86_64 DE.ELFCLASS64)

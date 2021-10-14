@@ -86,6 +86,17 @@ data ProgramInstance =
                   -- 'AVW.WMMCallback'
                   }
 
+-- | Retrieve a mapping from symbol names to addresses from code discovery
+-- information.
+getSymbolNameToAddrMapping
+  :: DMD.DiscoveryState arch
+  -> Map.Map BSC.ByteString
+             (DMM.MemSegmentOff (DMC.RegAddrWidth (DMC.ArchReg arch)))
+getSymbolNameToAddrMapping discoveryState =
+  Map.fromList [ (name, addr)
+               | (addr, name) <- Map.toList (DMD.symbolNames discoveryState)
+               ]
+
 -- | Retrieve the named function (in its 'DMD.DiscoveryFunInfo' form) from the code
 -- discovery information.  Returns a pair containing the address of the named
 -- function, as well as the named function.
@@ -104,9 +115,7 @@ getNamedFunction
   -> m (DMM.MemSegmentOff w, (Some (DMD.DiscoveryFunInfo arch)))
 getNamedFunction discoveryState fname = do
   let entryPointName = BSC.pack fname
-  let symbolNamesToAddrs = Map.fromList [ (name, addr)
-                                        | (addr, name) <- Map.toList (DMD.symbolNames discoveryState)
-                                        ]
+  let symbolNamesToAddrs = getSymbolNameToAddrMapping discoveryState
   case Map.lookup entryPointName symbolNamesToAddrs of
     Nothing -> CMC.throwM (AE.MissingExpectedSymbol entryPointName)
     Just entryAddr
@@ -235,7 +244,7 @@ verify logAction pinst timeoutDuration = do
   hdlAlloc <- liftIO LCF.newHandleAllocator
   -- Load up the binary, which existentially introduces the architecture of the
   -- binary in the context of the continuation
-  AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc $ \archInfo archVals syscallABI buildGlobals loadedBinary -> DMA.withArchConstraints archInfo $ do
+  AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc $ \archInfo archVals syscallABI functionABI buildGlobals loadedBinary -> DMA.withArchConstraints archInfo $ do
     discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
     -- See Note [Entry Point] for more details
     (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState "main"
@@ -259,7 +268,7 @@ verify logAction pinst timeoutDuration = do
                                                , AVS.secSolver = piSolver pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions
-      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI buildGlobals (piFsRoot pinst)
+      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI functionABI buildGlobals (piFsRoot pinst)
 
       -- Assert that 'execve' and weird machines were encountered in all
       -- execution traces

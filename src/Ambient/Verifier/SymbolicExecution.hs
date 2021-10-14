@@ -42,6 +42,7 @@ import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.Intrinsics as LCLI
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
@@ -59,6 +60,7 @@ import qualified What4.BaseTypes as WT
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Exception as AE
+import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
 import qualified Ambient.Solver as AS
@@ -112,46 +114,93 @@ mkInitialRegVal symArchFns sym r = do
 -- NOTE: This currently only works for concrete function addresses, but once
 -- https://github.com/GaloisInc/crucible/pull/615 lands, we should update it to
 -- return a mux of all possible targets.
-lookupFunction :: forall sym arch w args ret
+lookupFunction :: forall sym arch p ext w scope solver fs args ret
    . ( LCB.IsSymInterface sym
-     , LCCE.IsSyntaxExtension (DMS.MacawExt arch)
+     , LCLM.HasLLVMAnn sym
+     , LCCE.IsSyntaxExtension ext
      , DMS.SymArchConstraints arch
+     , sym ~ LCBO.OnlineBackend scope solver fs
+     , p ~ DMS.MacawSimulatorState sym
+     , ext ~ DMS.MacawExt arch
      , w ~ DMC.ArchAddrWidth arch
      , args ~ (LCT.EmptyCtx LCT.::>
                LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
-   => DMS.GenArchVals DMS.LLVMMemory arch
+   => sym
+   -> DMS.GenArchVals DMS.LLVMMemory arch
    -> DMM.Memory w
    -- ^ Memory from function discovery
    -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
    -- ^ Mapping from function addresses to function handles
+   -> AF.FunctionABI arch
+   -- ^ Function call ABI specification for 'arch'
+   -> LCF.HandleAllocator
    -> DMS.LookupFunctionHandle sym arch
-lookupFunction archVals discoveryMem addressToFnHandle = DMS.LookupFunctionHandle $ \s _mem regs -> do
-  let symArchFns = DMS.archFunctions archVals
-  let crucRegTypes = DMS.crucArchRegTypes symArchFns
-  let regsRepr = LCT.StructRepr crucRegTypes
-  let regsEntry = LCS.RegEntry regsRepr regs
-  -- Extract instruction pointer value and look the address up in
-  -- 'addressToFnHandle'
-  case LCS.regValue (DMS.lookupReg archVals regsEntry DMC.ip_reg) of
-    LCLM.LLVMPointer _ offset ->
+lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
+  DMS.LookupFunctionHandle $ \state _mem regs -> do
+    let symArchFns = DMS.archFunctions archVals
+    let crucRegTypes = DMS.crucArchRegTypes symArchFns
+    let regsRepr = LCT.StructRepr crucRegTypes
+    let regsEntry = LCS.RegEntry regsRepr regs
+    -- Extract instruction pointer value and look the address up in
+    -- 'addressToFnHandle'
+    let offset = LCLMP.llvmPointerOffset $ LCS.regValue
+                                         $ DMS.lookupReg archVals regsEntry DMC.ip_reg
+    funcAddr <- offsetAsFuncAddr offset
+    funcAddrOff <- resolveFuncAddr funcAddr
+    handle  <- lookupFuncAddrOff funcAddrOff
+
+    -- If we have an override for a certain function name, construct a function
+    -- handle for that override. Otherwise, return the supplied function handle
+    -- unchanged.
+    case Map.lookup (LCF.handleName handle) (AF.functionNameMapping abi) of
+      Nothing -> pure (handle, state)
+      Just (AF.SomeFunctionOverride (fnOverride :: AF.FunctionOverride p sym fnArgs ext fnRet)) -> do
+        -- Construct an override for the function
+        let args :: Ctx.Assignment (LCS.RegEntry sym) fnArgs
+            args = AF.functionIntegerArgumentRegisters abi (AF.functionArgTypes fnOverride) regs
+
+        let retOV :: forall r
+                   . LCSO.OverrideSim p sym ext r args ret
+                                     (Ctx.Assignment (LCS.RegValue' sym)
+                                                     (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
+            retOV = AF.functionIntegerReturnRegisters abi
+                                                      (AF.functionReturnType fnOverride)
+                                                      (AF.functionOverride fnOverride sym args)
+                                                      regs
+
+        let ov :: LCSO.Override p sym ext args ret
+            ov = LCSO.mkOverride' (AF.functionName fnOverride) regsRepr retOV
+
+        -- Build a function handle for the override and insert it into the
+        -- state
+        bindOverrideHandle state hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
+  where
+    offsetAsFuncAddr :: WI.SymBV sym w -> IO (DMME.MemWord w)
+    offsetAsFuncAddr offset =
       case BVS.asUnsigned <$> WI.asBV offset of
         Nothing -> AP.panic AP.SymbolicExecution
                             "lookupFunction"
                             ["Attempted to call function with non-concrete address"]
-        Just funcAddr ->
-          case DMM.resolveRegionOff discoveryMem 0 (fromIntegral funcAddr) of
-            Nothing -> AP.panic AP.SymbolicExecution
-                                "lookupFunction"
-                                ["Failed to resolve function address"]
-            Just funcAddrOff ->
-              case Map.lookup funcAddrOff addressToFnHandle of
-                -- TODO: Rather than panicking, we should re-run code discovery
-                -- to attempt to locate the function (see issue #13)
-                Nothing -> AP.panic AP.SymbolicExecution
-                                    "lookupFunction"
-                                    ["Failed to find function in function handle mapping"]
-                Just handle -> return (handle, s)
+        Just funcAddr -> pure $ fromIntegral funcAddr
+
+    resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
+    resolveFuncAddr funcAddr =
+      case DMM.resolveRegionOff discoveryMem 0 (fromIntegral funcAddr) of
+        Nothing -> AP.panic AP.SymbolicExecution
+                            "lookupFunction"
+                            ["Failed to resolve function address"]
+        Just funcAddrOff -> pure funcAddrOff
+
+    lookupFuncAddrOff :: DMM.MemSegmentOff w -> IO (LCF.FnHandle args ret)
+    lookupFuncAddrOff funcAddrOff =
+      case Map.lookup funcAddrOff addressToFnHandle of
+        -- TODO: Rather than panicking, we should re-run code discovery
+        -- to attempt to locate the function (see issue #13)
+        Nothing -> AP.panic AP.SymbolicExecution
+                            "lookupFunction"
+                            ["Failed to find function in function handle mapping"]
+        Just handle -> pure handle
 
 -- | This function builds a function handle for an override and inserts it into
 -- a state's function bindings
@@ -187,7 +236,8 @@ bindOverrideHandle state hdlAlloc atps rtps ov = do
 -- | This function is used to generate a function handle for an override once a
 -- syscall is encountered
 lookupSyscall
-  :: ( WI.IsExpr (WI.SymExpr sym)
+  :: forall sym arch p ext scope solver fs
+   . ( WI.IsExpr (WI.SymExpr sym)
      , LCB.IsSymInterface sym
      , LCLM.HasLLVMAnn sym
      , DMS.SymArchConstraints arch
@@ -202,7 +252,7 @@ lookupSyscall
   -> LCF.HandleAllocator
   -> DMS.LookupSyscallHandle sym arch
 lookupSyscall sym abi hdlAlloc =
-  DMS.LookupSyscallHandle $ \atps rtps state reg ->
+  DMS.LookupSyscallHandle $ \(atps :: LCT.CtxRepr atps) (rtps :: LCT.CtxRepr rtps) state reg ->
   LCBO.withSolverProcess sym (panic ["Online solving not enabled"]) $ \proc -> do
     -- Extract system call number from register state
     syscallReg <- liftIO $ ASy.syscallNumberRegister abi sym atps reg
@@ -229,20 +279,23 @@ lookupSyscall sym abi hdlAlloc =
     -- Look for override associated with system call number
     case Map.lookup syscallNum (ASy.syscallMapping abi) of
       Nothing -> CMC.throwM $ AE.UnsupportedSyscallNumber syscallNum
-      Just (ASy.SomeSyscall syscall) -> do
+      Just (ASy.SomeSyscall (syscall :: ASy.Syscall p sym args ext ret)) -> do
         -- Construct an override for the system call
-        let args = ASy.syscallArgumentRegisters abi atps reg (ASy.syscallArgTypes syscall)
-        let ov   = LCSO.mkOverride' (ASy.syscallName syscall)
-                                    (LCT.StructRepr rtps)
-                                    (ASy.syscallReturnRegisters
-                                      abi
-                                      (ASy.syscallReturnType syscall)
-                                      ((ASy.syscallOverride syscall)
-                                       sym
-                                       args)
-                                      atps
-                                      reg
-                                      rtps)
+        let args :: Ctx.Assignment (LCS.RegEntry sym) args
+            args = ASy.syscallArgumentRegisters abi atps reg (ASy.syscallArgTypes syscall)
+
+        let retOV :: forall r
+                   . LCSO.OverrideSim p sym ext r atps (LCT.StructType rtps)
+                                      (Ctx.Assignment (LCS.RegValue' sym) rtps)
+            retOV = ASy.syscallReturnRegisters abi
+                                               (ASy.syscallReturnType syscall)
+                                               (ASy.syscallOverride syscall sym args)
+                                               atps reg rtps
+
+        let ov :: LCSO.Override p sym ext atps (LCT.StructType rtps)
+            ov = LCSO.mkOverride' (ASy.syscallName syscall)
+                                  (LCT.StructRepr rtps) retOV
+
         -- Build a function handle for the override and insert it into the
         -- state
         bindOverrideHandle state hdlAlloc atps rtps ov
@@ -312,6 +365,8 @@ simulateFunction
   -- ^ Function bindings to insert into the simulation context
   -> ASy.BuildSyscallABI arch
   -- ^ Function to construct an ABI specification for system calls
+  -> AF.BuildFunctionABI arch
+  -- ^ Function to construct an ABI specification for function calls
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
   -> Maybe FilePath
@@ -321,7 +376,7 @@ simulateFunction
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings (ASy.BuildSyscallABI buildSyscallABI) (AM.InitArchSpecificGlobals initGlobals) mFsRoot = do
+simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI) (AM.InitArchSpecificGlobals initGlobals) mFsRoot = do
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
   let regsRepr = LCT.StructRepr crucRegTypes
@@ -367,7 +422,8 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
     let syscallABI = buildSyscallABI fs memVar (AVW.hitExecveGlob wmConfig)
-    let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction archVals discoveryMem addressToFnHandle) (lookupSyscall sym syscallABI halloc) validityCheck
+    let functionABI = buildFunctionABI memVar
+    let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction sym archVals discoveryMem addressToFnHandle functionABI halloc) (lookupSyscall sym syscallABI halloc) validityCheck
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
@@ -426,6 +482,8 @@ symbolicallyExecute
   -- ^ Function bindings to insert into the simulation context
   -> ASy.BuildSyscallABI arch
   -- ^ Function to construct an ABI specification for system calls
+  -> AF.BuildFunctionABI arch
+  -- ^ Function to construct an ABI specification for function calls
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
   -> Maybe FilePath
@@ -435,11 +493,11 @@ symbolicallyExecute
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI initGlobals mFsRoot = do
+symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI initGlobals mFsRoot = do
   let mem = DMB.memoryImage loadedBinary
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
-  simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings buildSyscallABI initGlobals mFsRoot
+  simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI initGlobals mFsRoot
