@@ -9,15 +9,16 @@ module Ambient.Verifier (
   , verify
   ) where
 
+import qualified Control.Exception as X
 import           Control.Lens ( (^.) )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
-import           Data.Word ( Word64 )
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
 
@@ -36,14 +37,18 @@ import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.PathSatisfiability as LCSP
 import qualified Lang.Crucible.Simulator.SimError as LCSS
+import qualified Lang.Crucible.Simulator.SymSequence as LCSS
 import qualified What4.Interface as WI
+import qualified What4.Partial as WP
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Discovery as ADi
+import qualified Ambient.EventTrace as AEt
 import qualified Ambient.Exception as AE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
 import qualified Ambient.Panic as AP
+import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier.Prove as AVP
@@ -80,10 +85,8 @@ data ProgramInstance =
                   -- goals
                   , piFloatMode :: AS.FloatMode
                   -- ^ The interpretation of floating point operations in SMT
-                  , piWeirdMachineEntries :: [Word64]
-                  -- ^ Expected entry points to Weird Machines; if execution
-                  -- reaches here, a Weird Machine needs to be executed via the
-                  -- 'AVW.WMMCallback'
+                  , piProperties :: [APD.Property APD.StateID]
+                  -- ^ A property to verify that the program satisfies
                   }
 
 -- | Retrieve a mapping from symbol names to addresses from code discovery
@@ -175,55 +178,95 @@ buildBindings fns hdlAlloc pinst archVals entryAddr cfg0 = do
         LCCC.SomeCFG cfg <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) fn
         return $ buildBindingFromCfg cfg handleMap
 
--- | Extract a global predicate from an 'ExecResult'
-getGlobalPred :: ( WI.IsExprBuilder sym
-                 , LCS.RegValue sym tp ~ WI.Pred sym )
-                 => LCS.ExecResult p sym ext u
-                 -- ^ ExecResult to extract global from
-                 -> LCS.GlobalVar tp
-                 -- ^ Global predicate to lookup
-                 -> sym
-                 -> IO (WI.Pred sym)
-getGlobalPred execResult global sym =
+-- | Extract the final value from a global variable
+--
+-- This is slightly tricky, as it needs to handle the various termination and
+-- branch abort conditions. Briefly, the resulting value is conditionally valid
+-- on all of the branches that did not abort, so there is some mux tree
+-- structure to capture that validity.
+getFinalGlobal
+  :: (WI.IsExprBuilder sym)
+  => sym
+  -> (WI.SymExpr sym WI.BaseBoolType -> LCS.RegValue sym tp -> LCS.RegValue sym tp -> IO (LCS.RegValue sym tp))
+  -> LCS.GlobalVar tp
+  -> LCS.ExecResult p sym ext u
+  -> IO (LCS.RegValue sym tp)
+getFinalGlobal _sym mergeBranches global execResult =
   case execResult of
     LCS.AbortedResult _ res -> handleAbortedResult res
     LCS.FinishedResult _ res ->
       case res of
-        LCS.TotalRes gp -> return $ getPred global gp
+        LCS.TotalRes gp -> return (getValue global gp)
         LCS.PartialRes _ cond gp abortedRes -> do
-          let truePred = getPred global gp
-          falsePred <- handleAbortedResult abortedRes
-          mergeBranches cond truePred falsePred
-    LCS.TimeoutResult{} -> AP.panic AP.Verifier
-                                    "getGlobalPred"
-                                    ["Cannot get global from a timed out execution"]
+          let value = getValue global gp
+          onAbort <- handleAbortedResult abortedRes
+          mergeBranches cond value onAbort
+    LCS.TimeoutResult {} -> X.throwIO AE.ExecutionTimeout
   where
-    -- Generates the predicate '(cond -> truePred) /\ (!cond -> falsePred)'
-    mergeBranches cond truePred falsePred = do
-      condTruePred <- WI.impliesPred sym cond truePred
-      notCond <- WI.notPred sym cond
-      condFalsePred <- WI.impliesPred sym notCond falsePred
-      WI.andPred sym condTruePred condFalsePred
-
-    -- Recursively process 'AbortedResult's
     handleAbortedResult res =
       case res of
-        LCS.AbortedExec _ gp -> return $ getPred global gp
-        LCS.AbortedBranch _ cond trueBranch falseBranch -> do
-          truePred <- handleAbortedResult trueBranch
-          falsePred <- handleAbortedResult falseBranch
-          mergeBranches cond truePred falsePred
-        LCS.AbortedExit{} -> AP.panic AP.Verifier
-                                      "getGlobalPred"
-                                      ["Cannot get global from an AbortedExit"]
+        LCS.AbortedExec _ gp -> return (getValue global gp)
+        LCS.AbortedBranch _ cond onOK onAbort -> do
+          okVal <- handleAbortedResult onOK
+          abortVal <- handleAbortedResult onAbort
+          mergeBranches cond okVal abortVal
+        LCS.AbortedExit {} -> AP.panic AP.Verifier "getFinalGlobal" ["Cannot get global from an AbortedExit"]
 
-    -- Lookup a global and panic if it cannot be found
-    getPred glob gp =
+    getValue glob gp =
       case LCSG.lookupGlobal glob (gp ^. LCS.gpGlobals) of
         Just value -> value
-        Nothing ->  AP.panic AP.Verifier
-                             "getGlobalPred"
-                             ["Could not find global"]
+        Nothing -> AP.panic AP.Verifier "getFinalGlobal" ["Could not find expected global"]
+
+-- | Extract the trace and assert that the last state is an accept state (along all branches)
+--
+-- The verification condition is that the final state is at least one of the
+-- accept states and definitely not one of the non-accept states.
+assertPropertySatisfied
+  :: ( LCB.IsSymInterface sym
+     , LCS.RegValue sym tp ~ LCSS.SymSequence sym (WI.SymExpr sym WI.BaseIntegerType)
+     )
+  => LJ.LogAction IO AD.Diagnostic
+  -> sym
+  -> LCS.ExecResult p sym ext u
+  -> (APD.Property APD.StateID, LCS.GlobalVar tp)
+  -> IO ()
+assertPropertySatisfied logAction sym execResult (prop, globalTraceVar) = do
+  LJ.writeLog logAction (AD.AssertingGoalsForProperty (APD.propertyName prop) (APD.propertyDesscription prop))
+  let merge = LCSS.muxSymSequence sym
+  evtTrace <- getFinalGlobal sym merge globalTraceVar execResult
+  phd <- LCSS.headSymSequence sym (WI.intIte sym) evtTrace
+  case phd of
+    WP.Err _ -> X.throwIO (AE.MalformedEventTrace (APD.propertyName prop))
+    WP.NoErr partial -> do
+      case APD.propertyFinalStates prop of
+        APD.AlwaysOneOf acceptIds -> do
+          -- print (WI.printSymExpr (partial ^. WP.partialValue))
+          -- let acceptIds = fmap APD.stateID (APD.acceptStates prop)
+          let testAccept val acceptId = do
+                acceptInt <- WI.intLit sym (APD.stateID acceptId)
+                eq <- WI.intEq sym acceptInt (partial ^. WP.partialValue)
+                WI.orPred sym eq val
+          allAccept <- F.foldlM testAccept (WI.falsePred sym) acceptIds
+          LCB.assert sym allAccept (LCSS.AssertFailureSimError ("Property not satisfied " ++ show (APD.propertyName prop)) "")
+        APD.PossiblyOneOfOr conditionalAccepts -> do
+          let testConditionalAccept val (acceptId, others) = do
+                -- We want it to be the case that either the final state is
+                -- acceptId *or* it is one of the other acceptable states:
+                --
+                -- (acceptId == finalState) \/ ((acceptId != finalState) => (finalState == o_1 \/ finalState == o_n))
+                acceptInt <- WI.intLit sym (APD.stateID acceptId)
+                eqAccept <- WI.intEq sym acceptInt (partial ^. WP.partialValue)
+                neqAccept <- WI.notPred sym eqAccept
+                let checkAlternative acc ostate = do
+                      otherLit <- WI.intLit sym (APD.stateID ostate)
+                      eqOther <- WI.intEq sym otherLit (partial ^. WP.partialValue)
+                      WI.orPred sym eqOther acc
+                isAnyAllowedOther <- F.foldlM checkAlternative (WI.falsePred sym) others
+                otherIfNotAccept <- WI.impliesPred sym neqAccept isAnyAllowedOther
+                WI.orPred sym val =<< WI.orPred sym eqAccept otherIfNotAccept
+          valid <- F.foldlM testConditionalAccept (WI.falsePred sym) conditionalAccepts
+          LCB.assert sym valid (LCSS.AssertFailureSimError ("Property not satisfied " ++ show (APD.propertyName prop)) "")
+
 
 
 -- | Verify that the given 'ProgramInstance' terminates (with the given input)
@@ -263,19 +306,14 @@ verify logAction pinst timeoutDuration = do
       -- execution code
       psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability sym)
       let execFeatures = [psf]
-      let seConf = AVS.SymbolicExecutionConfig { AVS.secWMEntries = piWeirdMachineEntries pinst
+      let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
                                                , AVS.secWMMCallback = AVWme.wmExecutor archInfo loadedBinary hdlAlloc archVals execFeatures sym
                                                , AVS.secSolver = piSolver pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions
       (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI functionABI buildGlobals (piFsRoot pinst)
 
-      -- Assert that 'execve' and weird machines were encountered in all
-      -- execution traces
-      hitExecvePred <- liftIO $ getGlobalPred execResult (AVW.hitExecveGlob wmConfig) sym
-      liftIO $ LCB.assert sym hitExecvePred (LCSS.AssertFailureSimError "execve not hit in all executions" "")
-      hitWmPred <- liftIO $ getGlobalPred execResult (AVW.hitWmGlob wmConfig) sym
-      liftIO $ LCB.assert sym hitWmPred (LCSS.AssertFailureSimError "weird machine not encountered in all executions" "")
+      liftIO $ mapM_ (assertPropertySatisfied logAction sym execResult) (AEt.properties (AVW.wmProperties wmConfig))
 
       -- Prove all of the side conditions asserted during symbolic execution;
       -- these are captured in the symbolic backend (sym)
@@ -287,7 +325,6 @@ verify logAction pinst timeoutDuration = do
       -- symbolic execution/path sat checking. This is not required, and we
       -- could easily support allowing the user to choose two different solvers.
       AVP.proveObligations logAction sym (AS.offlineSolver (piSolver pinst)) timeoutDuration
-
 
 
 {- Note [Entry Point]

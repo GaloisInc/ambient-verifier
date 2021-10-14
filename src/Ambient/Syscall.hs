@@ -23,9 +23,10 @@ module Ambient.Syscall (
 
 import           Control.Monad.IO.Class ( liftIO )
 import qualified Data.BitVector.Sized as BVS
+import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
-import           Data.String ( fromString )
 import qualified Data.Parameterized.Context as Ctx
+import           Data.String ( fromString )
 
 import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
@@ -40,10 +41,14 @@ import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 
 import           Ambient.Override
+import qualified Ambient.EventTrace as AE
+import qualified Ambient.Property.Definition as APD
+
 
 -------------------------------------------------------------------------------
 -- System Call Overrides
 -------------------------------------------------------------------------------
+
 
 -- | Syscall captures an override and type information about how to call it
 data Syscall p sym args ext ret =
@@ -64,28 +69,37 @@ data Syscall p sym args ext ret =
 data SomeSyscall p sym ext =
   forall args ret . SomeSyscall (Syscall p sym args ext ret)
 
+matchCallExecveEvent :: APD.Transition -> Bool
+matchCallExecveEvent t =
+  case t of
+    APD.IssuesExecveSyscall -> True
+    _ -> False
+
 -- | Override for the 'execve' system call.  Currently this override records
 -- that it was invoked through the 'hitExec' global, then aborts.
 --
 -- See Note [Argument and Return Widths] for a discussion on the type of the
 -- 'execve' arguments.
 callExecve :: (LCB.IsSymInterface sym)
-           => LCS.GlobalVar LCT.BoolType
+           => AE.Properties
            -> sym
            -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
-callExecve hitExec sym = do
-  LCS.writeGlobal hitExec (WI.truePred sym)
+callExecve props sym = do
+  F.forM_ (AE.properties props) $ \(prop, traceGlobal) -> do
+    t0 <- LCS.readGlobal traceGlobal
+    t1 <- liftIO $ AE.recordEvent matchCallExecveEvent sym prop t0
+    LCS.writeGlobal traceGlobal t1
   loc <- liftIO $ WI.getCurrentProgramLoc sym
   liftIO $ LCB.abortExecBecause $ LCB.EarlyExit loc
 
 buildExecveOverride :: (LCB.IsSymInterface sym)
-                    => LCS.GlobalVar LCT.BoolType
+                    => AE.Properties
                     -> Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType 64)
-buildExecveOverride hitExec = Syscall {
+buildExecveOverride props = Syscall {
     syscallName = fromString "execve"
   , syscallArgTypes = Ctx.empty
   , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
-  , syscallOverride = (\sym _args -> callExecve hitExec sym)
+  , syscallOverride = (\sym _args -> callExecve props sym)
 }
 
 -- | Override for the 'exit' system call.
@@ -407,8 +421,8 @@ newtype BuildSyscallABI arch = BuildSyscallABI (
     -- ^ File system to use in syscalls
     -> LCS.GlobalVar LCLM.Mem
     -- ^ MemVar for the execution
-    -> LCS.GlobalVar LCT.BoolType
-    -- ^ A boolean indicating whether or not an 'execve' call has been reached
+    -> AE.Properties
+    -- ^ The properties to be checked, along with their corresponding global traces
     -> SyscallABI arch
   )
 

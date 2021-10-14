@@ -5,11 +5,11 @@ module Main ( main ) where
 import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Data.ByteString as BS
-import qualified Data.Foldable as F
-import qualified Data.Set as Set
+import           Data.Maybe ( maybeToList )
 import qualified Data.Yaml as DY
 import           GHC.Generics ( Generic )
 import qualified Lumberjack as LJ
+import qualified System.Directory as SD
 import qualified System.FilePath as SF
 import qualified System.FilePath.Glob as SFG
 import qualified Test.Tasty as TT
@@ -17,6 +17,7 @@ import qualified Test.Tasty.ExpectedFailure as TTE
 import qualified Test.Tasty.HUnit as TTH
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier as AV
@@ -24,7 +25,6 @@ import qualified Ambient.Verifier as AV
 data ExpectedGoals =
   ExpectedGoals { successful :: Int
                 , failed :: Int
-                , wmTargets :: Set.Set Integer
                 , fsRoot :: Maybe FilePath
                 }
   deriving (Eq, Ord, Read, Show, Generic)
@@ -34,7 +34,6 @@ instance DY.FromJSON ExpectedGoals
 emptyExpectedGoals :: ExpectedGoals
 emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , failed = 0
-                                   , wmTargets = Set.empty
                                    , fsRoot = Nothing
                                    }
 
@@ -60,6 +59,12 @@ analyzeSolvedGoals chan = go emptyExpectedGoals
             AD.ProvedGoal {} -> go (observed { successful = successful observed + 1 })
             _ -> go observed
 
+loadProperty :: FilePath -> IO (APD.Property APD.StateID)
+loadProperty fp = do
+  bytes <- BS.readFile fp
+  val <- DY.decodeThrow bytes
+  APD.parseProperty val
+
 -- | Create a test for a given expected output
 --
 -- Each expected output file records the number of goals expected to succeed and
@@ -74,6 +79,13 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   expectedBytes <- BS.readFile expectedOutputFile
   expectedResult <- DY.decodeThrow expectedBytes
   binBytes <- BS.readFile binaryFilePath
+
+  let propPath = SF.replaceExtension expectedOutputFile "yaml"
+  propFileExists <- SD.doesFileExist propPath
+  mprop <- case propFileExists of
+             True -> Just <$> loadProperty propPath
+             False -> return Nothing
+
   -- Create a problem instance; note that we are currently providing no
   -- arguments and no standard input.  The expected output file could include
   -- those things (or they could be drawn from other optional input files)
@@ -83,7 +95,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piSolver = AS.Yices
                                  , AV.piFloatMode = AS.Real
                                  , AV.piCommandLineArguments = []
-                                 , AV.piWeirdMachineEntries = fmap fromIntegral (F.toList (wmTargets expectedResult))
+                                 , AV.piProperties = maybeToList mprop
                                  }
 
   chan <- CC.newChan
@@ -93,12 +105,10 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   CC.writeChan chan Nothing
   res <- CCA.wait logger
 
-  -- This is a bit odd since we are using the .expected file to specify both the
-  -- expected result and the list of candidate Weird Machine targets
-  -- (wmTargets), so we just copy the targets over to make the comparison work
-  -- out.  Similarly, we also copy 'fsRoot' over.
-  let res' = res { wmTargets = wmTargets expectedResult
-                 , fsRoot = fsRoot expectedResult
+  -- This is a bit odd since we are using the expected result structure to
+  -- specify both the initial state and expected state. We copy over some
+  -- constants to just make the comparison work out.
+  let res' = res { fsRoot = fsRoot expectedResult
                  }
   TTH.assertEqual "Expected Output" expectedResult res'
   where

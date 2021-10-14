@@ -7,9 +7,10 @@ module Ambient.Diagnostic (
   ) where
 
 import qualified Control.Exception as X
-import qualified Data.ByteString.Char8 as BSC
 import           Control.Lens ( (^.) )
+import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map as Map
+import qualified Data.Text as T
 import qualified Data.Time.Clock as DTC
 import           Numeric ( showHex )
 import qualified Prettyprinter as PP
@@ -52,6 +53,8 @@ data Diagnostic where
   DisprovedGoal :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) LCSS.SimError -> DTC.NominalDiffTime -> Diagnostic
   -- | Execution has reached a Weird Machine at the given address
   ExecutingWeirdMachineAt :: Integer -> Diagnostic
+  -- | Setting up the goals for the given property
+  AssertingGoalsForProperty :: T.Text -> Maybe T.Text -> Diagnostic
 
 ppSymbol :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> String
 ppSymbol (Just fnName) addr = show addr ++ " (" ++ BSC.unpack fnName ++ ")"
@@ -92,3 +95,6 @@ instance PP.Pretty Diagnostic where
                 ]
       ExecutingWeirdMachineAt addr ->
         PP.pretty "Execution transferred to a Weird Machine at 0x" <> PP.pretty (showHex addr "") <> PP.line
+      AssertingGoalsForProperty name mdesc ->
+        let desc = maybe mempty ((PP.line <>) . PP.pretty) mdesc
+        in PP.pretty "Asserting goals for property " <> PP.pretty name <> desc <> PP.line

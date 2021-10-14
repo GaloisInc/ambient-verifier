@@ -4,7 +4,6 @@ module Options (
   ) where
 
 import qualified Data.Text as T
-import           Data.Word ( Word64 )
 import qualified Options.Applicative as OA
 import           Text.Read (readMaybe)
 
@@ -31,9 +30,8 @@ data Options =
           -- path satisfiability checking and discharging verification conditions
           , timeoutDuration :: AT.Timeout
           -- ^ The solver timeout for each goal
-          , weirdMachineEntries :: [Word64]
-          -- ^ The entry points to any weird machines that are expected to be
-          -- encountered
+          , stateCharts :: [FilePath]
+          -- ^ File paths to a state charts encoding properties to verify
           }
   deriving ( Show )
 
@@ -77,10 +75,10 @@ parser = Options <$> OA.strOption ( OA.long "binary"
                                  <> OA.metavar "SECONDS"
                                  <> OA.help "The solver timeout to use for each goal"
                                )
-                 <*> OA.many (OA.option OA.auto ( OA.long "weird-machine-entry"
-                                                <> OA.metavar "ADDRESS"
-                                                <> OA.help "Specify the address of a Weird Machine that is intended to be triggered"
-                                                ))
+                 <*> OA.many (OA.strOption ( OA.long "statechart"
+                                          <> OA.metavar "FILE"
+                                          <> OA.help "A path to a state chart encoding a property to verify"
+                                           ))
 
 {- Note [Future Improvements]
 

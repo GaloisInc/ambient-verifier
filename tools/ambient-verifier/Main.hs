@@ -3,6 +3,7 @@ module Main ( main ) where
 import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Data.ByteString as BS
+import qualified Data.Yaml as DY
 import qualified Data.Text.Encoding as TE
 import qualified Lumberjack as LJ
 import qualified Options.Applicative as OA
@@ -11,6 +12,7 @@ import qualified Prettyprinter.Render.Text as PPT
 import qualified System.IO as IO
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Verifier as AV
 
 import qualified Options as O
@@ -32,6 +34,12 @@ printLogs hdl chan = go
           PPT.hPutDoc hdl (PP.pretty d)
           go
 
+loadProperty :: FilePath -> IO (APD.Property APD.StateID)
+loadProperty fp = do
+  bytes <- BS.readFile fp
+  val <- DY.decodeThrow bytes
+  APD.parseProperty val
+
 -- | This is the real verification driver that takes the parsed out command line
 -- arguments and sets up the problem instance for the library core
 verify :: O.Options -> IO ()
@@ -39,13 +47,16 @@ verify o = do
   binary <- BS.readFile (O.binaryPath o)
   -- See Note [Argument Encoding]
   let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
+
+  props <- mapM loadProperty (O.stateCharts o)
+
   let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath o
                                  , AV.piBinary = binary
                                  , AV.piFsRoot = O.fsRoot o
                                  , AV.piCommandLineArguments = args
                                  , AV.piSolver = O.solver o
                                  , AV.piFloatMode = O.floatMode o
-                                 , AV.piWeirdMachineEntries = O.weirdMachineEntries o
+                                 , AV.piProperties = props
                                  }
 
   chan <- CC.newChan

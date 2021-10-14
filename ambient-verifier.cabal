@@ -30,16 +30,19 @@ common shared
         exceptions,
         lens >= 4 && < 6,
         lumberjack >= 1 && < 1.1,
+        megaparsec >= 7 && < 10,
         mtl >= 2 && < 3,
         panic >= 0.4 && < 0.5,
         parameterized-utils >= 2 && < 3,
         prettyprinter >= 1.7 && < 1.8,
+        yaml >= 0.11 && < 0.12,
         text
 
 library
     import: shared
     exposed-modules:  Ambient.Diagnostic,
                       Ambient.Discovery,
+                      Ambient.EventTrace,
                       Ambient.Exception,
                       Ambient.FunctionOverride,
                       Ambient.FunctionOverride.X86_64.Linux,
@@ -49,6 +52,7 @@ library
                       Ambient.Memory.X86_64.Linux,
                       Ambient.Override,
                       Ambient.Panic,
+                      Ambient.Property.Definition,
                       Ambient.Solver,
                       Ambient.Syscall,
                       Ambient.Syscall.X86_64.Linux,
@@ -109,6 +113,7 @@ test-suite ambient-tests
   main-is: Main.hs
   hs-source-dirs: tests
   build-depends: ambient-verifier,
+                 directory,
                  filepath,
                  filemanip,
                  tasty,

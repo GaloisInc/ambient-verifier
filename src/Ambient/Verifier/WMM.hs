@@ -18,9 +18,7 @@ import qualified Data.Foldable as F
 import qualified Data.Parameterized.Classes as PC
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
-import qualified Data.Set as Set
 import qualified Data.Text as DT
-import           Data.Word ( Word64 )
 import qualified Lumberjack as LJ
 import qualified What4.Expr as WE
 import qualified What4.Interface as WI
@@ -39,10 +37,13 @@ import qualified Lang.Crucible.Simulator.CallFrame as LCSC
 import qualified Lang.Crucible.Simulator.EvalStmt as LCSEv
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
+import qualified Lang.Crucible.Simulator.SymSequence as LCSS
 import qualified Lang.Crucible.Types as LCT
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.EventTrace as AE
 import qualified Ambient.Panic as AP
+import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
 
 -- | A WMMCallbackResult represents the possible outcomes from executing a
@@ -68,11 +69,11 @@ data WMMCallbackResult p sym arch f a =
 
 -- | A WMConfig contains global variables tracking properties of the weird
 -- machines in an execution
-data WMConfig =
-  WMConfig { hitWmGlob :: LCS.GlobalVar LCT.BoolType
-          -- ^ Execution trace hits a weird machine
-           , hitExecveGlob :: LCS.GlobalVar LCT.BoolType }
-          -- ^ Execution trace invokes 'execve' system call
+newtype WMConfig =
+  WMConfig { wmProperties :: AE.Properties
+           -- ^ A mapping of properties to verify, to their corresponding global
+           -- variables holding symbolic traces
+           }
 
 -- | Build an initial 'WMConfig' with all booleans set to 'False'.  Returns a
 -- 'WMConfig' and an updated global state.
@@ -81,16 +82,21 @@ initWMConfig :: ( WI.IsExprBuilder sym )
              -> LCF.HandleAllocator
              -> LCSG.SymGlobalState sym
              -- ^ Global state to insert globals into
+             -> [APD.Property APD.StateID]
+             -- ^ The properties to verify, for which we need to allocate
+             -- verifier globals
              -> IO (WMConfig, LCSG.SymGlobalState sym)
-initWMConfig sym halloc globals0 = do
-  (hitWm, globals1) <- buildGlobalPred globals0 "hitWm"
-  (hitExecve, globals2) <- buildGlobalPred globals1 "hitExecve"
-  return (WMConfig hitWm hitExecve, globals2)
-  where
-    buildGlobalPred globals name = do
-      glob <- LCCC.freshGlobalVar halloc (DT.pack name) LCT.BoolRepr
-      let globals' = LCSG.insertGlobal glob (WI.falsePred sym) globals
-      return (glob, globals')
+initWMConfig sym halloc globals0 props = do
+  let pleatM seed xs f = F.foldlM f seed xs
+  (globals1, props') <- pleatM (globals0, []) props $ \(gs, ps) p -> do
+    let varName = DT.pack "AMBIENT_EventTrace_" <> APD.propertyName p
+    traceGlob <- LCCC.freshGlobalVar halloc varName AE.eventTraceRepr
+    emptyTrace <- LCSS.nilSymSequence sym
+    -- Always start each trace in the initial state
+    s0 <- WI.intLit sym (APD.stateID (APD.initialState p))
+    initialTrace <- LCSS.consSymSequence sym s0 emptyTrace
+    return (LCSG.insertGlobal traceGlob initialTrace gs, (p, traceGlob) : ps)
+  return (WMConfig (AE.Properties props'), globals1)
 
 
 -- | This action is run when execution reaches a Weird Machine entry
@@ -110,6 +116,27 @@ smtLogger logAction =
   where
     doLog verb msg =
       LJ.writeLog logAction (AD.SolverInteractionEvent verb msg)
+
+-- | Look up a global that we really require to already be in the global state
+--
+-- It is a programming error in the verifier if it is not, so panic if it is not
+-- present
+lookupGlobal
+  :: LCS.GlobalVar tp
+  -> LCSG.SymGlobalState sym
+  -> IO (LCS.RegValue sym tp)
+lookupGlobal gv globState =
+  case LCSG.lookupGlobal gv globState of
+    Nothing -> AP.panic AP.WMM
+                 "handleControlTransfer"
+                 ["Missing expected global variable binding: " ++ show gv]
+    Just val -> return val
+
+matchWeirdEntry :: Integer -> APD.Transition -> Bool
+matchWeirdEntry thisAddr t =
+  case t of
+    APD.EnterWeirdMachine transitionAddr -> toInteger transitionAddr == thisAddr
+    _ -> False
 
 -- | At a control transfer, inspect the current register state (the
 -- 'LCS.RegEntry' that contains the full symbolic register file) and determine
@@ -134,24 +161,22 @@ handleControlTransfer
   -> WS.SolverAdapter st
   -- ^ The solver adapter to use for checking IP values
   -> DMS.GenArchVals DMS.LLVMMemory arch
-  -> Set.Set Integer
-  -- ^ Target weird machine addresses
+  -> AE.Properties
+  -- ^ The properties that the verifier should check (and the globals capturing their traces)
   -> WMMCallback arch sym
   -- ^ The action to run when a Weird Machine is encountered
   -> LCS.RegEntry sym tp
   -- ^ The current register state
   -> LCSE.SimState p sym ext rtp f a
   -- ^ The current simulator state (to be passed to the 'WMMCallback' if a Weird Machine is entered)
-  -> LCS.GlobalVar LCT.BoolType
-  -- ^ A global variable indicating whether a weird machine has been hit
   -> LCS.ExecState p sym ext rtp
   -- ^ The current execution state
   -> IO (LCSEv.ExecutionFeatureResult p sym ext rtp)
-handleControlTransfer logAction adapter archVals wmEntries (WMMCallback action) regState st hitWm estate
+handleControlTransfer logAction adapter archVals props (WMMCallback action) regState st estate
   | Just PC.Refl <- PC.testEquality regsRepr (LCS.regType regState) = do
       case LCS.regValue (DMS.lookupReg archVals regState DMC.ip_reg) of
         LCLM.LLVMPointer _region ipVal -> do
-          mst <- go ipVal (F.toList wmEntries)
+          mst <- go ipVal (fmap toInteger wmEntries)
           case mst of
             Nothing -> return LCSEv.ExecutionFeatureNoChange
             Just (result, st') ->
@@ -162,16 +187,22 @@ handleControlTransfer logAction adapter archVals wmEntries (WMMCallback action) 
                   -- No change from callback, but need to update SimState to
                   -- capture change to 'hitWm'
                   let estate' = case estate of
-                                  LCSE.CallState ret call state -> do
-                                    -- The type checker isn't convinced that
-                                    -- the "f" in "st'" and the "f" in "estate"
-                                    -- are the same unless this is inlined here
-                                    let globs = state ^. LCSE.stateGlobals
-                                    let globs' = LCSG.insertGlobal hitWm
-                                                                   (WI.truePred sym)
-                                                                   globs
-                                    let state' = set LCSE.stateGlobals globs' state
-                                    LCSE.CallState ret call state'
+                                  LCSE.CallState ret call state ->
+                                    -- Here we are copying over all of the event
+                                    -- traces from the Weird Machine excursion
+                                    -- (otherwise, we lose their updates).
+                                    --
+                                    -- We have to do this copy because we can't
+                                    -- just use the state from the excursion, as
+                                    -- type variables don't line up
+                                    let globals0 = state ^. LCSE.stateGlobals
+                                        copyVariable globs (p, gv) =
+                                          case LCSG.lookupGlobal gv (st' ^. LCSE.stateGlobals) of
+                                            Nothing -> AP.panic AP.WMM "handleControlTransfer" ["Missing global for property " <> show (APD.propertyName p)]
+                                            Just rv -> LCSG.insertGlobal gv rv globs
+                                        globals1 = F.foldl' copyVariable globals0 (AE.properties props)
+                                        state' = set LCSE.stateGlobals globals1 state
+                                    in LCSE.CallState ret call state'
                                   LCSE.TailCallState v r _ ->
                                     LCSE.TailCallState v r st'
                                   LCSE.ReturnState f v r _ ->
@@ -192,6 +223,10 @@ handleControlTransfer logAction adapter archVals wmEntries (WMMCallback action) 
       -- FIXME: Emit a log or warning here
       return LCSEv.ExecutionFeatureNoChange
   where
+    wmEntries = [ e
+                | (p, _gv) <- AE.properties props
+                , e <- F.toList (APD.weirdMachineEntries p)
+                ]
     regsRepr = LCT.StructRepr (DMS.crucArchRegTypes (DMS.archFunctions archVals))
     sym = st ^. LCSE.stateContext . LCSE.ctxSymInterface
     go :: WI.SymBV sym (DMC.ArchAddrWidth arch) -> [Integer] -> IO (Maybe (WMMCallbackResult p sym arch f a, LCSE.SimState p sym ext rtp f a))
@@ -206,8 +241,14 @@ handleControlTransfer logAction adapter archVals wmEntries (WMMCallback action) 
           WSR.Unsat {} -> do
             LJ.writeLog logAction (AD.ExecutingWeirdMachineAt wmEntry)
             let globs = st ^. LCSE.stateGlobals
-            let globs' = LCSG.insertGlobal hitWm (WI.truePred sym) globs
+            let pleatM seed xs f = F.foldlM f seed xs
+            globs' <- pleatM globs (AE.properties props) $ \theseGlobals (prop, eventTraceGlob) -> do
+              currentTrace <- lookupGlobal eventTraceGlob theseGlobals
+              nextTrace <- AE.recordEvent (matchWeirdEntry wmEntry) sym prop currentTrace
+              return (LCSG.insertGlobal eventTraceGlob nextTrace theseGlobals)
             let st' = set LCSE.stateGlobals globs' st
+            -- FIXME: The action probably needs to return an updated state, as
+            -- it will have continued execution on its own
             result <- action wmEntry st'
             return $ Just (result, st')
           _ -> go ipVal rest
@@ -236,14 +277,13 @@ wmmFeature
   -> AS.Solver
   -- ^ The solver to use when checking the current IP
   -> DMS.GenArchVals DMS.LLVMMemory arch
-  -> [Word64]
-  -- ^ Weird Machine entry points
+  -- ^ A property to check, from which weird Machine entry points can be derived
   -> WMMCallback arch sym
   -- ^ An action to run when a Weird Machine is recognized
-  -> LCS.GlobalVar LCT.BoolType
-  -- ^ A global variable indicating whether a weird machine has been hit
+  -> AE.Properties
+  -- ^ The properties to verify, along with the globals capturing their symbolic traces
   -> LCSEv.ExecutionFeature p sym ext rtp
-wmmFeature logAction solver archVals wmEntries action hitWm = LCSEv.ExecutionFeature $ \estate ->
+wmmFeature logAction solver archVals action props = LCSEv.ExecutionFeature $ \estate ->
   case estate of
     LCSE.ResultState {} -> return LCSEv.ExecutionFeatureNoChange
     LCSE.AbortState {} -> return LCSEv.ExecutionFeatureNoChange
@@ -256,18 +296,16 @@ wmmFeature logAction solver archVals wmEntries action hitWm = LCSEv.ExecutionFea
     LCSE.InitialState {} -> return LCSEv.ExecutionFeatureNoChange
     LCSE.CallState _ (LCSE.CrucibleCall _ cf) st ->
       case LCS.regMap (cf ^. LCSC.frameRegs) of
-        Ctx.Empty Ctx.:> regs -> handleControlTransfer logAction (AS.offlineSolver solver) archVals entryInts action regs st hitWm estate
+        Ctx.Empty Ctx.:> regs -> handleControlTransfer logAction (AS.offlineSolver solver) archVals props action regs st estate
         _ -> return LCSEv.ExecutionFeatureNoChange
     LCSE.CallState _ _ _ -> return LCSEv.ExecutionFeatureNoChange
     LCSE.TailCallState _ (LCSE.CrucibleCall _ cf) st ->
       case LCS.regMap (cf ^. LCSC.frameRegs) of
-        Ctx.Empty Ctx.:> regs -> handleControlTransfer logAction (AS.offlineSolver solver) archVals entryInts action regs st hitWm estate
+        Ctx.Empty Ctx.:> regs -> handleControlTransfer logAction (AS.offlineSolver solver) archVals props action regs st estate
         _ -> return LCSEv.ExecutionFeatureNoChange
     LCSE.TailCallState _ _ _ -> return LCSEv.ExecutionFeatureNoChange
     LCSE.ReturnState _ _ retRegEntry st ->
-      handleControlTransfer logAction (AS.offlineSolver solver) archVals entryInts action retRegEntry st hitWm estate
-  where
-    entryInts = Set.fromList (map toInteger wmEntries)
+      handleControlTransfer logAction (AS.offlineSolver solver) archVals props action retRegEntry st estate
 
 
 {- Note [IP Matching]

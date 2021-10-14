@@ -7,6 +7,7 @@ module Ambient.Exception (
 import qualified Control.Exception as X
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ElfEdit as DE
+import qualified Data.Text as T
 import qualified Prettyprinter as PP
 
 import qualified Data.Macaw.Memory as DMM
@@ -33,6 +34,10 @@ data AmbientException where
   SolverUnknownSyscallNumber :: AmbientException
   -- | There is no model for this syscall number
   UnsupportedSyscallNumber :: Integer -> AmbientException
+  -- | Symbolic execution timed out, and no result is available
+  ExecutionTimeout :: AmbientException
+  -- | The event trace for the named property is malformed
+  MalformedEventTrace :: T.Text -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -63,3 +68,7 @@ instance PP.Pretty AmbientException where
         PP.pretty "Solving syscall number yielded UNKNOWN"
       UnsupportedSyscallNumber syscallNum ->
         PP.pretty "Failed to find override for syscall:" PP.<+> PP.viaShow syscallNum
+      ExecutionTimeout ->
+        PP.pretty "Symbolic execution timed out"
+      MalformedEventTrace name ->
+        PP.pretty "The event trace for property'" <> PP.pretty name <> PP.pretty "' is malformed"

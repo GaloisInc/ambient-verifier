@@ -21,7 +21,6 @@ import qualified Data.Parameterized.List as PL
 import qualified Data.Parameterized.Map as MapF
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
-import           Data.Word ( Word64 )
 import           GHC.TypeNats ( KnownNat, type (<=) )
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lumberjack as LJ
@@ -63,12 +62,13 @@ import qualified Ambient.Exception as AE
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
+import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
 import qualified Ambient.Syscall as ASy
 import qualified Ambient.Verifier.WMM as AVW
 
 data SymbolicExecutionConfig arch sym =
-  SymbolicExecutionConfig { secWMEntries :: [Word64]
+  SymbolicExecutionConfig { secProperties :: [APD.Property APD.StateID]
                           , secWMMCallback :: AVW.WMMCallback arch sym
                           , secSolver :: AS.Solver
                           }
@@ -413,7 +413,7 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
   (fs, globals2, LCLS.SomeOverrideSim initFSOverride) <- liftIO $
     LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] globals1
 
-  (wmConfig, globals3) <- liftIO $ AVW.initWMConfig sym halloc globals2
+  (wmConfig, globals3) <- liftIO $ AVW.initWMConfig sym halloc globals2 (secProperties seConf)
 
   -- FIXME: We might want to add all known functions to the map here. As an
   -- alternative design, we might be able to lazily add functions as they are
@@ -421,7 +421,7 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let syscallABI = buildSyscallABI fs memVar (AVW.hitExecveGlob wmConfig)
+    let syscallABI = buildSyscallABI fs memVar (AVW.wmProperties wmConfig)
     let functionABI = buildFunctionABI memVar
     let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction sym archVals discoveryMem addressToFnHandle functionABI halloc) (lookupSyscall sym syscallABI halloc) validityCheck
     -- Note: the 'Handle' here is the target of any print statements in the
@@ -430,10 +430,9 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
     let ctx = LCS.initSimContext sym (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
     let s0 = LCS.InitialState ctx globals3 LCS.defaultAbortHandler regsRepr simAction
 
-    let wmEntries = secWMEntries seConf
     let wmCallback = secWMMCallback seConf
     let wmSolver = secSolver seConf
-    let wmm = AVW.wmmFeature logAction wmSolver archVals wmEntries wmCallback (AVW.hitWmGlob wmConfig)
+    let wmm = AVW.wmmFeature logAction wmSolver archVals wmCallback (AVW.wmProperties wmConfig)
     let executionFeatures = wmm : fmap LCS.genericToExecutionFeature execFeatures
     res <- liftIO $ LCS.executeCrucible executionFeatures s0
     return (memVar, res, wmConfig)
