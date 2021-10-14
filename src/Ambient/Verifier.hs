@@ -9,6 +9,8 @@ module Ambient.Verifier (
   , verify
   ) where
 
+import qualified Control.Concurrent as CC
+import qualified Control.Concurrent.Async as CCA
 import qualified Control.Exception as X
 import           Control.Lens ( (^.) )
 import qualified Control.Monad.Catch as CMC
@@ -17,6 +19,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
+import           Data.Maybe ( maybeToList )
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
 import           GHC.Stack ( HasCallStack )
@@ -36,6 +39,7 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.PathSatisfiability as LCSP
+import qualified Lang.Crucible.Simulator.Profiling as LCSProf
 import qualified Lang.Crucible.Simulator.SimError as LCSS
 import qualified Lang.Crucible.Simulator.SymSequence as LCSS
 import qualified What4.Interface as WI
@@ -87,6 +91,8 @@ data ProgramInstance =
                   -- ^ The interpretation of floating point operations in SMT
                   , piProperties :: [APD.Property APD.StateID]
                   -- ^ A property to verify that the program satisfies
+                  , piProfileTo :: Maybe FilePath
+                  -- ^ The path of a file to profile to
                   }
 
 -- | Retrieve a mapping from symbol names to addresses from code discovery
@@ -268,6 +274,19 @@ assertPropertySatisfied logAction sym execResult (prop, globalTraceVar) = do
           LCB.assert sym valid (LCSS.AssertFailureSimError ("Property not satisfied " ++ show (APD.propertyName prop)) "")
 
 
+setupProfiling
+  :: FilePath
+  -> IO (LCS.GenericExecutionFeature sym, CCA.Async ())
+setupProfiling path = do
+  tbl <- LCSProf.newProfilingTable
+  let flt = LCSProf.profilingEventFilter
+  let doLog = do
+        LCSProf.writeProfileReport path "ambient-verifier-profile" "ambient-verifier" tbl
+        CC.threadDelay 1000000
+        doLog
+  logger <- CCA.async doLog
+  opt <- LCSProf.profilingFeature tbl flt Nothing -- (Just opts)
+  return (opt, logger)
 
 -- | Verify that the given 'ProgramInstance' terminates (with the given input)
 -- without raising an error
@@ -301,11 +320,14 @@ verify logAction pinst timeoutDuration = do
           archVals
           entryAddr
           cfg0
+
+      profFeature <- liftIO $ mapM setupProfiling (piProfileTo pinst)
+
       -- We set up path satisfiability checking here so that we do not have to
       -- require the online backend constraints in the body of our symbolic
       -- execution code
       psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability sym)
-      let execFeatures = [psf]
+      let execFeatures = maybeToList (fmap fst profFeature) ++ [psf]
       let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
                                                , AVS.secWMMCallback = AVWme.wmExecutor archInfo loadedBinary hdlAlloc archVals execFeatures sym
                                                , AVS.secSolver = piSolver pinst
@@ -325,6 +347,8 @@ verify logAction pinst timeoutDuration = do
       -- symbolic execution/path sat checking. This is not required, and we
       -- could easily support allowing the user to choose two different solvers.
       AVP.proveObligations logAction sym (AS.offlineSolver (piSolver pinst)) timeoutDuration
+      _ <- liftIO $ mapM CCA.cancel (fmap snd profFeature)
+      return ()
 
 
 {- Note [Entry Point]

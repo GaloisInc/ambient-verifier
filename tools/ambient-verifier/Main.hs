@@ -57,6 +57,7 @@ verify o = do
                                  , AV.piSolver = O.solver o
                                  , AV.piFloatMode = O.floatMode o
                                  , AV.piProperties = props
+                                 , AV.piProfileTo = O.profileTo o
                                  }
 
   chan <- CC.newChan

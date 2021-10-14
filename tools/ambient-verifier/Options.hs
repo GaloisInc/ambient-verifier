@@ -32,6 +32,8 @@ data Options =
           -- ^ The solver timeout for each goal
           , stateCharts :: [FilePath]
           -- ^ File paths to a state charts encoding properties to verify
+          , profileTo :: Maybe FilePath
+          -- ^ A path to write periodic profiling reports to
           }
   deriving ( Show )
 
@@ -79,6 +81,10 @@ parser = Options <$> OA.strOption ( OA.long "binary"
                                           <> OA.metavar "FILE"
                                           <> OA.help "A path to a state chart encoding a property to verify"
                                            ))
+                 <*> OA.optional (OA.strOption ( OA.long "profile-to"
+                                            <> OA.metavar "FILE"
+                                            <> OA.help "A file to log symbolic execution profiles to periodically"
+                                             ))
 
 {- Note [Future Improvements]
 

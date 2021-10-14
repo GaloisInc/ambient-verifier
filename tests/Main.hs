@@ -96,6 +96,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piFloatMode = AS.Real
                                  , AV.piCommandLineArguments = []
                                  , AV.piProperties = maybeToList mprop
+                                 , AV.piProfileTo = Nothing
                                  }
 
   chan <- CC.newChan
