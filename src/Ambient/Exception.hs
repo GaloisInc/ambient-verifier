@@ -34,6 +34,10 @@ data AmbientException where
   SolverUnknownSyscallNumber :: AmbientException
   -- | There is no model for this syscall number
   UnsupportedSyscallNumber :: Integer -> AmbientException
+  -- | A symbolic function address could not be resolved as concrete
+  SymbolicFunctionAddress :: AmbientException
+  -- | The solver returned @UNKNOWN@ when trying to resolve a function address
+  SolverUnknownFunctionAddress :: AmbientException
   -- | Symbolic execution timed out, and no result is available
   ExecutionTimeout :: AmbientException
   -- | The event trace for the named property is malformed
@@ -66,6 +70,10 @@ instance PP.Pretty AmbientException where
         PP.pretty "Attempted to make system call with non-concrete syscall number"
       SolverUnknownSyscallNumber ->
         PP.pretty "Solving syscall number yielded UNKNOWN"
+      SymbolicFunctionAddress ->
+        PP.pretty "Attempted to call function with non-concrete address"
+      SolverUnknownFunctionAddress ->
+        PP.pretty "Solving function address yielded UNKNOWN"
       UnsupportedSyscallNumber syscallNum ->
         PP.pretty "Failed to find override for syscall:" PP.<+> PP.viaShow syscallNum
       ExecutionTimeout ->

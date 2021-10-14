@@ -129,7 +129,9 @@ lookupFunction :: forall sym arch p ext w scope solver fs args ret
      , w ~ DMC.ArchAddrWidth arch
      , args ~ (LCT.EmptyCtx LCT.::>
                LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
-     , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
+     , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+     , WPO.OnlineSolver solver
+     )
    => sym
    -> DMS.GenArchVals DMS.LLVMMemory arch
    -> DMM.Memory w
@@ -142,6 +144,7 @@ lookupFunction :: forall sym arch p ext w scope solver fs args ret
    -> DMS.LookupFunctionHandle sym arch
 lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
   DMS.LookupFunctionHandle $ \state _mem regs -> do
+  LCBO.withSolverProcess sym (panic ["Online solving not enabled"]) $ \proc -> do
     let symArchFns = DMS.archFunctions archVals
     let crucRegTypes = DMS.crucArchRegTypes symArchFns
     let regsRepr = LCT.StructRepr crucRegTypes
@@ -150,9 +153,27 @@ lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
     -- 'addressToFnHandle'
     let offset = LCLMP.llvmPointerOffset $ LCS.regValue
                                          $ DMS.lookupReg archVals regsEntry DMC.ip_reg
-    funcAddr <- offsetAsFuncAddr offset
-    funcAddrOff <- resolveFuncAddr funcAddr
-    handle  <- lookupFuncAddrOff funcAddrOff
+
+    -- Resolving a function address as concrete requires some fancy footwork.
+    -- See Note [Resolving concrete syscall numbers and function addresses].
+    offset' <- WPO.inNewFrame proc $ do
+      msat <- WPO.checkAndGetModel proc "lookupFunction (check with initial assumptions)"
+      model <- case msat of
+        WSat.Unknown   -> CMC.throwM AE.SolverUnknownFunctionAddress
+        WSat.Unsat{}   -> panic ["Initial assumptions are unsatisfiable"]
+        WSat.Sat model -> pure model
+      WEG.groundEval model offset
+    funcAddr <- WPO.inNewFrame proc $ do
+        block <- WI.notPred sym =<< WI.bvEq sym offset =<< WI.bvLit sym WT.knownNat offset'
+        WPS.assume (WPO.solverConn proc) block
+        msat <- WPO.check proc "lookupFunction (check under assumption that model cannot happen)"
+        case msat of
+          WSat.Unknown -> CMC.throwM AE.SolverUnknownFunctionAddress
+          WSat.Sat{}   -> CMC.throwM AE.SymbolicFunctionAddress
+          WSat.Unsat{} -> pure $ BVS.asUnsigned offset'
+
+    funcAddrOff <- resolveFuncAddr $ fromIntegral funcAddr
+    handle <- lookupFuncAddrOff funcAddrOff
 
     -- If we have an override for a certain function name, construct a function
     -- handle for that override. Otherwise, return the supplied function handle
@@ -180,20 +201,10 @@ lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
         -- state
         bindOverrideHandle state hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
   where
-    offsetAsFuncAddr :: WI.SymBV sym w -> IO (DMME.MemWord w)
-    offsetAsFuncAddr offset =
-      case BVS.asUnsigned <$> WI.asBV offset of
-        Nothing -> AP.panic AP.SymbolicExecution
-                            "lookupFunction"
-                            ["Attempted to call function with non-concrete address"]
-        Just funcAddr -> pure $ fromIntegral funcAddr
-
     resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
     resolveFuncAddr funcAddr =
       case DMM.resolveRegionOff discoveryMem 0 (fromIntegral funcAddr) of
-        Nothing -> AP.panic AP.SymbolicExecution
-                            "lookupFunction"
-                            ["Failed to resolve function address"]
+        Nothing -> panic ["Failed to resolve function address"]
         Just funcAddrOff -> pure funcAddrOff
 
     lookupFuncAddrOff :: DMM.MemSegmentOff w -> IO (LCF.FnHandle args ret)
@@ -201,10 +212,11 @@ lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
       case Map.lookup funcAddrOff addressToFnHandle of
         -- TODO: Rather than panicking, we should re-run code discovery
         -- to attempt to locate the function (see issue #13)
-        Nothing -> AP.panic AP.SymbolicExecution
-                            "lookupFunction"
-                            ["Failed to find function in function handle mapping"]
+        Nothing -> panic ["Failed to find function in function handle mapping"]
         Just handle -> pure handle
+
+    panic :: [String] -> a
+    panic = AP.panic AP.SymbolicExecution "lookupFunction"
 
 -- | This function builds a function handle for an override and inserts it into
 -- a state's function bindings
@@ -263,7 +275,7 @@ lookupSyscall sym abi hdlAlloc =
     let regVal = LCS.regValue syscallReg
 
     -- Resolving a syscall number as concrete requires some fancy footwork.
-    -- See Note [Resolving concrete syscall numbers].
+    -- See Note [Resolving concrete syscall numbers and function addresses].
     regVal' <- WPO.inNewFrame proc $ do
       msat <- WPO.checkAndGetModel proc "lookupSyscall (check with initial assumptions)"
       model <- case msat of
@@ -308,8 +320,8 @@ lookupSyscall sym abi hdlAlloc =
     panic = AP.panic AP.SymbolicExecution "lookupSyscall"
 
 {-
-Note [Resolving concrete syscall numbers]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Note [Resolving concrete syscall numbers and function addresses]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Resolving a syscall number as concrete isn't quite as straightforward as
 calling `asBV`. This is because we use the SMT array memory model, if we spill
 the value of a syscall number to the stack, then it's not directly possible to
@@ -328,6 +340,9 @@ a syscall number value is concrete or symbolic. To do so, we.
 If the second step yields `Unsat`, then we have a concrete syscall number. If
 the second step yields `Sat`, however, we have a truly symbolic syscall number.
 For now, we fail when given truly symbolic syscall numbers.
+
+All of the same reasoning applies to function addresses, which are resolved in
+a similar fashion.
 -}
 
 
