@@ -17,6 +17,8 @@ module Ambient.Syscall (
   , getppidOverride
   , buildReadOverride
   , buildWriteOverride
+  , buildOpenOverride
+  , buildCloseOverride
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
@@ -25,6 +27,7 @@ import qualified Data.Map.Strict as Map
 import           Data.String ( fromString )
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.Vector as Vector
+import           GHC.TypeNats ( type (<=) )
 
 import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
@@ -160,9 +163,7 @@ callRead :: ( LCLM.HasLLVMAnn sym
 callRead fs memVar sym fd buf count = do
   let ?ptrWidth = WI.knownRepr
   -- Drop upper 32 bits from fd to create a 32 bit file descriptor
-  fd64Bv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue fd)
-  fdSplit <- liftIO $ WI.bvSplitVector sym (WI.knownNat @2) (WI.knownNat @32) fd64Bv
-  let fdReg = LCS.RegEntry LCT.knownRepr (Vector.elemAt (WI.knownNat @1) fdSplit)
+  fdReg <- liftIO $ ptrToBv32 sym fd
 
   -- Convert 'count' to a bitvector
   countBv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue count)
@@ -220,9 +221,7 @@ callWrite fs memVar sym fd buf count = do
   let ?ptrWidth = WI.knownRepr
   let ?memOpts = syscallMemOptions
   -- Drop upper 32 bits from fd to create a 32 bit file descriptor
-  fd64Bv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue fd)
-  fdSplit <- liftIO $ WI.bvSplitVector sym (WI.knownNat @2) (WI.knownNat @32) fd64Bv
-  let fdReg = LCS.RegEntry LCT.knownRepr (Vector.elemAt (WI.knownNat @1) fdSplit)
+  fdReg <- liftIO $ ptrToBv32 sym fd
 
   -- Convert 'count' to a bitvector
   countBv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue count)
@@ -253,6 +252,109 @@ buildWriteOverride fs memVar = Syscall {
   , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
   , syscallOverride =
       \sym args -> Ctx.uncurryAssignment (callWrite fs memVar sym) args
+  }
+
+-- | Convert a 64-bit LLVMPointer to a 32-bit vector by dropping the upper 32
+-- bits
+ptrToBv32 :: ( LCB.IsSymInterface sym )
+              => sym
+              -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+              -> IO (LCS.RegEntry sym (LCT.BVType 32))
+ptrToBv32 sym ptr = do
+  bv64 <- LCLM.projectLLVM_bv sym (LCS.regValue ptr)
+  bvSplit <- WI.bvSplitVector sym (WI.knownNat @2) (WI.knownNat @32) bv64
+  return $ LCS.RegEntry LCT.knownRepr (Vector.elemAt (WI.knownNat @1) bvSplit)
+
+-- | Zero extend a bitvector to a 64-bit LLVMPointer
+bvToPtr :: ( LCB.IsSymInterface sym
+           , (w WI.+ 1) <= 64
+           , 1 <= w )
+           => sym
+           -> WI.SymExpr sym (WI.BaseBVType w)
+           -> IO (LCS.RegValue sym (LCLM.LLVMPointerType 64))
+bvToPtr sym bv =
+  WI.bvZext sym (WI.knownNat @64) bv >>= LCLM.llvmPointer_bv sym
+
+-- | Override for the open(2) system call
+callOpen :: ( LCLM.HasLLVMAnn sym
+            , LCB.IsSymInterface sym )
+         => LCLS.LLVMFileSystem 64
+         -> LCS.GlobalVar LCLM.Mem
+         -> sym
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -- ^ File path to open
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -- ^ Flags to use when opening file
+         -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
+callOpen fs memVar sym pathname flags = do
+  let ?ptrWidth = WI.knownRepr
+  let ?memOpts = syscallMemOptions
+  -- Drop upper 32 bits from flags to create a 32 bit flags int
+  flagsInt <- liftIO $ ptrToBv32 sym flags
+
+  -- Use llvm override for open
+  let openLlvmOv = LCLI.llvmOverride_def (LCLS.openFile fs)
+  resBv <- openLlvmOv memVar sym (Ctx.empty Ctx.:> pathname Ctx.:> flagsInt)
+
+  -- Pad result out to 64 bit pointer
+  liftIO $ bvToPtr sym resBv
+
+buildOpenOverride :: ( LCLM.HasLLVMAnn sym
+                    , LCB.IsSymInterface sym )
+                  => LCLS.LLVMFileSystem 64
+                  -> LCS.GlobalVar LCLM.Mem
+                  -> Syscall p
+                            sym
+                            (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
+                                          Ctx.::> LCLM.LLVMPointerType 64)
+                            ext
+                            (LCLM.LLVMPointerType 64)
+buildOpenOverride fs memVar = Syscall {
+    syscallName = fromString "open"
+  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
+  , syscallOverride =
+      \sym args -> Ctx.uncurryAssignment (callOpen fs memVar sym) args
+  }
+
+-- | Override for the write(2) system call
+callClose :: ( LCLM.HasLLVMAnn sym
+             , LCB.IsSymInterface sym )
+          => LCLS.LLVMFileSystem 64
+          -> LCS.GlobalVar LCLM.Mem
+          -> sym
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+          -- ^ File descriptor to close
+          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
+callClose fs memVar sym fd = do
+  let ?ptrWidth = WI.knownRepr
+  let ?memOpts = syscallMemOptions
+  -- Drop upper 32 bits from fd
+  fdInt <- liftIO $ ptrToBv32 sym fd
+
+  -- Use llvm override for close
+  let closeLlvmOv = LCLI.llvmOverride_def (LCLS.closeFile fs)
+  resBv <- closeLlvmOv memVar sym (Ctx.empty Ctx.:> fdInt)
+
+  -- Pad result out to 64 bit pointer
+  liftIO $ bvToPtr sym resBv
+
+buildCloseOverride :: ( LCLM.HasLLVMAnn sym
+                     , LCB.IsSymInterface sym )
+                   => LCLS.LLVMFileSystem 64
+                   -> LCS.GlobalVar LCLM.Mem
+                   -> Syscall p
+                             sym
+                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64)
+                             ext
+                             (LCLM.LLVMPointerType 64)
+buildCloseOverride fs memVar = Syscall {
+    syscallName = fromString "close"
+  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
+  , syscallOverride =
+      \sym args -> Ctx.uncurryAssignment (callClose fs memVar sym) args
   }
 
 -------------------------------------------------------------------------------

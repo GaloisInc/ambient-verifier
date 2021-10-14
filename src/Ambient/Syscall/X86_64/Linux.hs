@@ -159,6 +159,8 @@ x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar hitExecve ->
                 , AS.syscallMapping = Map.fromList
                     [ (0, AS.SomeSyscall (AS.buildReadOverride fs memVar))
                     , (1, AS.SomeSyscall (AS.buildWriteOverride fs memVar))
+                    , (2, AS.SomeSyscall (AS.buildOpenOverride fs memVar))
+                    , (3, AS.SomeSyscall (AS.buildCloseOverride fs memVar))
                     , (59, AS.SomeSyscall (AS.buildExecveOverride hitExecve))
                     , (60, AS.SomeSyscall AS.exitOverride)
                     , (110, AS.SomeSyscall AS.getppidOverride)

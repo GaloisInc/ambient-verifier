@@ -24,6 +24,9 @@ read.exe: read.c
 write.exe: write.c
 	$(CC) -nostartfiles -static $< -o $@
 
+open-close.exe: open-close.c
+	$(CC) -nostartfiles -static $< -o $@
+
 read-musl.exe: read-musl.c
 	musl-gcc -nostartfiles -static $< -o $@
 
