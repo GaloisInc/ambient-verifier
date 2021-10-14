@@ -14,11 +14,17 @@ module Ambient.FunctionOverride (
   , SomeFunctionOverride(..)
   , FunctionABI(..)
   , BuildFunctionABI(..)
+    -- * Overrides
   , buildMallocOverride
   , buildCallocOverride
+    -- * Hacky overrides
+  , hackyFreeOverride
+  , hackyGdErrorExOverride
+  , hackyPrintfOverride
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
+import qualified Data.BitVector.Sized as BVS
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 
@@ -29,6 +35,9 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.FunctionName as WF
+import qualified What4.Interface as WI
+
+import           Ambient.Override
 
 -------------------------------------------------------------------------------
 -- Function Call Overrides
@@ -104,6 +113,77 @@ callMalloc sym mvar (LCS.regValue -> sz) =
      let displayString = "<malloc function override>"
      szBV <- LCLM.projectLLVM_bv sym sz
      LCLM.doMalloc sym LCLM.HeapAlloc LCLM.Mutable displayString mem szBV LCLD.noAlignment
+
+-------------------------------------------------------------------------------
+-- Hacky Overrides
+-------------------------------------------------------------------------------
+
+-- These are crude overrides that are primarily meant as a shortcut to getting
+-- something to work. We should replace these with proper solutions later.
+-- See #19 for one possible way to do this.
+
+-- | Mock @free@ by doing nothing.
+hackyFreeOverride :: LCB.IsSymInterface sym
+                  => FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64) ext
+                                            LCT.UnitType
+hackyFreeOverride = FunctionOverride
+  { functionName = "free"
+  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+  , functionReturnType = LCT.UnitRepr
+  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyCallFree sym) args
+  }
+
+hackyCallFree :: LCB.IsSymInterface sym
+              => sym
+              -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+              -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym LCT.UnitType)
+hackyCallFree _sym _ptr = pure ()
+
+-- | Mock @gd_error_ex@ by doing nothing.
+hackyGdErrorExOverride :: LCB.IsSymInterface sym
+                       => FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
+                                                               Ctx.::> LCLM.LLVMPointerType 64
+                                                               Ctx.::> LCLM.LLVMPointerType 64) ext
+                                                 LCT.UnitType
+hackyGdErrorExOverride = FunctionOverride
+  { functionName = "gd_error_ex"
+  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+                                 Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+                                 Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+  , functionReturnType = LCT.UnitRepr
+  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyCallGdErrorEx sym) args
+  }
+
+hackyCallGdErrorEx :: LCB.IsSymInterface sym
+                   => sym
+                   -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+                   -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+                   -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+                   -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym LCT.UnitType)
+hackyCallGdErrorEx _sym _priority _format _va_args = pure ()
+
+-- | Mock @printf@ by doing nothing and returing zero.
+hackyPrintfOverride :: LCB.IsSymInterface sym
+                    => FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
+                                                            Ctx.::> LCLM.LLVMPointerType 64) ext
+                                              (LCLM.LLVMPointerType 64)
+hackyPrintfOverride = FunctionOverride
+  { functionName = "printf"
+  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+                                 Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+  , functionReturnType = LCLM.LLVMPointerRepr LCT.knownNat
+  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyCallPrintf sym) args
+  }
+
+hackyCallPrintf :: LCB.IsSymInterface sym
+                => sym
+                -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+                -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+                -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
+hackyCallPrintf sym _format _va_args = liftIO $ do
+  let intRepr = LCT.knownNat @32
+  zeroBV <- WI.bvLit sym intRepr $ BVS.zero intRepr
+  bvToPtr sym zeroBV
 
 -------------------------------------------------------------------------------
 -- Function Call ABI Specification

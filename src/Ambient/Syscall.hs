@@ -26,8 +26,6 @@ import qualified Data.BitVector.Sized as BVS
 import qualified Data.Map.Strict as Map
 import           Data.String ( fromString )
 import qualified Data.Parameterized.Context as Ctx
-import qualified Data.Parameterized.Vector as Vector
-import           GHC.TypeNats ( type (<=) )
 
 import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
@@ -40,6 +38,8 @@ import qualified Lang.Crucible.Simulator.SimError as LCSS
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
+
+import           Ambient.Override
 
 -------------------------------------------------------------------------------
 -- System Call Overrides
@@ -253,27 +253,6 @@ buildWriteOverride fs memVar = Syscall {
   , syscallOverride =
       \sym args -> Ctx.uncurryAssignment (callWrite fs memVar sym) args
   }
-
--- | Convert a 64-bit LLVMPointer to a 32-bit vector by dropping the upper 32
--- bits
-ptrToBv32 :: ( LCB.IsSymInterface sym )
-              => sym
-              -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
-              -> IO (LCS.RegEntry sym (LCT.BVType 32))
-ptrToBv32 sym ptr = do
-  bv64 <- LCLM.projectLLVM_bv sym (LCS.regValue ptr)
-  bvSplit <- WI.bvSplitVector sym (WI.knownNat @2) (WI.knownNat @32) bv64
-  return $ LCS.RegEntry LCT.knownRepr (Vector.elemAt (WI.knownNat @1) bvSplit)
-
--- | Zero extend a bitvector to a 64-bit LLVMPointer
-bvToPtr :: ( LCB.IsSymInterface sym
-           , (w WI.+ 1) <= 64
-           , 1 <= w )
-           => sym
-           -> WI.SymExpr sym (WI.BaseBVType w)
-           -> IO (LCS.RegValue sym (LCLM.LLVMPointerType 64))
-bvToPtr sym bv =
-  WI.bvZext sym (WI.knownNat @64) bv >>= LCLM.llvmPointer_bv sym
 
 -- | Override for the open(2) system call
 callOpen :: ( LCLM.HasLLVMAnn sym

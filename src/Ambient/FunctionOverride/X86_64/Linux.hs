@@ -80,5 +80,10 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \memVar ->
                      map (\sfo@(AF.SomeFunctionOverride fo) -> (AF.functionName fo, sfo))
                          [ AF.SomeFunctionOverride (AF.buildCallocOverride memVar)
                          , AF.SomeFunctionOverride (AF.buildMallocOverride memVar)
+                           -- Hacky overrides
+                           -- TODO: Remove these (see #19)
+                         , AF.SomeFunctionOverride AF.hackyFreeOverride
+                         , AF.SomeFunctionOverride AF.hackyGdErrorExOverride
+                         , AF.SomeFunctionOverride AF.hackyPrintfOverride
                          ]
                  }
