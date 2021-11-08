@@ -153,24 +153,7 @@ lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
     -- 'addressToFnHandle'
     let offset = LCLMP.llvmPointerOffset $ LCS.regValue
                                          $ DMS.lookupReg archVals regsEntry DMC.ip_reg
-
-    -- Resolving a function address as concrete requires some fancy footwork.
-    -- See Note [Resolving concrete syscall numbers and function addresses].
-    offset' <- WPO.inNewFrame proc $ do
-      msat <- WPO.checkAndGetModel proc "lookupFunction (check with initial assumptions)"
-      model <- case msat of
-        WSat.Unknown   -> CMC.throwM AE.SolverUnknownFunctionAddress
-        WSat.Unsat{}   -> panic ["Initial assumptions are unsatisfiable"]
-        WSat.Sat model -> pure model
-      WEG.groundEval model offset
-    funcAddr <- WPO.inNewFrame proc $ do
-        block <- WI.notPred sym =<< WI.bvEq sym offset =<< WI.bvLit sym WT.knownNat offset'
-        WPS.assume (WPO.solverConn proc) block
-        msat <- WPO.check proc "lookupFunction (check under assumption that model cannot happen)"
-        case msat of
-          WSat.Unknown -> CMC.throwM AE.SolverUnknownFunctionAddress
-          WSat.Sat{}   -> CMC.throwM AE.SymbolicFunctionAddress
-          WSat.Unsat{} -> pure $ BVS.asUnsigned offset'
+    funcAddr <- resolveConcreteStackVal sym abi proc offset
 
     funcAddrOff <- resolveFuncAddr $ fromIntegral funcAddr
     handle <- lookupFuncAddrOff funcAddrOff
@@ -269,28 +252,12 @@ lookupSyscall
   -> DMS.LookupSyscallHandle sym arch
 lookupSyscall sym abi hdlAlloc =
   DMS.LookupSyscallHandle $ \(atps :: LCT.CtxRepr atps) (rtps :: LCT.CtxRepr rtps) state reg ->
-  LCBO.withSolverProcess sym (panic ["Online solving not enabled"]) $ \proc -> do
+  LCBO.withSolverProcess sym (AP.panic AP.SymbolicExecution "lookupSyscall"
+                                       ["Online solving not enabled"]) $ \proc -> do
     -- Extract system call number from register state
     syscallReg <- liftIO $ ASy.syscallNumberRegister abi sym atps reg
     let regVal = LCS.regValue syscallReg
-
-    -- Resolving a syscall number as concrete requires some fancy footwork.
-    -- See Note [Resolving concrete syscall numbers and function addresses].
-    regVal' <- WPO.inNewFrame proc $ do
-      msat <- WPO.checkAndGetModel proc "lookupSyscall (check with initial assumptions)"
-      model <- case msat of
-        WSat.Unknown   -> CMC.throwM AE.SolverUnknownSyscallNumber
-        WSat.Unsat{}   -> panic ["Initial assumptions are unsatisfiable"]
-        WSat.Sat model -> pure model
-      WEG.groundEval model regVal
-    syscallNum <- WPO.inNewFrame proc $ do
-        block <- WI.notPred sym =<< WI.bvEq sym regVal =<< WI.bvLit sym WT.knownNat regVal'
-        WPS.assume (WPO.solverConn proc) block
-        msat <- WPO.check proc "lookupSyscall (check under assumption that model cannot happen)"
-        case msat of
-          WSat.Unknown -> CMC.throwM AE.SolverUnknownSyscallNumber
-          WSat.Sat{}   -> CMC.throwM AE.SymbolicSyscallNumber
-          WSat.Unsat{} -> pure $ BVS.asUnsigned regVal'
+    syscallNum <- resolveConcreteStackVal sym abi proc regVal
 
     -- Look for override associated with system call number
     case Map.lookup syscallNum (ASy.syscallMapping abi) of
@@ -315,9 +282,40 @@ lookupSyscall sym abi hdlAlloc =
         -- Build a function handle for the override and insert it into the
         -- state
         bindOverrideHandle state hdlAlloc atps rtps ov
+
+-- | Resolve a value that was spilled to the stack as concrete. This is used
+-- for both syscall numbers and function addresses, and it requires some fancy
+-- footwork to do successfully.
+-- See @Note [Resolving concrete syscall numbers and function addresses]@.
+resolveConcreteStackVal ::
+     ( DMS.SymArchConstraints arch
+     , sym ~ LCBO.OnlineBackend scope solver fs
+     , WPO.OnlineSolver solver
+     )
+  => sym
+  -> proxy arch
+  -> WPO.SolverProcess scope solver
+  -> WI.SymExpr sym (WT.BaseBVType (DMC.ArchAddrWidth arch))
+  -> IO Integer
+resolveConcreteStackVal sym _ proc stackVal = do
+  stackVal' <- WPO.inNewFrame proc $ do
+    msat <- WPO.checkAndGetModel proc "lookupSyscall (check with initial assumptions)"
+    model <- case msat of
+      WSat.Unknown   -> CMC.throwM AE.SolverUnknownSyscallNumber
+      WSat.Unsat{}   -> panic ["Initial assumptions are unsatisfiable"]
+      WSat.Sat model -> pure model
+    WEG.groundEval model stackVal
+  WPO.inNewFrame proc $ do
+      block <- WI.notPred sym =<< WI.bvEq sym stackVal =<< WI.bvLit sym WT.knownNat stackVal'
+      WPS.assume (WPO.solverConn proc) block
+      msat <- WPO.check proc "lookupSyscall (check under assumption that model cannot happen)"
+      case msat of
+        WSat.Unknown -> CMC.throwM AE.SolverUnknownSyscallNumber
+        WSat.Sat{}   -> CMC.throwM AE.SymbolicSyscallNumber
+        WSat.Unsat{} -> pure $ BVS.asUnsigned stackVal'
   where
     panic :: [String] -> a
-    panic = AP.panic AP.SymbolicExecution "lookupSyscall"
+    panic = AP.panic AP.SymbolicExecution "resolverConcreteStackVal"
 
 {-
 Note [Resolving concrete syscall numbers and function addresses]
