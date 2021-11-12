@@ -149,7 +149,7 @@ matchWeirdEntry thisAddr t =
 --
 -- See Note [IP Matching] for details on these conditions
 handleControlTransfer
-  :: forall arch ext p sym rtp f a tp t st fs
+  :: forall arch ext p sym rtp f a tp t st fs mem
    . ( ext ~ DMS.MacawExt arch
      , LCCE.IsSyntaxExtension ext
      , DMS.SymArchConstraints arch
@@ -160,7 +160,7 @@ handleControlTransfer
   => LJ.LogAction IO AD.Diagnostic
   -> WS.SolverAdapter st
   -- ^ The solver adapter to use for checking IP values
-  -> DMS.GenArchVals DMS.LLVMMemory arch
+  -> DMS.GenArchVals mem arch
   -> AE.Properties
   -- ^ The properties that the verifier should check (and the globals capturing their traces)
   -> WMMCallback arch sym
@@ -265,7 +265,7 @@ handleControlTransfer logAction adapter archVals props (WMMCallback action) regS
 -- FIXME: This could also address jump-oriented programs by handling the
 -- 'LCSE.ControlTransferState'
 wmmFeature
-  :: forall arch ext p sym rtp t st fs
+  :: forall arch ext p sym rtp t st fs mem
    . ( ext ~ DMS.MacawExt arch
      , LCCE.IsSyntaxExtension ext
      , DMS.SymArchConstraints arch
@@ -276,7 +276,7 @@ wmmFeature
   => LJ.LogAction IO AD.Diagnostic
   -> AS.Solver
   -- ^ The solver to use when checking the current IP
-  -> DMS.GenArchVals DMS.LLVMMemory arch
+  -> DMS.GenArchVals mem arch
   -- ^ A property to check, from which weird Machine entry points can be derived
   -> WMMCallback arch sym
   -- ^ An action to run when a Weird Machine is recognized

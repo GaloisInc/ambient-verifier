@@ -118,7 +118,7 @@ mkInitialRegVal symArchFns sym r = do
 -- NOTE: This currently only works for concrete function addresses, but once
 -- https://github.com/GaloisInc/crucible/pull/615 lands, we should update it to
 -- return a mux of all possible targets.
-lookupFunction :: forall sym arch p ext w scope solver fs args ret
+lookupFunction :: forall sym arch p ext w scope solver fs args ret mem
    . ( LCB.IsSymInterface sym
      , LCLM.HasLLVMAnn sym
      , LCCE.IsSyntaxExtension ext
@@ -133,7 +133,7 @@ lookupFunction :: forall sym arch p ext w scope solver fs args ret
      , WPO.OnlineSolver solver
      )
    => sym
-   -> DMS.GenArchVals DMS.LLVMMemory arch
+   -> DMS.GenArchVals mem arch
    -> DMM.Memory w
    -- ^ Memory from function discovery
    -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)

@@ -53,7 +53,7 @@ wmeReturnFeature :: ( DMS.SymArchConstraints arch
                  -> DMB.LoadedBinary arch binFmt
                  -- ^ Binary to disassemble
                  -> LCF.HandleAllocator
-                 -> DMS.GenArchVals DMS.LLVMMemory arch
+                 -> DMS.GenArchVals mem arch
                  -> sym
                  -> LCSEv.ExecutionFeature p sym ext rtp
 wmeReturnFeature archInfo loadedBinary hdlAlloc archVals sym = LCSEv.ExecutionFeature $ \estate -> do
@@ -127,7 +127,7 @@ buildCfgFromAddr archInfo loadedBinary hdlAlloc addr symArchFns = do
 --
 -- Currently this only supports return oriented programs, but could be extended
 -- to support other types of weird machines.
-wmExecutor :: forall arch binFmt w sym
+wmExecutor :: forall arch binFmt w sym mem
             . ( w ~ DMC.ArchAddrWidth arch
               , DMS.SymArchConstraints arch
               , 1 <= w
@@ -138,7 +138,7 @@ wmExecutor :: forall arch binFmt w sym
            -> DMB.LoadedBinary arch binFmt
            -- ^ Binary to disassemble
            -> LCF.HandleAllocator
-           -> DMS.GenArchVals DMS.LLVMMemory arch
+           -> DMS.GenArchVals mem arch
            -> [LCS.GenericExecutionFeature sym]
            -- ^ Additional execution features to use when executing the weird
            -- machine
