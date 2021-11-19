@@ -521,7 +521,7 @@ symbolicallyExecute
 symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI initGlobals mFsRoot = do
   let mem = DMB.memoryImage loadedBinary
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
-  let ?recordLLVMAnnotation = \_ _ -> return ()
+  let ?recordLLVMAnnotation = \_ _ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl

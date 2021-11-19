@@ -184,8 +184,7 @@ callRead fs memVar sym fd buf count = do
   let countReg = LCS.RegEntry LCT.knownRepr countBv
 
   -- Use llvm override for read
-  let readLlvmOv = LCLI.llvmOverride_def (LCLS.readFileHandle fs)
-  resBv <- readLlvmOv memVar sym (Ctx.empty Ctx.:> fdReg Ctx.:> buf Ctx.:> countReg)
+  resBv <- LCLS.callReadFileHandle sym memVar fs fdReg buf countReg
 
   liftIO $ LCLM.llvmPointer_bv sym resBv
 
@@ -242,8 +241,7 @@ callWrite fs memVar sym fd buf count = do
   let countReg = LCS.RegEntry LCT.knownRepr countBv
 
   -- Use the llvm override for write
-  let writeLlvmOv = LCLI.llvmOverride_def (LCLS.writeFileHandle fs)
-  resBv <- writeLlvmOv memVar sym (Ctx.empty Ctx.:> fdReg Ctx.:> buf Ctx.:> countReg)
+  resBv <- LCLS.callWriteFileHandle sym memVar fs fdReg buf countReg
 
   liftIO $ LCLM.llvmPointer_bv sym resBv
 
@@ -286,8 +284,7 @@ callOpen fs memVar sym pathname flags = do
   flagsInt <- liftIO $ ptrToBv32 sym flags
 
   -- Use llvm override for open
-  let openLlvmOv = LCLI.llvmOverride_def (LCLS.openFile fs)
-  resBv <- openLlvmOv memVar sym (Ctx.empty Ctx.:> pathname Ctx.:> flagsInt)
+  resBv <- LCLS.callOpenFile sym memVar fs pathname flagsInt
 
   -- Pad result out to 64 bit pointer
   liftIO $ bvToPtr sym resBv
@@ -327,8 +324,7 @@ callClose fs memVar sym fd = do
   fdInt <- liftIO $ ptrToBv32 sym fd
 
   -- Use llvm override for close
-  let closeLlvmOv = LCLI.llvmOverride_def (LCLS.closeFile fs)
-  resBv <- closeLlvmOv memVar sym (Ctx.empty Ctx.:> fdInt)
+  resBv <- LCLS.callCloseFile sym memVar fs fdInt
 
   -- Pad result out to 64 bit pointer
   liftIO $ bvToPtr sym resBv
