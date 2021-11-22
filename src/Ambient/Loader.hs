@@ -28,9 +28,11 @@ import qualified Data.Macaw.Memory.LoadCommon as MML
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.X86 as DMX
 import           Data.Macaw.X86.Symbolic ()
+import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Common as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified PE.Parser as PE
 import qualified What4.Interface as WI
 
@@ -51,25 +53,34 @@ import qualified Ambient.Syscall.X86_64.Linux as ASXL
 -- In the continuation (third argument), one would invoke code discovery via
 -- macaw.
 --
+-- Note that the @sym@ parameter is only required to avoid a proxy.
+--
 -- NOTE: We are currently fixing the memory model here. We will almost certainly
 -- want to change that in the future (either to another fixed value or to make
 -- it configurable)
 withBinary
-  :: (CMC.MonadThrow m, MonadIO m)
+  :: (CMC.MonadThrow m, MonadIO m, sym ~ LCBO.OnlineBackend scope solver fs)
   => FilePath
   -> BS.ByteString
   -> LCF.HandleAllocator
-  -> ( forall arch binFmt mem
-      . (DMB.BinaryLoader arch binFmt, 16 <= DMC.ArchAddrWidth arch, DMS.SymArchConstraints arch, mem ~ DMS.LLVMMemory)
+  -> sym
+  -> ( forall arch binFmt mem p
+      . ( DMB.BinaryLoader arch binFmt
+        , 16 <= DMC.ArchAddrWidth arch
+        , DMS.SymArchConstraints arch
+        , mem ~ DMS.LLVMMemory
+        , p ~ DMS.MacawSimulatorState sym
+        )
      => DMA.ArchitectureInfo arch
      -> DMS.GenArchVals mem arch
-     -> AS.BuildSyscallABI arch
-     -> AF.BuildFunctionABI arch
+     -> AS.BuildSyscallABI arch sym p
+     -> AF.BuildFunctionABI arch sym p
+     -> LCSC.ParserHooks (DMS.MacawExt arch)
      -> AM.InitArchSpecificGlobals arch
      -> DMB.LoadedBinary arch binFmt
      -> m a)
   -> m a
-withBinary name bytes hdlAlloc k =
+withBinary name bytes hdlAlloc _sym k =
   case DE.decodeElfHeaderInfo bytes of
     Right (DE.SomeElf ehi) -> do
       -- See Note [ELF Load Options]
@@ -97,6 +108,7 @@ withBinary name bytes hdlAlloc k =
                 archVals
                 ASXL.x86_64LinuxSyscallABI
                 AFXL.x86_64LinuxFunctionABI
+                (AFXL.x86_64LinuxParserHooks (Proxy @DMX.X86_64))
                 (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
                 lb
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_X86_64 DE.ELFCLASS64)

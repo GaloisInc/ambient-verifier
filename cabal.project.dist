@@ -6,6 +6,7 @@ packages: .
           submodules/crucible/crucible
           submodules/crucible/crucible-llvm
           submodules/crucible/crucible-symio
+          submodules/crucible/crucible-syntax
           submodules/arm-asl-parser
           submodules/asl-translator
           submodules/elf-edit

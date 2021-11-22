@@ -113,14 +113,14 @@ x86_64LinuxSyscallReturnRegisters ovTyp ovSim atps argRegs rtps =
         _ -> AP.panic AP.Syscall
                       "x86_64LinuxSyscallReturnRegisters"
                       ["Unsupported override return type"]
-        -- ^ NOTE: Fill in return types as needed for new syscall overrides
+        -- NOTE: Fill in return types as needed for new syscall overrides
         -- here
     _ -> AP.panic AP.Syscall
                   "x86_64LinuxSyscallReturnRegisters"
                   ["Unexpected shape of return registers"]
 
 -- | An ABI for Linux syscalls on x86_64 processors
-x86_64LinuxSyscallABI :: AS.BuildSyscallABI DMX.X86_64
+x86_64LinuxSyscallABI :: AS.BuildSyscallABI DMX.X86_64 sym p
 x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
   AS.SyscallABI { AS.syscallArgumentRegisters = x86_64LinuxSyscallArgumentRegisters
                 , AS.syscallNumberRegister = x86_64LinuxSyscallNumberRegister

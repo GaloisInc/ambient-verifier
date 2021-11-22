@@ -42,6 +42,8 @@ data AmbientException where
   ExecutionTimeout :: AmbientException
   -- | The event trace for the named property is malformed
   MalformedEventTrace :: T.Text -> AmbientException
+  -- | A failure when processing a crucible syntax override
+  CrucibleSyntaxFailure :: String -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -80,3 +82,5 @@ instance PP.Pretty AmbientException where
         PP.pretty "Symbolic execution timed out"
       MalformedEventTrace name ->
         PP.pretty "The event trace for property'" <> PP.pretty name <> PP.pretty "' is malformed"
+      CrucibleSyntaxFailure errorMessage ->
+        PP.pretty "Error during processing of crucible syntax override: " <> PP.pretty errorMessage

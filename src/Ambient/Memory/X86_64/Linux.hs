@@ -45,7 +45,7 @@ initSegmentMemory :: ( LCB.IsSymInterface sym
                   -> String
                   -- ^ Name for the array storage backing the new segment
                   -> IO ( LCLM.LLVMPtr sym (DMC.ArchAddrWidth DMX.X86_64)
-                       -- ^ Base pointer for new memory segment
+                       -- Base pointer for new memory segment
                         , LCLM.MemImpl sym )
                        -- ^ Updated MemImpl containing new memory segment
 initSegmentMemory sym mem0 symbol = do

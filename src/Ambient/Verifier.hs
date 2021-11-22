@@ -49,6 +49,7 @@ import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Discovery as ADi
 import qualified Ambient.EventTrace as AEt
 import qualified Ambient.Exception as AE
+import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
 import qualified Ambient.Panic as AP
@@ -93,6 +94,10 @@ data ProgramInstance =
                   -- ^ A property to verify that the program satisfies
                   , piProfileTo :: Maybe FilePath
                   -- ^ The path of a file to profile to
+                  , piOverrideDir :: Maybe FilePath
+                  -- ^ Path to the crucible syntax overrides directory.  If
+                  -- this is 'Nothing', then no crucible syntax overrides will
+                  -- be registered.
                   }
 
 -- | Retrieve a mapping from symbol names to addresses from code discovery
@@ -304,15 +309,15 @@ verify
   -> m ()
 verify logAction pinst timeoutDuration = do
   hdlAlloc <- liftIO LCF.newHandleAllocator
-  -- Load up the binary, which existentially introduces the architecture of the
-  -- binary in the context of the continuation
-  AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc $ \archInfo archVals syscallABI functionABI buildGlobals loadedBinary -> DMA.withArchConstraints archInfo $ do
-    discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
-    -- See Note [Entry Point] for more details
-    (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState "main"
-    (LCCC.SomeCFG cfg0) <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) discoveredEntry
-    Some ng <- liftIO PN.newIONonceGenerator
-    AS.withOnlineSolver (piSolver pinst) (piFloatMode pinst) ng $ \sym -> do
+  Some ng <- liftIO PN.newIONonceGenerator
+  AS.withOnlineSolver (piSolver pinst) (piFloatMode pinst) ng $ \sym -> do
+    -- Load up the binary, which existentially introduces the architecture of the
+    -- binary in the context of the continuation
+    AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals loadedBinary -> DMA.withArchConstraints archInfo $ do
+      discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
+      -- See Note [Entry Point] for more details
+      (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState "main"
+      (LCCC.SomeCFG cfg0) <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) discoveredEntry
       (handles, bindings) <- buildBindings
           (Map.toList (discoveryState ^. DMD.funInfo))
           hdlAlloc
@@ -333,7 +338,10 @@ verify logAction pinst timeoutDuration = do
                                                , AVS.secSolver = piSolver pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions
-      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI functionABI buildGlobals (piFsRoot pinst)
+      functionOvs <- case piOverrideDir pinst of
+        Just dir -> liftIO $ AF.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
+        Nothing -> return []
+      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI functionABI buildGlobals (piFsRoot pinst) functionOvs
 
       liftIO $ mapM_ (assertPropertySatisfied logAction sym execResult) (AEt.properties (AVW.wmProperties wmConfig))
 

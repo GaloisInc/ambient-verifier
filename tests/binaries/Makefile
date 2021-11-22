@@ -36,5 +36,8 @@ read-symbolic-syscall-num.exe: read-symbolic-syscall-num.c
 alloc.exe: alloc.c
 	musl-gcc -nostartfiles -static $< -o $@
 
+crucible-syntax-function-ov.exe: crucible-syntax-function-ov.c
+	$(CC) -nostartfiles -static $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static $< -o $@

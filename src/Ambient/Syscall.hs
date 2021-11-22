@@ -31,7 +31,6 @@ import           Data.String ( fromString )
 import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
 import qualified Lang.Crucible.Backend as LCB
-import qualified Lang.Crucible.LLVM.Intrinsics as LCLI
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
@@ -61,7 +60,7 @@ data Syscall p sym args ext ret =
           , syscallOverride
               :: sym
               -> Ctx.Assignment (LCS.RegEntry sym) args
-              -- ^ Arguments to syscall
+              -- Arguments to syscall
               -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))
           -- ^ Override capturing behavior of the syscall
           }
@@ -356,55 +355,55 @@ buildCloseOverride fs memVar = Syscall {
 --
 -- Note that this is data rather than a class because there can be different
 -- ABIs for a given architecture (e.g., Windows and Linux)
-data SyscallABI arch =
+data SyscallABI arch sym p =
   SyscallABI {
     -- Given a full register state, extract all of the arguments we need for
     -- the system call
     syscallArgumentRegisters
-      :: forall args sym atps
+      :: forall args atps
        . (LCB.IsSymInterface sym)
       => LCT.CtxRepr atps
-      -- ^ Types of argument registers
+      -- Types of argument registers
       -> LCS.RegEntry sym (LCT.StructType atps)
-      -- ^ Argument register values
+      -- Argument register values
       -> LCT.CtxRepr args
-      -- ^ Types of syscall arguments
+      -- Types of syscall arguments
       -> Ctx.Assignment (LCS.RegEntry sym) args
-      -- ^ Syscall argument values
+      -- Syscall argument values
 
     -- Extract the syscall number from the register state
   , syscallNumberRegister
-     :: forall sym atps
+     :: forall atps
       . (LCB.IsSymInterface sym)
      => sym
      -> Ctx.Assignment LCT.TypeRepr atps
-     -- ^ Types of argument registers
+     -- Types of argument registers
      -> LCS.RegEntry sym (LCT.StructType atps)
-     -- ^ Argument register values
+     -- Argument register values
      -> IO (LCS.RegEntry sym (LCT.BVType (DMC.ArchAddrWidth arch)))
-     -- ^ Extracted syscall number
+     -- Extracted syscall number
 
     -- Build an OverrideSim action with appropriate return register types from
     -- a given OverrideSim action
   , syscallReturnRegisters
-     :: forall t p sym ext r args rtps atps
+     :: forall t ext r args rtps atps
       . LCT.TypeRepr t
-     -- ^ Syscall return type
+     -- Syscall return type
      -> LCS.OverrideSim p sym ext r args (LCT.StructType rtps) (LCS.RegValue sym t)
-     -- ^ OverrideSim action producing the syscall's return value
+     -- OverrideSim action producing the syscall's return value
      -> LCT.CtxRepr atps
-     -- ^ Argument register types
+     -- Argument register types
      -> LCS.RegEntry sym (LCT.StructType atps)
-     -- ^ Argument register values from before syscall execution
+     -- Argument register values from before syscall execution
      -> LCT.CtxRepr rtps
-     -- ^ Return register types
+     -- Return register types
      -> LCS.OverrideSim p sym ext r args (LCT.StructType rtps) (LCS.RegValue sym (LCT.StructType rtps))
-     -- ^ OverrideSim action with return type matching system return register
+     -- OverrideSim action with return type matching system return register
      -- type
 
     -- A mapping from syscall numbers to overrides
   , syscallMapping
-     :: forall p sym ext
+     :: forall ext
       . ( LCB.IsSymInterface sym
         , LCLM.HasLLVMAnn sym )
      => Map.Map Integer (SomeSyscall p sym ext)
@@ -412,14 +411,14 @@ data SyscallABI arch =
 
 -- A function to construct a SyscallABI with file system and memory access, as
 -- well as the ability to track whether an 'execve' call has been reached
-newtype BuildSyscallABI arch = BuildSyscallABI (
+newtype BuildSyscallABI arch sym p = BuildSyscallABI (
     LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
-    -- ^ File system to use in syscalls
+    -- File system to use in syscalls
     -> LCS.GlobalVar LCLM.Mem
-    -- ^ MemVar for the execution
+    -- MemVar for the execution
     -> AE.Properties
-    -- ^ The properties to be checked, along with their corresponding global traces
-    -> SyscallABI arch
+    -- The properties to be checked, along with their corresponding global traces
+    -> SyscallABI arch sym p
   )
 
 {- Note [Argument and Return Widths]

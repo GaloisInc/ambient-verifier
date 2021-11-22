@@ -26,6 +26,7 @@ data ExpectedGoals =
   ExpectedGoals { successful :: Int
                 , failed :: Int
                 , fsRoot :: Maybe FilePath
+                , overrideDir :: Maybe FilePath
                 }
   deriving (Eq, Ord, Read, Show, Generic)
 
@@ -35,6 +36,7 @@ emptyExpectedGoals :: ExpectedGoals
 emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , failed = 0
                                    , fsRoot = Nothing
+                                   , overrideDir = Nothing
                                    }
 
 -- | A simple logger that just sends diagnostics to a channel; an asynchronous
@@ -97,6 +99,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piCommandLineArguments = []
                                  , AV.piProperties = maybeToList mprop
                                  , AV.piProfileTo = Nothing
+                                 , AV.piOverrideDir = overrideDir expectedResult
                                  }
 
   chan <- CC.newChan
@@ -110,6 +113,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   -- specify both the initial state and expected state. We copy over some
   -- constants to just make the comparison work out.
   let res' = res { fsRoot = fsRoot expectedResult
+                 , overrideDir = overrideDir expectedResult
                  }
   TTH.assertEqual "Expected Output" expectedResult res'
   where

@@ -28,6 +28,7 @@ common shared
         bv-sized,
         containers,
         exceptions,
+        filepath,
         lens >= 4 && < 6,
         lumberjack >= 1 && < 1.1,
         megaparsec >= 7 && < 10,
@@ -45,6 +46,7 @@ library
                       Ambient.EventTrace,
                       Ambient.Exception,
                       Ambient.FunctionOverride,
+                      Ambient.FunctionOverride.ArgumentMapping,
                       Ambient.FunctionOverride.X86_64.Linux,
                       Ambient.Lift,
                       Ambient.Loader,
@@ -75,12 +77,14 @@ library
                       macaw-symbolic,
                       macaw-loader,
                       macaw-loader-x86,
+                      filemanip,
                       flexdis86,
                       macaw-x86,
                       macaw-x86-symbolic,
                       crucible,
                       crucible-llvm,
                       crucible-symio,
+                      crucible-syntax,
                       what4
 
     hs-source-dirs:   src
@@ -99,7 +103,6 @@ executable ambient-verifier
     -- other-extensions:
     build-depends:
         optparse-applicative,
-        filepath,
         filemanip,
         ambient-verifier
 
@@ -114,7 +117,6 @@ test-suite ambient-tests
   hs-source-dirs: tests
   build-depends: ambient-verifier,
                  directory,
-                 filepath,
                  filemanip,
                  tasty,
                  tasty-expected-failure,

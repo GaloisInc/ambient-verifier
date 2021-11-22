@@ -58,6 +58,7 @@ verify o = do
                                  , AV.piFloatMode = O.floatMode o
                                  , AV.piProperties = props
                                  , AV.piProfileTo = O.profileTo o
+                                 , AV.piOverrideDir = O.overrideDir o
                                  }
 
   chan <- CC.newChan

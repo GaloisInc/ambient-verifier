@@ -11,15 +11,14 @@ import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 -- | 'InitArchSpecificGlobals' provides a function signature for initialization
 -- of global variables that are only present on certain architectures or
 -- operating systems (e.g., FSBASE on x86).
+--
+-- It takes an initial 'LCMC.MemImpl' and modifies it as necessary, also
+-- returning any auxiliary global variables to support the changes.
 newtype InitArchSpecificGlobals arch =
   InitArchSpecificGlobals (  forall sym
                              .  ( LCLM.HasLLVMAnn sym
                                 , LCB.IsSymInterface sym )
                              => sym
                              -> LCLM.MemImpl sym
-                             -- ^ MemImpl to update
                              -> IO ( LCLM.MemImpl sym
-                                  -- ^ Updated MemImpl
                                    , LCSG.SymGlobalState sym) )
-                                  -- ^ Global state containing architecture
-                                  -- specific globals

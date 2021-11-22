@@ -34,6 +34,9 @@ data Options =
           -- ^ File paths to a state charts encoding properties to verify
           , profileTo :: Maybe FilePath
           -- ^ A path to write periodic profiling reports to
+          , overrideDir :: Maybe FilePath
+          -- ^ Path to the crucible syntax overrides directory.  If this is
+          -- 'Nothing', then no crucible syntax overrides will be registered.
           }
   deriving ( Show )
 
@@ -85,6 +88,10 @@ parser = Options <$> OA.strOption ( OA.long "binary"
                                             <> OA.metavar "FILE"
                                             <> OA.help "A file to log symbolic execution profiles to periodically"
                                              ))
+                 <*> OA.optional (OA.strOption ( OA.long "overrides"
+                                               <> OA.metavar "DIRECTORY"
+                                               <> OA.help "A path to a directory of overides in crucible syntax"
+                                               ))
 
 {- Note [Future Improvements]
 
