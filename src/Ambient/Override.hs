@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -10,8 +11,8 @@ module Ambient.Override
   ) where
 
 import qualified Data.Parameterized.Context as Ctx
-import qualified Data.Parameterized.Vector as Vector
-import           GHC.TypeNats ( type (<=) )
+import qualified Data.Parameterized.NatRepr as PN
+import           GHC.TypeNats ( type (<=), KnownNat )
 
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Simulator as LCS
@@ -24,25 +25,29 @@ import qualified Ambient.Panic as AP
 -- | Build an Assignment representing the arguments to a system call or
 -- function argument from a list of registers
 buildArgumentRegisterAssignment
-  :: LCT.CtxRepr args
+  :: forall w args sym
+    . PN.NatRepr w
+  -- ^ Pointer width
+  -> LCT.CtxRepr args
   -- ^ Types of arguments
-  -> [LCS.RegEntry sym (LCLM.LLVMPointerType 64)]
+  -> [LCS.RegEntry sym (LCLM.LLVMPointerType w)]
   -- ^ List of argument registers
   -> Ctx.Assignment (LCS.RegEntry sym) args
   -- ^ Argument values
-buildArgumentRegisterAssignment argTyps regEntries = go argTyps regEntries'
+buildArgumentRegisterAssignment ptrW argTyps regEntries = go argTyps regEntries'
   where
     -- Drop unused registers from regEntries and reverse list to account for
     -- right-to-left processing when using 'Ctx.viewAssign'
     regEntries' = reverse (take (Ctx.sizeInt (Ctx.size argTyps)) regEntries)
 
-    go :: LCT.CtxRepr args
-       -> [LCS.RegEntry sym (LCLM.LLVMPointerType 64)]
-       -> Ctx.Assignment (LCS.RegEntry sym) args
+    go :: forall args'
+        . LCT.CtxRepr args'
+       -> [LCS.RegEntry sym (LCLM.LLVMPointerType w)]
+       -> Ctx.Assignment (LCS.RegEntry sym) args'
     go typs regs =
       case Ctx.viewAssign typs of
         Ctx.AssignEmpty -> Ctx.empty
-        Ctx.AssignExtend typs' (LCLM.LLVMPointerRepr w) | Just WI.Refl <- WI.testEquality w (WI.knownNat @64) ->
+        Ctx.AssignExtend typs' (LCLM.LLVMPointerRepr w) | Just WI.Refl <- WI.testEquality w ptrW ->
           case regs of
             [] -> AP.panic AP.Override
                            "buildArgumentRegisterAssignment"
@@ -54,22 +59,33 @@ buildArgumentRegisterAssignment argTyps regEntries = go argTyps regEntries'
                       ["Currently only LLVMPointer arguments are supported"]
 
 -- | Zero extend a bitvector to a 64-bit LLVMPointer
-bvToPtr :: ( LCB.IsSymInterface sym
-           , (w WI.+ 1) <= 64
-           , 1 <= w )
+bvToPtr :: forall sym srcW ptrW
+         . ( LCB.IsSymInterface sym
+           , 1 <= srcW
+           , KnownNat srcW
+           )
            => sym
-           -> WI.SymExpr sym (WI.BaseBVType w)
-           -> IO (LCS.RegValue sym (LCLM.LLVMPointerType 64))
-bvToPtr sym bv =
-  WI.bvZext sym (WI.knownNat @64) bv >>= LCLM.llvmPointer_bv sym
+           -> WI.SymExpr sym (WI.BaseBVType srcW)
+           -> PN.NatRepr ptrW
+           -> IO (LCS.RegValue sym (LCLM.LLVMPointerType ptrW))
+bvToPtr sym bv ptrW =
+  case PN.compareNat (WI.knownNat @srcW) ptrW of
+    PN.NatEQ -> LCLM.llvmPointer_bv sym bv
+    PN.NatLT _w -> WI.bvZext sym ptrW bv >>= LCLM.llvmPointer_bv sym
+    PN.NatGT _w -> AP.panic AP.Override "bvToPtr" ["Bitvector is larger than pointer width and cannot be extended: " ++ show (WI.knownNat @srcW)]
 
 -- | Convert a 64-bit LLVMPointer to a 32-bit vector by dropping the upper 32
 -- bits
 ptrToBv32 :: ( LCB.IsSymInterface sym )
-              => sym
-              -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
-              -> IO (LCS.RegEntry sym (LCT.BVType 32))
-ptrToBv32 sym ptr = do
-  bv64 <- LCLM.projectLLVM_bv sym (LCS.regValue ptr)
-  bvSplit <- WI.bvSplitVector sym (WI.knownNat @2) (WI.knownNat @32) bv64
-  return $ LCS.RegEntry LCT.knownRepr (Vector.elemAt (WI.knownNat @1) bvSplit)
+          => sym
+          -> PN.NatRepr w
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+          -> IO (LCS.RegEntry sym (LCT.BVType 32))
+ptrToBv32 sym nr ptr = do
+  bvW <- LCLM.projectLLVM_bv sym (LCS.regValue ptr)
+  case PN.compareNat nr (WI.knownNat @32) of
+    PN.NatLT _ -> AP.panic AP.Override "ptrToBv32" ["Pointer too small to truncate to 32 bits: " ++ show nr]
+    PN.NatEQ -> return $! LCS.RegEntry LCT.knownRepr bvW
+    PN.NatGT _w -> do
+      lower <- WI.bvTrunc sym (WI.knownNat @32) bvW
+      return $! LCS.RegEntry LCT.knownRepr lower

@@ -49,7 +49,7 @@ import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Discovery as ADi
 import qualified Ambient.EventTrace as AEt
 import qualified Ambient.Exception as AE
-import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
 import qualified Ambient.Panic as AP
@@ -339,7 +339,7 @@ verify logAction pinst timeoutDuration = do
                                                }
       let ?memOpts = LCLM.defaultMemOptions
       functionOvs <- case piOverrideDir pinst of
-        Just dir -> liftIO $ AF.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
+        Just dir -> liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
         Nothing -> return []
       (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI functionABI buildGlobals (piFsRoot pinst) functionOvs
 

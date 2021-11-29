@@ -12,24 +12,19 @@ module Ambient.FunctionOverride.X86_64.Linux (
     x86_64LinuxIntegerArgumentRegisters
   , x86_64LinuxIntegerReturnRegisters
   , x86_64LinuxFunctionABI
-  , x86_64LinuxParserHooks
   ) where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
 
-import qualified Data.Macaw.CFG as MC
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.X86 as DMX
 import qualified Data.Macaw.X86.Symbolic as DMXS
 import qualified Data.Macaw.X86.X86Reg as DMXR
 import qualified Lang.Crucible.Simulator as LCS
-import qualified Lang.Crucible.Syntax.Atoms as LCSA
-import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Types as LCT
-import           GHC.TypeLits ( type (<=), KnownNat )
 import qualified What4.Interface as WI
 
 import qualified Ambient.Override as AO
@@ -45,7 +40,7 @@ x86_64LinuxIntegerArgumentRegisters
   -> Ctx.Assignment (LCS.RegEntry sym) atps
 x86_64LinuxIntegerArgumentRegisters argTypes regs =
   let regList = map lookupReg DMX.x86ArgumentRegs in
-  AO.buildArgumentRegisterAssignment argTypes regList
+  AO.buildArgumentRegisterAssignment (PN.knownNat @64) argTypes regList
   where
     lookupReg r =
       case DMXS.lookupX86Reg r regs of
@@ -80,7 +75,7 @@ x86_64LinuxIntegerReturnRegisters ovTyp ovSim initRegs =
                             ["Failed to update rax register"]
     _ -> AP.panic AP.FunctionOverride
                   "x86_64LinuxIntegerReturnRegisters"
-                  ["Unsupported override return type"]
+                  ["Unsupported override return type: " ++ show ovTyp]
     -- NOTE: If we encounter an override that returns a 128 bit int we'll
     -- need to add support for that here
 
@@ -90,11 +85,13 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs ->
   --
   -- TODO: Remove these (see #19)
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
-  let hackyOverrides = [ AF.SomeFunctionOverride (AF.buildHackyBumpMallocOverride bumpEndVar)
-                       , AF.SomeFunctionOverride (AF.buildHackyBumpCallocOverride bumpEndVar memVar)
-                       , AF.SomeFunctionOverride AF.hackyFreeOverride
-                       , AF.SomeFunctionOverride AF.hackyGdErrorExOverride
-                       , AF.SomeFunctionOverride AF.hackyPrintfOverride
+  let ptrW = PN.knownNat @64 in
+  let ?ptrWidth = ptrW in
+  let hackyOverrides = [ AF.SomeFunctionOverride (AF.buildHackyBumpMallocOverride ptrW bumpEndVar)
+                       , AF.SomeFunctionOverride (AF.buildHackyBumpCallocOverride ptrW bumpEndVar memVar)
+                       , AF.SomeFunctionOverride (AF.hackyFreeOverride ptrW)
+                       , AF.SomeFunctionOverride (AF.hackyGdErrorExOverride ptrW)
+                       , AF.SomeFunctionOverride (AF.hackyPrintfOverride ptrW)
                        ]
   in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
@@ -103,20 +100,3 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs ->
                                    | sfo@(AF.SomeFunctionOverride fo) <- hackyOverrides ++ ovs
                                    ]
                     }
-
-
--- | ParserHooks for X86_64
-x86_64LinuxParserHooks :: forall w arch proxy
-                        . (w ~ MC.ArchAddrWidth arch, 1 <= w, KnownNat w, MC.MemWidth w)
-                       => proxy arch
-                       -> LCSC.ParserHooks (DMS.MacawExt arch)
-x86_64LinuxParserHooks proxy =
-  LCSC.ParserHooks (AF.extensionTypeParser (PN.knownNat @w))
-                   (AF.extensionParser extensionWrappers (x86_64LinuxParserHooks proxy))
-
--- | Syntax extension wrappers for X86_64
-extensionWrappers
-  :: (w ~ MC.ArchAddrWidth arch, 1 <= w, KnownNat w, MC.MemWidth w)
-  => Map.Map LCSA.AtomName (AF.SomeExtensionWrapper arch)
-extensionWrappers = Map.fromList
-  [ (LCSA.AtomName "pointer-add", AF.SomeExtensionWrapper AF.wrapPointerAdd) ]

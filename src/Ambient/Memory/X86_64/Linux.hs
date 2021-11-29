@@ -38,7 +38,9 @@ segmentBaseOffset = segmentSize `div` 2
 
 -- | Create an initialize a new memory segment
 initSegmentMemory :: ( LCB.IsSymInterface sym
-                     , LCLM.HasLLVMAnn sym )
+                     , LCLM.HasLLVMAnn sym
+                     , ?memOpts :: LCLM.MemOptions
+                     )
                   => sym
                   -> LCLM.MemImpl sym
                   -- ^ MemImpl to add the memory segment to
@@ -79,7 +81,9 @@ initSegmentMemory sym mem0 symbol = do
 -- and returns an 'InitArchSpecificGlobals' that initializes those globals
 -- and inserts them into the global variable state.
 x86_64LinuxInitGlobals
-  :: LCCC.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth DMX.X86_64))
+  :: ( ?memOpts :: LCLM.MemOptions
+     )
+  => LCCC.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth DMX.X86_64))
   -- ^ Global variable for FSBASE pointer
   -> LCCC.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth DMX.X86_64))
   -- ^ Global variable for GSBASE pointer

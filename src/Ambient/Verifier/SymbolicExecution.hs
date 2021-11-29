@@ -187,7 +187,7 @@ lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
     resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
     resolveFuncAddr funcAddr =
       case DMM.resolveRegionOff discoveryMem 0 (fromIntegral funcAddr) of
-        Nothing -> panic ["Failed to resolve function address"]
+        Nothing -> panic ["Failed to resolve function address: " ++ show funcAddr]
         Just funcAddrOff -> pure funcAddrOff
 
     lookupFuncAddrOff :: DMM.MemSegmentOff w -> IO (LCF.FnHandle args ret)

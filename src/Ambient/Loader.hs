@@ -14,6 +14,7 @@ import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
+import qualified Data.Parameterized.NatRepr as PN
 import           Data.Parameterized.Some ( Some(..) )
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
@@ -23,11 +24,14 @@ import qualified Data.ElfEdit as DE
 import qualified Data.Macaw.Architecture.Info as DMA
 import qualified Data.Macaw.BinaryLoader as DMB
 import           Data.Macaw.BinaryLoader.X86 ()
+import           Data.Macaw.BinaryLoader.AArch32 ()
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Memory.LoadCommon as MML
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.X86 as DMX
 import           Data.Macaw.X86.Symbolic ()
+import qualified Data.Macaw.ARM as Macaw.AArch32
+import           Data.Macaw.AArch32.Symbolic ()
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Common as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
@@ -38,10 +42,14 @@ import qualified What4.Interface as WI
 
 import qualified Ambient.Exception as AE
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.X86_64.Linux as AFXL
+import qualified Ambient.FunctionOverride.AArch32.Linux as AFAL
 import qualified Ambient.Memory as AM
+import qualified Ambient.Memory.AArch32.Linux as AMAL
 import qualified Ambient.Memory.X86_64.Linux as AMXL
 import qualified Ambient.Syscall as AS
+import qualified Ambient.Syscall.AArch32.Linux as ASAL
 import qualified Ambient.Syscall.X86_64.Linux as ASXL
 
 -- | Load a bytestring as a binary image and associate it with a macaw
@@ -80,7 +88,8 @@ withBinary
      -> DMB.LoadedBinary arch binFmt
      -> m a)
   -> m a
-withBinary name bytes hdlAlloc _sym k =
+withBinary name bytes hdlAlloc _sym k = do
+  let ?memOpts = LCLM.laxPointerMemOptions
   case DE.decodeElfHeaderInfo bytes of
     Right (DE.SomeElf ehi) -> do
       -- See Note [ELF Load Options]
@@ -108,10 +117,24 @@ withBinary name bytes hdlAlloc _sym k =
                 archVals
                 ASXL.x86_64LinuxSyscallABI
                 AFXL.x86_64LinuxFunctionABI
-                (AFXL.x86_64LinuxParserHooks (Proxy @DMX.X86_64))
+                (AFE.machineCodeParserHooks (Proxy @DMX.X86_64) (PN.knownNat @64))
                 (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
                 lb
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_X86_64 DE.ELFCLASS64)
+        (DE.EM_ARM, DE.ELFCLASS32) -> do
+          let extOverride = AMAL.aarch32LinuxStmtExtensionOverride
+          case DMS.archVals (Proxy @Macaw.AArch32.ARM) (Just extOverride) of
+            Just archVals -> do
+              lb :: DMB.LoadedBinary Macaw.AArch32.ARM (DE.ElfHeaderInfo 32)
+                 <- DMB.loadBinary MML.defaultLoadOptions ehi
+              k Macaw.AArch32.arm_linux_info
+                archVals
+                ASAL.aarch32LinuxSyscallABI
+                AFAL.aarch32LinuxFunctionABI
+                (AFE.machineCodeParserHooks (Proxy @Macaw.AArch32.ARM) (PN.knownNat @32))
+                AMAL.aarch32LinuxInitGlobals
+                lb
+            Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_ARM DE.ELFCLASS32)
         (machine, klass) -> CMC.throwM (AE.UnsupportedELFArchitecture name machine klass)
     Left _ ->
       case PE.decodePEHeaderInfo (BSL.fromStrict bytes) of

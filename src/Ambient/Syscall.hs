@@ -26,7 +26,9 @@ import qualified Data.BitVector.Sized as BVS
 import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
+import qualified Data.Parameterized.NatRepr as PN
 import           Data.String ( fromString )
+import           GHC.TypeLits ( type (<=) )
 
 import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
@@ -79,11 +81,15 @@ matchCallExecveEvent t =
 --
 -- See Note [Argument and Return Widths] for a discussion on the type of the
 -- 'execve' arguments.
-callExecve :: (LCB.IsSymInterface sym)
+callExecve :: ( LCB.IsSymInterface sym
+              , 1 <= w
+              , 16 <= w
+              )
            => AE.Properties
+           -> PN.NatRepr w
            -> sym
-           -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
-callExecve props sym = do
+           -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callExecve props _ptrW sym = do
   F.forM_ (AE.properties props) $ \(prop, traceGlobal) -> do
     t0 <- LCS.readGlobal traceGlobal
     t1 <- liftIO $ AE.recordEvent matchCallExecveEvent sym prop t0
@@ -91,28 +97,36 @@ callExecve props sym = do
   loc <- liftIO $ WI.getCurrentProgramLoc sym
   liftIO $ LCB.abortExecBecause $ LCB.EarlyExit loc
 
-buildExecveOverride :: (LCB.IsSymInterface sym)
+buildExecveOverride :: ( LCB.IsSymInterface sym
+                       , 1 <= w
+                       , 16 <= w
+                       )
                     => AE.Properties
-                    -> Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType 64)
-buildExecveOverride props = Syscall {
+                    -> PN.NatRepr w
+                    -> Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
+buildExecveOverride props ptrW = Syscall {
     syscallName = fromString "execve"
   , syscallArgTypes = Ctx.empty
-  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
-  , syscallOverride = (\sym _args -> callExecve props sym)
+  , syscallReturnType = LCLM.LLVMPointerRepr ptrW
+  , syscallOverride = (\sym _args -> callExecve props ptrW sym)
 }
 
 -- | Override for the 'exit' system call.
 --
 -- See Note [Argument and Return Widths] for a discussion on the type of the
 -- 'exit' argument.
-callExit :: (LCB.IsSymInterface sym)
-         => sym
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+callExit :: ( LCB.IsSymInterface sym
+            , 1 <= w
+            , 16 <= w
+            )
+         => PN.NatRepr w
+         -> sym
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ Exit code
          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym LCT.UnitType)
-callExit sym reg = liftIO $
+callExit ptrW sym reg = liftIO $
   do ec <- LCLM.projectLLVM_bv sym (LCS.regValue reg)
-     cond <- WI.bvEq sym ec =<< WI.bvLit sym WI.knownNat (BVS.zero WI.knownNat)
+     cond <- WI.bvEq sym ec =<< WI.bvLit sym ptrW (BVS.zero ptrW)
      -- If the argument is non-zero, throw an assertion failure. Otherwise,
      -- simply stop the current thread of execution.
      -- NOTE: In the future we may not want to distinguish between zero and
@@ -123,38 +137,50 @@ callExit sym reg = liftIO $
      loc <- WI.getCurrentProgramLoc sym
      LCB.abortExecBecause $ LCB.EarlyExit loc
 
-exitOverride :: forall p sym ext
-              . (LCB.IsSymInterface sym)
-             => Syscall p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64) ext (LCT.UnitType)
-exitOverride = Syscall {
+exitOverride :: forall p sym ext w
+              . ( LCB.IsSymInterface sym
+                , 1 <= w
+                , 16 <= w
+                )
+             => PN.NatRepr w
+             -> Syscall p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext (LCT.UnitType)
+exitOverride ptrW = Syscall {
     syscallName = fromString "exit"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
+  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ptrW)
   , syscallReturnType = LCT.UnitRepr
-  , syscallOverride = (\sym args -> Ctx.uncurryAssignment (callExit sym) args)
+  , syscallOverride = (\sym args -> Ctx.uncurryAssignment (callExit ptrW sym) args)
   }
 
 -- | Override for the getppid(2) system call
 --
 -- See Note [Argument and Return Widths] for a discussion on the type of the
 -- 'getppid' return value.
-callGetppid :: (LCB.IsSymInterface sym)
-            => sym
-            -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
-callGetppid sym = liftIO $ do
+callGetppid :: ( LCB.IsSymInterface sym
+               , 1 <= w
+               , 16 <= w
+               )
+            => PN.NatRepr w
+            -> sym
+            -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callGetppid ptrW sym = liftIO $ do
   -- The parent PID can change at any time due to reparenting, so this override
   -- always returns a new fresh value.
   symbolicResult <- WI.freshConstant sym
                                      (WI.safeSymbol "getppid")
-                                     (WI.BaseBVRepr (WI.knownNat @64))
+                                     (WI.BaseBVRepr ptrW)
   LCLM.llvmPointer_bv sym symbolicResult
 
-getppidOverride :: (LCB.IsSymInterface sym)
-                => Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType 64)
-getppidOverride = Syscall {
+getppidOverride :: ( LCB.IsSymInterface sym
+                   , 1 <= w
+                   , 16 <= w
+                   )
+                => PN.NatRepr w
+                -> Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
+getppidOverride ptrW = Syscall {
     syscallName = fromString "getppid"
   , syscallArgTypes = Ctx.empty
-  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
-  , syscallOverride = (\sym _args -> callGetppid sym)
+  , syscallReturnType = LCLM.LLVMPointerRepr ptrW
+  , syscallOverride = (\sym _args -> callGetppid ptrW sym)
   }
 
 -- | Override for the read(2) system call
@@ -162,25 +188,29 @@ getppidOverride = Syscall {
 -- See Note [Argument and Return Widths] for a discussion on the type of the
 -- argument and return values.
 callRead :: ( LCLM.HasLLVMAnn sym
-            , LCB.IsSymInterface sym )
-         => LCLS.LLVMFileSystem 64
+            , LCB.IsSymInterface sym
+            , 1 <= w
+            , 16 <= w
+            )
+         => PN.NatRepr w
+         -> LCLS.LLVMFileSystem w
          -> LCS.GlobalVar LCLM.Mem
          -> sym
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ File descriptor to read from
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ Pointer to buffer to read into
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ Maximum number of bytes to read
-         -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
-callRead fs memVar sym fd buf count = do
-  let ?ptrWidth = WI.knownRepr
+         -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callRead ptrW fs memVar sym fd buf count = do
+  let ?ptrWidth = ptrW
   -- Drop upper 32 bits from fd to create a 32 bit file descriptor
-  fdReg <- liftIO $ ptrToBv32 sym fd
+  fdReg <- liftIO $ ptrToBv32 sym ptrW fd
 
   -- Convert 'count' to a bitvector
   countBv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue count)
-  let countReg = LCS.RegEntry LCT.knownRepr countBv
+  let countReg = LCS.RegEntry (LCT.BVRepr ptrW) countBv
 
   -- Use llvm override for read
   resBv <- LCLS.callReadFileHandle sym memVar fs fdReg buf countReg
@@ -189,24 +219,28 @@ callRead fs memVar sym fd buf count = do
 
 -- | Given a filesystem and a memvar, construct an override for read(2)
 buildReadOverride :: ( LCLM.HasLLVMAnn sym
-                     , LCB.IsSymInterface sym )
-                  => LCLS.LLVMFileSystem 64
+                     , LCB.IsSymInterface sym
+                     , 1 <= w
+                     , 16 <= w
+                     )
+                  => PN.NatRepr w
+                  -> LCLS.LLVMFileSystem w
                   -> LCS.GlobalVar LCLM.Mem
                   -> Syscall p
                              sym
-                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
-                                           Ctx.::> LCLM.LLVMPointerType 64
-                                           Ctx.::> LCLM.LLVMPointerType 64)
+                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                           Ctx.::> LCLM.LLVMPointerType w
+                                           Ctx.::> LCLM.LLVMPointerType w)
                              ext
-                             (LCLM.LLVMPointerType 64)
-buildReadOverride fs memVar = Syscall {
+                             (LCLM.LLVMPointerType w)
+buildReadOverride ptrW fs memVar = Syscall {
     syscallName = fromString "read"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
-                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
-                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
-  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
+  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ptrW)
+                                Ctx.:> (LCLM.LLVMPointerRepr ptrW)
+                                Ctx.:> (LCLM.LLVMPointerRepr ptrW)
+  , syscallReturnType = LCLM.LLVMPointerRepr ptrW
   , syscallOverride =
-      \sym args -> Ctx.uncurryAssignment (callRead fs memVar sym) args
+      \sym args -> Ctx.uncurryAssignment (callRead ptrW fs memVar sym) args
   }
 
 -- | The memory options used to configure the memory model for system calls
@@ -218,26 +252,30 @@ syscallMemOptions = LCLM.laxPointerMemOptions
 
 -- | Override for the write(2) system call
 callWrite :: ( LCLM.HasLLVMAnn sym
-             , LCB.IsSymInterface sym )
-          => LCLS.LLVMFileSystem 64
+             , LCB.IsSymInterface sym
+             , 1 <= w
+             , 16 <= w
+             )
+          => PN.NatRepr w
+          -> LCLS.LLVMFileSystem w
           -> LCS.GlobalVar LCLM.Mem
           -> sym
-          -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
           -- ^ File descriptor to write to
-          -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
           -- ^ Pointer to buffer to read from
-          -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
           -- ^ Number of bytes to write
-          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
-callWrite fs memVar sym fd buf count = do
-  let ?ptrWidth = WI.knownRepr
+          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callWrite ptrW fs memVar sym fd buf count = do
+  let ?ptrWidth = ptrW
   let ?memOpts = syscallMemOptions
   -- Drop upper 32 bits from fd to create a 32 bit file descriptor
-  fdReg <- liftIO $ ptrToBv32 sym fd
+  fdReg <- liftIO $ ptrToBv32 sym ptrW fd
 
   -- Convert 'count' to a bitvector
   countBv <- liftIO $ LCLM.projectLLVM_bv sym (LCS.regValue count)
-  let countReg = LCS.RegEntry LCT.knownRepr countBv
+  let countReg = LCS.RegEntry (LCT.BVRepr ptrW) countBv
 
   -- Use the llvm override for write
   resBv <- LCLS.callWriteFileHandle sym memVar fs fdReg buf countReg
@@ -245,104 +283,124 @@ callWrite fs memVar sym fd buf count = do
   liftIO $ LCLM.llvmPointer_bv sym resBv
 
 buildWriteOverride :: ( LCLM.HasLLVMAnn sym
-                     , LCB.IsSymInterface sym )
-                   => LCLS.LLVMFileSystem 64
+                      , LCB.IsSymInterface sym
+                      , 1 <= w
+                      , 16 <= w
+                      )
+                   => PN.NatRepr w
+                   -> LCLS.LLVMFileSystem w
                    -> LCS.GlobalVar LCLM.Mem
                    -> Syscall p
                              sym
-                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
-                                           Ctx.::> LCLM.LLVMPointerType 64
-                                           Ctx.::> LCLM.LLVMPointerType 64)
+                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                           Ctx.::> LCLM.LLVMPointerType w
+                                           Ctx.::> LCLM.LLVMPointerType w)
                              ext
-                             (LCLM.LLVMPointerType 64)
-buildWriteOverride fs memVar = Syscall {
+                             (LCLM.LLVMPointerType w)
+buildWriteOverride ptrW fs memVar = Syscall {
     syscallName = fromString "write"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
-                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
-                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
-  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
+  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ptrW)
+                                Ctx.:> (LCLM.LLVMPointerRepr ptrW)
+                                Ctx.:> (LCLM.LLVMPointerRepr ptrW)
+  , syscallReturnType = LCLM.LLVMPointerRepr ptrW
   , syscallOverride =
-      \sym args -> Ctx.uncurryAssignment (callWrite fs memVar sym) args
+      \sym args -> Ctx.uncurryAssignment (callWrite ptrW fs memVar sym) args
   }
 
 -- | Override for the open(2) system call
 callOpen :: ( LCLM.HasLLVMAnn sym
-            , LCB.IsSymInterface sym )
-         => LCLS.LLVMFileSystem 64
+            , LCB.IsSymInterface sym
+            , 1 <= w
+            , 16 <= w
+            )
+         => PN.NatRepr w
+         -> LCLS.LLVMFileSystem w
          -> LCS.GlobalVar LCLM.Mem
          -> sym
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ File path to open
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ Flags to use when opening file
-         -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
-callOpen fs memVar sym pathname flags = do
-  let ?ptrWidth = WI.knownRepr
+         -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callOpen ptrW fs memVar sym pathname flags = do
+  let ?ptrWidth = ptrW
   let ?memOpts = syscallMemOptions
   -- Drop upper 32 bits from flags to create a 32 bit flags int
-  flagsInt <- liftIO $ ptrToBv32 sym flags
+  flagsInt <- liftIO $ ptrToBv32 sym ptrW flags
 
   -- Use llvm override for open
   resBv <- LCLS.callOpenFile sym memVar fs pathname flagsInt
 
   -- Pad result out to 64 bit pointer
-  liftIO $ bvToPtr sym resBv
+  liftIO $ bvToPtr sym resBv ptrW
 
 buildOpenOverride :: ( LCLM.HasLLVMAnn sym
-                    , LCB.IsSymInterface sym )
-                  => LCLS.LLVMFileSystem 64
+                     , LCB.IsSymInterface sym
+                     , 1 <= w
+                     , 16 <= w
+                    )
+                  => PN.NatRepr w
+                  -> LCLS.LLVMFileSystem w
                   -> LCS.GlobalVar LCLM.Mem
                   -> Syscall p
                             sym
-                            (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
-                                          Ctx.::> LCLM.LLVMPointerType 64)
+                            (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                          Ctx.::> LCLM.LLVMPointerType w)
                             ext
-                            (LCLM.LLVMPointerType 64)
-buildOpenOverride fs memVar = Syscall {
+                            (LCLM.LLVMPointerType w)
+buildOpenOverride ptrW fs memVar = Syscall {
     syscallName = fromString "open"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
-                                Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
-  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
+  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ptrW)
+                                Ctx.:> (LCLM.LLVMPointerRepr ptrW)
+  , syscallReturnType = LCLM.LLVMPointerRepr ptrW
   , syscallOverride =
-      \sym args -> Ctx.uncurryAssignment (callOpen fs memVar sym) args
+      \sym args -> Ctx.uncurryAssignment (callOpen ptrW fs memVar sym) args
   }
 
 -- | Override for the write(2) system call
 callClose :: ( LCLM.HasLLVMAnn sym
-             , LCB.IsSymInterface sym )
-          => LCLS.LLVMFileSystem 64
+             , LCB.IsSymInterface sym
+             , 1 <= w
+             , 16 <= w
+             )
+          => PN.NatRepr w
+          -> LCLS.LLVMFileSystem w
           -> LCS.GlobalVar LCLM.Mem
           -> sym
-          -> LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
           -- ^ File descriptor to close
-          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType 64))
-callClose fs memVar sym fd = do
-  let ?ptrWidth = WI.knownRepr
+          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callClose ptrW fs memVar sym fd = do
+  let ?ptrWidth = ptrW
   let ?memOpts = syscallMemOptions
   -- Drop upper 32 bits from fd
-  fdInt <- liftIO $ ptrToBv32 sym fd
+  fdInt <- liftIO $ ptrToBv32 sym ptrW fd
 
   -- Use llvm override for close
   resBv <- LCLS.callCloseFile sym memVar fs fdInt
 
   -- Pad result out to 64 bit pointer
-  liftIO $ bvToPtr sym resBv
+  liftIO $ bvToPtr sym resBv ptrW
 
 buildCloseOverride :: ( LCLM.HasLLVMAnn sym
-                     , LCB.IsSymInterface sym )
-                   => LCLS.LLVMFileSystem 64
+                     , LCB.IsSymInterface sym
+                     , 1 <= w
+                     , 16 <= w
+                     )
+                   => PN.NatRepr w
+                   -> LCLS.LLVMFileSystem w
                    -> LCS.GlobalVar LCLM.Mem
                    -> Syscall p
                              sym
-                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64)
+                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w)
                              ext
-                             (LCLM.LLVMPointerType 64)
-buildCloseOverride fs memVar = Syscall {
+                             (LCLM.LLVMPointerType w)
+buildCloseOverride ptrW fs memVar = Syscall {
     syscallName = fromString "close"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr (WI.knownNat @64))
-  , syscallReturnType = LCLM.LLVMPointerRepr (WI.knownNat @64)
+  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ptrW)
+  , syscallReturnType = LCLM.LLVMPointerRepr ptrW
   , syscallOverride =
-      \sym args -> Ctx.uncurryAssignment (callClose fs memVar sym) args
+      \sym args -> Ctx.uncurryAssignment (callClose ptrW fs memVar sym) args
   }
 
 -------------------------------------------------------------------------------

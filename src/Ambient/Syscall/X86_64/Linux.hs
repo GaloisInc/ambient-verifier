@@ -9,6 +9,7 @@ module Ambient.Syscall.X86_64.Linux ( x86_64LinuxSyscallABI ) where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
+import qualified Data.Parameterized.NatRepr as PN
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Types as DMT
@@ -58,7 +59,7 @@ x86_64LinuxSyscallArgumentRegisters regTyps regs syscallTyps =
           -- Extract argument registers and put in list.
           let regEntries = map toRegEntry [rdi, rsi, rdx, r10, r8, r9] in
           -- Build an assignment from 'regEntries'
-          AO.buildArgumentRegisterAssignment syscallTyps regEntries
+          AO.buildArgumentRegisterAssignment (PN.knownNat @64) syscallTyps regEntries
         _ -> AP.panic AP.Syscall
                       "x86_64LinuxSyscallArgumentRegisters"
                       ["Unexpected argument register types"]
@@ -126,15 +127,17 @@ x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
                 , AS.syscallNumberRegister = x86_64LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = x86_64LinuxSyscallReturnRegisters
                 , AS.syscallMapping = Map.fromList
-                    [ (0, AS.SomeSyscall (AS.buildReadOverride fs memVar))
-                    , (1, AS.SomeSyscall (AS.buildWriteOverride fs memVar))
-                    , (2, AS.SomeSyscall (AS.buildOpenOverride fs memVar))
-                    , (3, AS.SomeSyscall (AS.buildCloseOverride fs memVar))
-                    , (59, AS.SomeSyscall (AS.buildExecveOverride properties))
-                    , (60, AS.SomeSyscall AS.exitOverride)
-                    , (110, AS.SomeSyscall AS.getppidOverride)
+                    [ (0, AS.SomeSyscall (AS.buildReadOverride ptrW fs memVar))
+                    , (1, AS.SomeSyscall (AS.buildWriteOverride ptrW fs memVar))
+                    , (2, AS.SomeSyscall (AS.buildOpenOverride ptrW fs memVar))
+                    , (3, AS.SomeSyscall (AS.buildCloseOverride ptrW fs memVar))
+                    , (59, AS.SomeSyscall (AS.buildExecveOverride properties ptrW))
+                    , (60, AS.SomeSyscall (AS.exitOverride ptrW))
+                    , (110, AS.SomeSyscall (AS.getppidOverride ptrW))
                     ]
                 }
+  where
+    ptrW = PN.knownNat @64
 
 -- | Extract the value of a given register from the x86_64 argument register
 -- state

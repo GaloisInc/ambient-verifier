@@ -129,9 +129,9 @@ toFailingTest = TTE.expectFail . toTest
 
 main :: IO ()
 main = do
-  testExpectedOutputs <- SFG.namesMatching "tests/binaries/*.expected"
+  testExpectedOutputs <- SFG.namesMatching "tests/binaries/*/*.expected"
   failingTestExpectedOutputs <- SFG.namesMatching
-                                "tests/binaries/*.expected-failing"
+                                "tests/binaries/*/*.expected-failing"
   TT.defaultMain $ TT.testGroup
                    "VerifierTests"
                    (concat [ map toTest testExpectedOutputs
