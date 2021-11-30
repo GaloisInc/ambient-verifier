@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -163,18 +164,17 @@ aarch32LinuxSyscallReturnRegisters ovTy ovSim argsRepr args retRepr
 
 aarch32LinuxSyscallABI :: AS.BuildSyscallABI DMA.ARM sym p
 aarch32LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
+  let ?ptrWidth = PN.knownNat @32 in
   AS.SyscallABI { AS.syscallArgumentRegisters = aarch32LinuxSyscallArgumentRegisters
                 , AS.syscallNumberRegister = aarch32LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = aarch32LinuxSyscallReturnRegisters
                 , AS.syscallMapping = Map.fromList
-                  [ (1, AS.SomeSyscall (AS.exitOverride ptrWidth))
-                  , (3, AS.SomeSyscall (AS.buildReadOverride ptrWidth fs memVar))
-                  , (4, AS.SomeSyscall (AS.buildWriteOverride ptrWidth fs memVar))
-                  , (5, AS.SomeSyscall (AS.buildOpenOverride ptrWidth fs memVar))
-                  , (6, AS.SomeSyscall (AS.buildCloseOverride ptrWidth fs memVar))
-                  , (11, AS.SomeSyscall (AS.buildExecveOverride properties ptrWidth))
-                  , (64, AS.SomeSyscall (AS.getppidOverride ptrWidth))
+                  [ (1, AS.SomeSyscall AS.exitOverride)
+                  , (3, AS.SomeSyscall (AS.buildReadOverride fs memVar))
+                  , (4, AS.SomeSyscall (AS.buildWriteOverride fs memVar))
+                  , (5, AS.SomeSyscall (AS.buildOpenOverride fs memVar))
+                  , (6, AS.SomeSyscall (AS.buildCloseOverride fs memVar))
+                  , (11, AS.SomeSyscall (AS.buildExecveOverride properties))
+                  , (64, AS.SomeSyscall AS.getppidOverride)
                   ]
                 }
-  where
-    ptrWidth = PN.knownNat @32

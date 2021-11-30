@@ -123,21 +123,20 @@ x86_64LinuxSyscallReturnRegisters ovTyp ovSim atps argRegs rtps =
 -- | An ABI for Linux syscalls on x86_64 processors
 x86_64LinuxSyscallABI :: AS.BuildSyscallABI DMX.X86_64 sym p
 x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
+  let ?ptrWidth = PN.knownNat @64 in
   AS.SyscallABI { AS.syscallArgumentRegisters = x86_64LinuxSyscallArgumentRegisters
                 , AS.syscallNumberRegister = x86_64LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = x86_64LinuxSyscallReturnRegisters
                 , AS.syscallMapping = Map.fromList
-                    [ (0, AS.SomeSyscall (AS.buildReadOverride ptrW fs memVar))
-                    , (1, AS.SomeSyscall (AS.buildWriteOverride ptrW fs memVar))
-                    , (2, AS.SomeSyscall (AS.buildOpenOverride ptrW fs memVar))
-                    , (3, AS.SomeSyscall (AS.buildCloseOverride ptrW fs memVar))
-                    , (59, AS.SomeSyscall (AS.buildExecveOverride properties ptrW))
-                    , (60, AS.SomeSyscall (AS.exitOverride ptrW))
-                    , (110, AS.SomeSyscall (AS.getppidOverride ptrW))
+                    [ (0, AS.SomeSyscall (AS.buildReadOverride fs memVar))
+                    , (1, AS.SomeSyscall (AS.buildWriteOverride fs memVar))
+                    , (2, AS.SomeSyscall (AS.buildOpenOverride fs memVar))
+                    , (3, AS.SomeSyscall (AS.buildCloseOverride fs memVar))
+                    , (59, AS.SomeSyscall (AS.buildExecveOverride properties))
+                    , (60, AS.SomeSyscall AS.exitOverride)
+                    , (110, AS.SomeSyscall AS.getppidOverride)
                     ]
                 }
-  where
-    ptrW = PN.knownNat @64
 
 -- | Extract the value of a given register from the x86_64 argument register
 -- state

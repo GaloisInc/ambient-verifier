@@ -85,13 +85,12 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs ->
   --
   -- TODO: Remove these (see #19)
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
-  let ptrW = PN.knownNat @64 in
-  let ?ptrWidth = ptrW in
-  let hackyOverrides = [ AF.SomeFunctionOverride (AF.buildHackyBumpMallocOverride ptrW bumpEndVar)
-                       , AF.SomeFunctionOverride (AF.buildHackyBumpCallocOverride ptrW bumpEndVar memVar)
-                       , AF.SomeFunctionOverride (AF.hackyFreeOverride ptrW)
-                       , AF.SomeFunctionOverride (AF.hackyGdErrorExOverride ptrW)
-                       , AF.SomeFunctionOverride (AF.hackyPrintfOverride ptrW)
+  let ?ptrWidth = PN.knownNat @64 in
+  let hackyOverrides = [ AF.SomeFunctionOverride (AF.buildHackyBumpMallocOverride bumpEndVar)
+                       , AF.SomeFunctionOverride (AF.buildHackyBumpCallocOverride bumpEndVar memVar)
+                       , AF.SomeFunctionOverride AF.hackyFreeOverride
+                       , AF.SomeFunctionOverride AF.hackyGdErrorExOverride
+                       , AF.SomeFunctionOverride AF.hackyPrintfOverride
                        ]
   in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
