@@ -5,6 +5,8 @@
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 module Ambient.FunctionOverride.Extension (
     ExtensionParser
@@ -12,7 +14,6 @@ module Ambient.FunctionOverride.Extension (
   , extensionParser
   , extensionTypeParser
   , loadCrucibleSyntaxOverrides
-  , wrapPointerAdd
   , machineCodeParserHooks
   ) where
 
@@ -37,6 +38,7 @@ import qualified System.FilePath.Glob as SFG
 import qualified Text.Megaparsec as MP
 
 import qualified Data.Macaw.CFG as DMC
+import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.CFG.Expr as LCE
@@ -153,6 +155,11 @@ type ExtensionParser m ext s = ( LCSE.MonadSyntax LCSA.Atomic m
                                , LCCE.IsSyntaxExtension ext
                                )
 
+-- | Convert a NatRepr containing a value in bytes to one containing a value in
+-- bits.
+bytesToBits :: WI.NatRepr m -> WI.NatRepr (8 WI.* m)
+bytesToBits = PN.natMultiply (WI.knownNat @8)
+
 -- | Parser for syntax extensions to crucible syntax
 --
 -- Note that the return value is a 'Pair.Pair', which seems a bit strange
@@ -161,9 +168,13 @@ type ExtensionParser m ext s = ( LCSE.MonadSyntax LCSA.Atomic m
 -- because the use site of the parser in crucible-syntax expects the 'Pair.Pair'
 -- for all of the parsers that it attempts; returning the 'Pair.Pair' here
 -- simplifies the use site.
-extensionParser :: forall s m ext arch
+extensionParser :: forall s m ext arch w
                  . ( ExtensionParser m ext s
                    , ext ~ (DMS.MacawExt arch)
+                   , w ~ DMC.ArchAddrWidth arch
+                   , 1 <= w
+                   , KnownNat w
+                   , DMM.MemWidth w
                    )
                 => Map.Map LCSA.AtomName (SomeExtensionWrapper arch)
                 -- ^ Mapping from names to syntax extensions
@@ -173,19 +184,66 @@ extensionParser :: forall s m ext arch
                 -- ^ A pair containing a result type and an atom of that type
 extensionParser wrappers hooks =
   LCSE.depCons LCSC.atomName $ \name ->
-    case Map.lookup name wrappers of
-      Nothing -> empty
-      Just (SomeExtensionWrapper w) -> do
-        loc <- LCSE.position
-        let ?parserHooks = hooks
-        -- Generate atoms for the arguments to this extension
-        operandAtoms <- LCSC.operands (extArgTypes w)
-        -- Pass these atoms to the extension wrapper and return an atom for the
-        -- resulting value
-        atomVal <- extWrapper w operandAtoms
-        let retType = LCCR.typeOfAtomValue atomVal
-        endAtom <- LCSC.freshAtom loc atomVal
-        return (Pair.Pair retType endAtom)
+    case name of
+      LCSA.AtomName "pointer-read" -> do
+        -- Pointer reads are a special case because we must parse the number of
+        -- bytes to read as well as the endianness of the read before parsing
+        -- the additional arguments as Atoms.
+        LCSE.depCons LCSC.nat $ \bytes ->
+          LCSE.depCons LCSC.atomName $ \endiannessName ->
+            case endiannessFromAtomName endiannessName of
+              Just endianness ->
+                case PN.mkNatRepr bytes of
+                  Some bytesRepr | Just PN.LeqProof <- PN.isPosNat bytesRepr
+                                 , Just PN.LeqProof <-
+                                     PN.isPosNat (bytesToBits bytesRepr) -> do
+                    let readWrapper = buildPointerReadWrapper bytesRepr
+                                                              endianness
+                    go (SomeExtensionWrapper readWrapper)
+                  _ -> empty
+              Nothing -> empty
+      LCSA.AtomName "pointer-write" -> do
+        -- Pointer writes are a special case because we must parse the number
+        -- of bytes to write out as well as the endianness of the write before
+        -- parsing the additional arguments as Atoms.
+        LCSE.depCons LCSC.nat $ \bytes ->
+          LCSE.depCons LCSC.atomName $ \endiannessName ->
+            case endiannessFromAtomName endiannessName of
+              Just endianness ->
+                case PN.mkNatRepr bytes of
+                  Some bytesRepr | Just PN.LeqProof <- PN.isPosNat bytesRepr
+                                 , Just PN.LeqProof <-
+                                     PN.isPosNat (bytesToBits bytesRepr) -> do
+                    let writeWrapper = buildPointerWriteWrapper bytesRepr
+                                                                endianness
+                    go (SomeExtensionWrapper writeWrapper)
+                  _ -> empty
+              Nothing -> empty
+      _ ->
+        case Map.lookup name wrappers of
+          Nothing -> empty
+          Just w -> go w
+  where
+    go (SomeExtensionWrapper wrapper) = do
+      loc <- LCSE.position
+      let ?parserHooks = hooks
+      -- Generate atoms for the arguments to this extension
+      operandAtoms <- LCSC.operands (extArgTypes wrapper)
+      -- Pass these atoms to the extension wrapper and return an atom for the
+      -- resulting value
+      atomVal <- extWrapper wrapper operandAtoms
+      let retType = LCCR.typeOfAtomValue atomVal
+      endAtom <- LCSC.freshAtom loc atomVal
+      return (Pair.Pair retType endAtom)
+
+    -- Parse an 'LCSA.AtomName' representing an endianness into a
+    -- 'Maybe DMM.Endianness'
+    endiannessFromAtomName endianness =
+      case endianness of
+        LCSA.AtomName "le" -> Just DMM.LittleEndian
+        LCSA.AtomName "be" -> Just DMM.BigEndian
+        _ -> Nothing
+
 
 -- | A wrapper for a syntax extension statement
 --
@@ -196,8 +254,6 @@ data ExtensionWrapper arch args ret =
                   -- ^ Name of the syntax extension
                    , extArgTypes :: LCT.CtxRepr args
                   -- ^ Types of the arguments to the syntax extension
-                   , extRetType :: LCT.TypeRepr ret
-                  -- ^ Return type of the syntax extension
                    , extWrapper :: forall s m
                                  . ( ExtensionParser m (DMS.MacawExt arch) s)
                                 => Ctx.Assignment (LCCR.Atom s) args
@@ -209,6 +265,47 @@ data ExtensionWrapper arch args ret =
 
 data SomeExtensionWrapper arch =
   forall args ret. SomeExtensionWrapper (ExtensionWrapper arch args ret)
+
+-- | Wrap a statement extension binary operator
+binop :: (DMM.MemWidth w, KnownNat w, Monad m)
+      => (  DMM.AddrWidthRepr w
+         -> lhsType
+         -> rhsType
+         -> LCCE.StmtExtension ext (LCCR.Atom s) tp )
+      -- ^ Binary operator
+      -> lhsType
+      -- ^ Left-hand side operand
+      -> rhsType
+      -- ^ Right-hand side operand
+      -> m (LCCR.AtomValue ext s tp)
+binop op lhs rhs =
+  return (LCCR.EvalExt (op (DMC.addrWidthRepr WI.knownNat) lhs rhs))
+
+
+-- | Wrap a syntax extension binary operator, converting a bitvector in the
+-- right-hand side position to an 'LLVMPointerType' before wrapping.
+--
+-- Note: we could make this more general to accept any width bitvector offset
+binopRhsBvToPtr :: ( ext ~ DMS.MacawExt arch
+                   , ExtensionParser m ext s
+                   , 1 <= w
+                   , DMM.MemWidth w
+                   , KnownNat w )
+                => (  DMM.AddrWidthRepr w
+                   -> lhsType
+                   -> LCCR.Atom s (LCLM.LLVMPointerType w)
+                   -> LCCE.StmtExtension ext (LCCR.Atom s) tp)
+                -- ^ Binary operator taking an 'LLVMPointerType' in the
+                -- right-hand side position
+                -> lhsType
+                -- ^ Left-hand side operand
+                -> LCCR.Atom s (LCT.BVType w)
+                -- ^ Right-hand side operand as a bitvector to convert to an
+                -- 'LLVMPointerType'
+                -> m (LCCR.AtomValue ext s tp)
+binopRhsBvToPtr op p1 p2 = do
+  toPtrAtom <- LCSC.freshAtom WP.InternalPos (LCCR.EvalApp (LCE.ExtensionApp (DMS.BitsToPtr WI.knownNat p2)))
+  binop op p1 toPtrAtom
 
 -- | Wrapper for the 'DMS.PtrAdd' syntax extension that enables users to add
 -- integer offsets to pointers:
@@ -230,31 +327,140 @@ wrapPointerAdd = ExtensionWrapper
   { extName = LCSA.AtomName "pointer-add"
   , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
                             Ctx.:> LCT.BVRepr LCT.knownNat
-  , extRetType = WI.knownRepr
-  , extWrapper = \args -> Ctx.uncurryAssignment pointerAdd args }
+  , extWrapper = \args -> Ctx.uncurryAssignment (binopRhsBvToPtr DMS.PtrAdd) args }
 
--- | Add an integer offset to a pointer using 'DMS.PtrAdd'
+-- | Wrapper for the 'DMS.PtrSub' syntax extension that enables users to
+-- subtract integer offsets from pointers:
 --
--- Note: we could make this more general to accept any width bitvector offset
-pointerAdd :: forall arch w m s tp ext
-            . ( w ~ DMC.ArchAddrWidth arch
-              , 1 <= w
-              , KnownNat w
-              , DMC.MemWidth w
-              , tp ~ LCLM.LLVMPointerType w
-              , ext ~ DMS.MacawExt arch
-              , ExtensionParser m ext s
-              )
-           => LCCR.Atom s (LCLM.LLVMPointerType w)
-           -- ^ LHS of pointer addition (the pointer)
-           -> LCCR.Atom s (LCT.BVType w)
-           -- ^ RHS of pointer addition (the offset)
-           -> m (LCCR.AtomValue (DMS.MacawExt arch) s tp)
-pointerAdd p1 p2 = do
-  toPtrAtom <- LCSC.freshAtom WP.InternalPos (LCCR.EvalApp (LCE.ExtensionApp (DMS.BitsToPtr WI.knownNat p2)))
-  let addExt = DMS.PtrAdd (DMC.addrWidthRepr WI.knownNat) p1 toPtrAtom
-  return (LCCR.EvalExt addExt)
+-- > pointer-sub ptr offset
+--
+-- Note that the underlying macaw primitive allows the offset to be in either
+-- position. This user-facing interface is more restrictive.
+wrapPointerSub
+  :: ( 1 <= w
+     , KnownNat w
+     , DMC.MemWidth w
+     , w ~ DMC.ArchAddrWidth arch )
+  => ExtensionWrapper arch
+                      (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                    Ctx.::> LCT.BVType w)
+                      (LCLM.LLVMPointerType w)
+wrapPointerSub = ExtensionWrapper
+  { extName = LCSA.AtomName "pointer-sub"
+  , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+                            Ctx.:> LCT.BVRepr LCT.knownNat
+  , extWrapper = \args -> Ctx.uncurryAssignment (binopRhsBvToPtr DMS.PtrSub) args }
 
+
+
+-- | Wrapper for the 'DMS.PtrEq' syntax extension that enables users to test
+-- the equality of two pointers.
+--
+-- > pointer-eq ptr1 ptr2
+wrapPointerEq
+  :: ( 1 <= w
+     , KnownNat w
+     , DMC.MemWidth w
+     , w ~ DMC.ArchAddrWidth arch )
+  => ExtensionWrapper arch
+                      (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                    Ctx.::> LCLM.LLVMPointerType w)
+                      LCT.BoolType
+wrapPointerEq = ExtensionWrapper
+ { extName = LCSA.AtomName "pointer-eq"
+ , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+                           Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+ , extWrapper = \args -> Ctx.uncurryAssignment (binop DMS.PtrEq) args }
+
+-- | Wrapper for the 'DMS.MacawReadMem' syntax extension that enables users to
+-- read through a pointer to retrieve a bitvector of data at the underlying
+-- memory location.
+--
+-- > pointer-read bytes endianness ptr
+buildPointerReadWrapper
+  :: ( 1 <= w
+     , KnownNat w
+     , DMC.MemWidth w
+     , w ~ DMC.ArchAddrWidth arch
+     , 1 <= sz
+     , 1 <= (8 WI.* sz) )
+  => WI.NatRepr sz
+  -> DMM.Endianness
+  -> ExtensionWrapper arch
+                      (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w)
+                      (LCT.BVType (8 WI.* sz))
+buildPointerReadWrapper bytes endianness = ExtensionWrapper
+  { extName = LCSA.AtomName "pointer-read"
+  , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+  , extWrapper =
+      \args -> Ctx.uncurryAssignment (pointerRead bytes endianness) args }
+
+-- | Read through a pointer using 'DMS.MacawReadMem'.
+pointerRead :: ( w ~ DMC.ArchAddrWidth arch
+               , DMM.MemWidth w
+               , KnownNat w
+               , ExtensionParser m ext s
+               , ext ~ DMS.MacawExt arch
+               , 1 <= sz
+               , 1 <= (8 WI.* sz) )
+            => WI.NatRepr sz
+            -> DMM.Endianness
+            -> LCCR.Atom s (LCLM.LLVMPointerType w)
+            -> m (LCCR.AtomValue ext s (LCT.BVType (8 WI.* sz)))
+pointerRead bytes endianness ptr = do
+  let readInfo = DMC.BVMemRepr bytes endianness
+  let bits = bytesToBits bytes
+  let readExt = DMS.MacawReadMem (DMC.addrWidthRepr WI.knownNat) readInfo ptr
+  readAtom <- LCSC.freshAtom WP.InternalPos (LCCR.EvalExt readExt)
+  return (LCCR.EvalApp (LCE.ExtensionApp (DMS.PtrToBits bits readAtom)))
+
+-- | Wrapper for the 'DMS.MacawWriteMem' syntax extension that enables users to
+-- write a bitvector of data through a pointer to the underlying memory
+-- location.
+--
+-- > pointer-write bytes endianness ptr bitvector
+buildPointerWriteWrapper
+  :: ( w ~ DMC.ArchAddrWidth arch
+     , DMM.MemWidth w
+     , KnownNat w
+     , ext ~ DMS.MacawExt arch
+     , 1 <= sz
+     , 1 <= (8 WI.* sz) )
+  => WI.NatRepr sz
+  -> DMM.Endianness
+  -> ExtensionWrapper arch
+                      (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                    Ctx.::> LCT.BVType (8 WI.* sz))
+                      LCT.UnitType
+buildPointerWriteWrapper bytes endianness = ExtensionWrapper
+  { extName = LCSA.AtomName "pointer-write"
+  , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+                            Ctx.:> LCT.BVRepr (bytesToBits bytes)
+  , extWrapper =
+      \args -> Ctx.uncurryAssignment (pointerWrite bytes endianness) args }
+
+-- | Read through a pointer using 'DMS.MacawWriteMem'.
+pointerWrite :: ( w ~ DMC.ArchAddrWidth arch
+                , DMM.MemWidth w
+                , KnownNat w
+                , ExtensionParser m ext s
+                , ext ~ DMS.MacawExt arch
+                , 1 <= sz
+                , 1 <= (8 WI.* sz) )
+              => WI.NatRepr sz
+              -> DMM.Endianness
+              -> LCCR.Atom s (LCLM.LLVMPointerType w)
+              -> LCCR.Atom s (LCT.BVType (8 WI.* sz))
+              -> m (LCCR.AtomValue ext s LCT.UnitType)
+pointerWrite bytes endianness ptr val = do
+  let bits = bytesToBits bytes
+  toPtrAtom <- LCSC.freshAtom WP.InternalPos (LCCR.EvalApp (LCE.ExtensionApp (DMS.BitsToPtr bits val)))
+  let writeInfo = DMC.BVMemRepr bytes endianness
+  let writeExt = DMS.MacawWriteMem (DMC.addrWidthRepr WI.knownNat)
+                                   writeInfo
+                                   ptr
+                                   toPtrAtom
+  return (LCCR.EvalExt writeExt)
 
 -- | Syntax extension wrappers for AArch32
 extensionWrappers
@@ -262,6 +468,8 @@ extensionWrappers
   => Map.Map LCSA.AtomName (SomeExtensionWrapper arch)
 extensionWrappers = Map.fromList
   [ (LCSA.AtomName "pointer-add", SomeExtensionWrapper wrapPointerAdd)
+  , (LCSA.AtomName "pointer-sub", SomeExtensionWrapper wrapPointerSub)
+  , (LCSA.AtomName "pointer-eq", SomeExtensionWrapper wrapPointerEq)
   ]
 
 -- | All of the crucible syntax extensions to support machine code
