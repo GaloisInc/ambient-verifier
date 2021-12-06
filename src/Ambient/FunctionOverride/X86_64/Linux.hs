@@ -80,7 +80,7 @@ x86_64LinuxIntegerReturnRegisters ovTyp ovSim initRegs =
     -- need to add support for that here
 
 x86_64LinuxFunctionABI :: AF.BuildFunctionABI DMX.X86_64 sym p
-x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs ->
+x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs kernelOvs ->
   -- Hacky overrides
   --
   -- TODO: Remove these (see #19)
@@ -98,4 +98,5 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs ->
                       Map.fromList [ (AF.functionName fo, sfo)
                                    | sfo@(AF.SomeFunctionOverride fo) <- hackyOverrides ++ ovs
                                    ]
+                    , AF.functionKernelAddrMapping = kernelOvs
                     }

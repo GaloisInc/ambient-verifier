@@ -44,6 +44,7 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Simulator.CallFrame as LCSC
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
 import qualified Lang.Crucible.SymIO as LCSy
@@ -145,48 +146,42 @@ lookupFunction :: forall sym arch p ext w scope solver fs args ret mem
 lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
   DMS.LookupFunctionHandle $ \state _mem regs -> do
   LCBO.withSolverProcess sym (panic ["Online solving not enabled"]) $ \proc -> do
-    let symArchFns = DMS.archFunctions archVals
-    let crucRegTypes = DMS.crucArchRegTypes symArchFns
-    let regsRepr = LCT.StructRepr crucRegTypes
     let regsEntry = LCS.RegEntry regsRepr regs
     -- Extract instruction pointer value and look the address up in
     -- 'addressToFnHandle'
     let offset = LCLMP.llvmPointerOffset $ LCS.regValue
                                          $ DMS.lookupReg archVals regsEntry DMC.ip_reg
-    funcAddr <- resolveConcreteStackVal sym (Proxy @arch) proc offset
+    funcAddr <- fromIntegral <$> resolveConcreteStackVal sym (Proxy @arch) proc offset
 
-    funcAddrOff <- resolveFuncAddr $ fromIntegral funcAddr
-    handle <- lookupFuncAddrOff funcAddrOff
+    case Map.lookup funcAddr (AF.functionKernelAddrMapping abi) of
+      -- If we have an override for an address at a fixed address in kernel
+      -- memory, construct a function handle for that override. Otherwise,
+      -- continue resolving the function address.
+      Just (AF.SomeFunctionOverride fnOverride) -> mkAndBindOverride state regs fnOverride
+      Nothing -> do
+        funcAddrOff <- resolveFuncAddr funcAddr
+        handle <- lookupFuncAddrOff funcAddrOff
 
-    -- If we have an override for a certain function name, construct a function
-    -- handle for that override. Otherwise, return the supplied function handle
-    -- unchanged.
-    case Map.lookup (LCF.handleName handle) (AF.functionNameMapping abi) of
-      Nothing -> pure (handle, state)
-      Just (AF.SomeFunctionOverride (fnOverride :: AF.FunctionOverride p sym fnArgs ext fnRet)) -> do
-        -- Construct an override for the function
-        let args :: Ctx.Assignment (LCS.RegEntry sym) fnArgs
-            args = AF.functionIntegerArgumentRegisters abi (AF.functionArgTypes fnOverride) regs
-
-        let retOV :: forall r
-                   . LCSO.OverrideSim p sym ext r args ret
-                                     (Ctx.Assignment (LCS.RegValue' sym)
-                                                     (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
-            retOV = AF.functionIntegerReturnRegisters abi
-                                                      (AF.functionReturnType fnOverride)
-                                                      (AF.functionOverride fnOverride sym args)
-                                                      regs
-
-        let ov :: LCSO.Override p sym ext args ret
-            ov = LCSO.mkOverride' (AF.functionName fnOverride) regsRepr retOV
-
-        -- Build a function handle for the override and insert it into the
-        -- state
-        bindOverrideHandle state hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
+        -- If we have an override for a certain function name, construct a function
+        -- handle for that override. Otherwise, return the supplied function handle
+        -- unchanged.
+        case Map.lookup (LCF.handleName handle) (AF.functionNameMapping abi) of
+          Nothing -> pure (handle, state)
+          Just (AF.SomeFunctionOverride fnOverride) ->
+            mkAndBindOverride state regs fnOverride
   where
+    symArchFns :: DMS.MacawSymbolicArchFunctions arch
+    symArchFns = DMS.archFunctions archVals
+
+    crucRegTypes :: Ctx.Assignment LCT.TypeRepr (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+    crucRegTypes = DMS.crucArchRegTypes symArchFns
+
+    regsRepr :: LCT.TypeRepr ret
+    regsRepr = LCT.StructRepr crucRegTypes
+
     resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
     resolveFuncAddr funcAddr =
-      case DMM.resolveRegionOff discoveryMem 0 (fromIntegral funcAddr) of
+      case DMM.resolveRegionOff discoveryMem 0 funcAddr of
         Nothing -> panic ["Failed to resolve function address: " ++ show funcAddr]
         Just funcAddrOff -> pure funcAddrOff
 
@@ -197,6 +192,38 @@ lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
         -- to attempt to locate the function (see issue #13)
         Nothing -> panic ["Failed to find function in function handle mapping"]
         Just handle -> pure handle
+
+    mkAndBindOverride :: forall fnArgs fnRet rtp blocks r ctx
+                       . LCS.CrucibleState p sym ext rtp blocks r ctx
+                      -> Ctx.Assignment (LCS.RegValue' sym)
+                                        (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+                      -> AF.FunctionOverride p sym fnArgs ext fnRet
+                      -> IO ( LCF.FnHandle args ret
+                            , LCS.SimState p sym ext
+                                rtp
+                                (LCSC.CrucibleLang blocks r)
+                                ('Just ctx)
+                            )
+    mkAndBindOverride state regs fnOverride = do
+      -- Construct an override for the function
+      let args :: Ctx.Assignment (LCS.RegEntry sym) fnArgs
+          args = AF.functionIntegerArgumentRegisters abi (AF.functionArgTypes fnOverride) regs
+
+      let retOV :: forall r'
+                 . LCSO.OverrideSim p sym ext r' args ret
+                                   (Ctx.Assignment (LCS.RegValue' sym)
+                                                   (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
+          retOV = AF.functionIntegerReturnRegisters abi
+                                                    (AF.functionReturnType fnOverride)
+                                                    (AF.functionOverride fnOverride sym args)
+                                                    regs
+
+      let ov :: LCSO.Override p sym ext args ret
+          ov = LCSO.mkOverride' (AF.functionName fnOverride) regsRepr retOV
+
+      -- Build a function handle for the override and insert it into the
+      -- state
+      bindOverrideHandle state hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
 
     panic :: [String] -> a
     panic = AP.panic AP.SymbolicExecution "lookupFunction"
@@ -451,7 +478,7 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
     let syscallABI = buildSyscallABI fs memVar (AVW.wmProperties wmConfig)
-    let functionABI = buildFunctionABI heapEndGlob memVar functionOvs
+    let functionABI = buildFunctionABI heapEndGlob memVar functionOvs Map.empty
     let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction sym archVals discoveryMem addressToFnHandle functionABI halloc) (lookupSyscall sym syscallABI halloc) validityCheck
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to

@@ -1,0 +1,3 @@
+successful: 4
+failed: 1
+fsRoot: tests/filesystems/read

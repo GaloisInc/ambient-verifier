@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -12,6 +13,7 @@ module Ambient.FunctionOverride.AArch32.Linux (
   aarch32LinuxFunctionABI
   ) where
 
+import           Control.Lens ( use )
 import qualified Data.Map as Map
 import qualified Data.Parameterized.Classes as PC
 import qualified Data.Parameterized.Context as Ctx
@@ -22,8 +24,12 @@ import qualified Data.Macaw.ARM as DMA
 import qualified Data.Macaw.ARM.ARMReg as ARMReg
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Language.ASL.Globals as ASL
+import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.CFG.Common as LCCC
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
+import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Types as LCT
 
 import qualified Ambient.FunctionOverride as AF
@@ -70,12 +76,102 @@ aarch32LinuxIntegerReturnRegisters ovTy ovSim initRegs =
           return $! DMAS.updateReg r0 (const (LCS.RV result)) initRegs
     _ -> AP.panic AP.FunctionOverride "aarch32LinuxIntegerReturnRegisters" [ "Unsupported return type: " ++ show ovTy ]
 
-aarch32LinuxFunctionABI :: AF.BuildFunctionABI DMA.ARM sym p
-aarch32LinuxFunctionABI = AF.BuildFunctionABI $ \_bumpEndVar _memVar ovs ->
+-- | Model @__kuser_get_tls@ by returning the value stored in the TLS global
+-- variable. See @Note [AArch32 and TLS]@.
+buildKUserGetTLSOverride ::
+     ( LCB.IsSymInterface sym
+     , LCLM.HasPtrWidth w
+     )
+  => LCCC.GlobalVar (LCLM.LLVMPointerType w)
+     -- ^ Global variable for TLS
+  -> AF.FunctionOverride p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
+buildKUserGetTLSOverride tlsGlob = AF.FunctionOverride
+  { AF.functionName = "__kuser_get_tls"
+  , AF.functionArgTypes = Ctx.empty
+  , AF.functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
+  , AF.functionOverride = \sym args -> Ctx.uncurryAssignment (callKUserGetTLSOverride sym tlsGlob) args
+  }
+
+callKUserGetTLSOverride ::
+     ( LCB.IsSymInterface sym
+     , LCLM.HasPtrWidth w
+     )
+  => sym
+  -> LCCC.GlobalVar (LCLM.LLVMPointerType w)
+     -- ^ Global variable for TLS
+  -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callKUserGetTLSOverride _sym tlsGlob = do
+  globState <- use (LCSE.stateTree . LCSE.actFrame . LCSE.gpGlobals)
+  case LCSG.lookupGlobal tlsGlob globState of
+    Nothing -> AP.panic AP.Memory
+                        "readGlobal"
+                        [ "Failed to find global variable: "
+                          ++ show (LCCC.globalName tlsGlob) ]
+    Just tlsPtr -> pure tlsPtr
+
+aarch32LinuxFunctionABI ::
+     LCCC.GlobalVar (LCLM.LLVMPointerType 32)
+     -- ^ Global variable for TLS
+  -> AF.BuildFunctionABI DMA.ARM sym p
+aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \_bumpEndVar _memVar ovs kernelOvs ->
+  let ?ptrWidth = PN.knownNat @32 in
+  let customKernelOvs =
+        -- The addresses are taken from
+        -- https://github.com/torvalds/linux/blob/5bfc75d92efd494db37f5c4c173d3639d4772966/Documentation/arm/kernel_user_helpers.rst
+        [ -- __kuser_get_tls (See Note [AArch32 and TLS])
+          (0xffff0fe0, AF.SomeFunctionOverride (buildKUserGetTLSOverride tlsGlob))
+        ] in
   AF.FunctionABI { AF.functionIntegerArgumentRegisters = aarch32LinuxIntegerArgumentRegisters
                  , AF.functionIntegerReturnRegisters = aarch32LinuxIntegerReturnRegisters
                  , AF.functionNameMapping =
                      Map.fromList [ (AF.functionName fo, sfo)
                                   | sfo@(AF.SomeFunctionOverride fo) <- ovs
                                   ]
+                 , AF.functionKernelAddrMapping =
+                     Map.union (Map.fromList customKernelOvs) kernelOvs
                  }
+
+{-
+Note [AArch32 and TLS]
+~~~~~~~~~~~~~~~~~~~~~~
+AArch32 handles thread-local state (TLS) in the following ways:
+
+1. The __ARM_NR_set_tls syscall sets the TLS value.
+2. The __kuser_get_tls function returns the TLS value. (__kuser_get_tls is a
+   special function provided by the Linux kernel—more on this in a bit.)
+
+We do not currently model (1). The _start() function in a glibc-compiled binary
+often performs (1), but we do not yet support glibc's implementation of
+_start(). See #22.
+
+On the other hand, (2) occurs whenever one invokes the syscall() function in
+glibc, as their implementation of syscall() uses TLS for error-handling
+purposes. To support this, we do the following:
+
+* When initializing memory in AArch32, we create a global variable representing
+  the TLS state and initialize it with a fresh symbolic value. See
+  Ambient.Memory.AArch32.Linux.initTLSMemory. This is essentially the same
+  approach that is used on the x86_64 side to handle fsbase and gsbase.
+
+* The Linux kernel provides __kuser_get_tls at a fixed address in the user
+  space of all running AArch32 binaries (see aarch32LinuxFunctionABI for the
+  specific address). Macaw-loaded binaries do not display this address, but it
+  is there nonetheless. To model these special addresses, a FunctionABI has a
+  functionKernelAddrMapping that maps fixed kernel function addresses to custom
+  overrides. Later in Ambient.Verifier.SymbolicExecution.lookupFunction, the
+  functionKernelAddrMapping is consulted first before trying to resolve a
+  function address to a function name in a binary.
+
+  (Aside: this is not the only possible way of doing this. Instead of having
+  a separate mapping on the side, we could also take the Macaw-loaded binary
+  and manually inject the relevant function addresses into its Memory. While
+  this would have the benefit of not needing any special cases in
+  lookupFunction, it has the downside of being somewhat tricky to implement,
+  so we do not take this approach currently.)
+
+* aarch32LinuxFunctionABI defines a custom override for __kuser_get_tls in its
+  functionKernelAddrMapping. The override simply returns the value stored in
+  the TLS global variable that was initialized earlier. At present, this will
+  always return the same symbolic value, but this could change in the future if
+  we model the __ARM_NR_set_tls syscall.
+-}

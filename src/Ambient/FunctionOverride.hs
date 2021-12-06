@@ -332,6 +332,17 @@ data FunctionABI arch sym p =
   , functionNameMapping
      :: (LCB.IsSymInterface sym, LCLM.HasLLVMAnn sym)
      => Map.Map WF.FunctionName (SomeFunctionOverride p sym (DMS.MacawExt arch))
+
+    -- A mapping of function addresses to addresses, which represents
+    -- kernel-provided user helpers that are reachable from user space at fixed
+    -- addresses in kernel memory.
+    --
+    -- One alternative to this design would be to augment the Macaw-loaded
+    -- Memory with the right addresses, but this proves tricky to set up. As a
+    -- result, we simply specify the kernel-provided helpers on the side.
+  , functionKernelAddrMapping
+     :: Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch))
+                (SomeFunctionOverride p sym (DMS.MacawExt arch))
   }
 
 -- A function to construct a FunctionABI with memory access
@@ -342,6 +353,9 @@ newtype BuildFunctionABI arch sym p = BuildFunctionABI (
     -- MemVar for the execution
     -> [ SomeFunctionOverride p sym (DMS.MacawExt arch) ]
     -- Additional overrides
+    -> Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch))
+               (SomeFunctionOverride p sym (DMS.MacawExt arch))
+    -- Overrides for kernel-provided user helpers
     -> FunctionABI arch sym p
   )
 

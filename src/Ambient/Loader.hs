@@ -122,6 +122,10 @@ withBinary name bytes hdlAlloc _sym k = do
                 lb
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_X86_64 DE.ELFCLASS64)
         (DE.EM_ARM, DE.ELFCLASS32) -> do
+          tlsGlob <- liftIO $
+            LCCC.freshGlobalVar hdlAlloc
+                                (DT.pack "tls")
+                                (LCLM.LLVMPointerRepr (WI.knownNat @32))
           let extOverride = AMAL.aarch32LinuxStmtExtensionOverride
           case DMS.archVals (Proxy @Macaw.AArch32.ARM) (Just extOverride) of
             Just archVals -> do
@@ -130,9 +134,9 @@ withBinary name bytes hdlAlloc _sym k = do
               k Macaw.AArch32.arm_linux_info
                 archVals
                 ASAL.aarch32LinuxSyscallABI
-                AFAL.aarch32LinuxFunctionABI
+                (AFAL.aarch32LinuxFunctionABI tlsGlob)
                 (AFE.machineCodeParserHooks (Proxy @Macaw.AArch32.ARM) (PN.knownNat @32))
-                AMAL.aarch32LinuxInitGlobals
+                (AMAL.aarch32LinuxInitGlobals tlsGlob)
                 lb
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_ARM DE.ELFCLASS32)
         (machine, klass) -> CMC.throwM (AE.UnsupportedELFArchitecture name machine klass)
