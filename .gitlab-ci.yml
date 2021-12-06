@@ -32,12 +32,18 @@ ambient-verifier:
     - ghcup install cabal
     - git config --global url."https://github.com/".insteadOf "git@github.com:"
     - git config --global url."https://".insteadOf "git://"
-    - git submodule update --init
+    - git submodule update --init --depth 1
+    - curl -sL https://github.com/RyanGlScott/submods-to-source-repos/releases/download/0.0.0.20211210/submods-to-source-repos-0.0.0.20211210.xz > submods-to-source-repos.xz
+    - echo 'f339f4bbe43af96df7e8ce115377e56f4861bab5c8f66d3129492cbe7695bbac  submods-to-source-repos.xz' | sha256sum -c -
+    - xz -d < submods-to-source-repos.xz > submods-to-source-repos
+    - rm -f submods-to-source-repos.xz
+    - chmod a+x submods-to-source-repos
   script:
     - RUNNER_OS=Linux SOLVER_PKG_VERSION="snapshot-20220131" BUILD_TARGET_OS="ubuntu-20.04" .gitlab-ci/solvers.sh install_system_deps
     - yices --version
     - ghcup install ghc --platform x86_64-deb8-linux $GHCVER --verbose
-    - cp cabal.project.dist cabal.project
+    - ./submods-to-source-repos cabal.project.dist > cabal.project
+    - cat cabal.project
     - cabal update
     - cabal configure -w ghc-$GHCVER --enable-tests pkg:ambient-verifier
     - cabal build pkg:ambient-verifier
