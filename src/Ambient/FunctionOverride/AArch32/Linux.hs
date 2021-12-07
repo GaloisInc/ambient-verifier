@@ -10,7 +10,8 @@
 --
 -- See <https://github.com/ARM-software/abi-aa/releases> for details
 module Ambient.FunctionOverride.AArch32.Linux (
-  aarch32LinuxFunctionABI
+    aarch32LinuxFunctionABI
+  , aarch32LinuxTypes
   ) where
 
 import           Control.Lens ( use )
@@ -18,6 +19,7 @@ import qualified Data.Map as Map
 import qualified Data.Parameterized.Classes as PC
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
+import           Data.Parameterized.Some ( Some(..) )
 
 import qualified Data.Macaw.AArch32.Symbolic as DMAS
 import qualified Data.Macaw.ARM as DMA
@@ -33,6 +35,7 @@ import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Types as LCT
 
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 
@@ -129,6 +132,19 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \_bumpEndVar _memVar ovs
                  , AF.functionKernelAddrMapping =
                      Map.union (Map.fromList customKernelOvs) kernelOvs
                  }
+
+-- | A lookup function from 'AFE.TypeAlias' to types with the appropriate width
+-- on Arm32 Linux.
+aarch32LinuxTypes :: AFE.TypeLookup
+aarch32LinuxTypes = AFE.TypeLookup $ \tp ->
+  case tp of
+    AFE.Byte -> Some (LCT.BVRepr (PN.knownNat @8))
+    AFE.Int -> Some (LCT.BVRepr (PN.knownNat @32))
+    AFE.Long -> Some (LCT.BVRepr (PN.knownNat @32))
+    AFE.PidT -> Some (LCT.BVRepr (PN.knownNat @32))
+    AFE.Pointer -> Some (LCLM.LLVMPointerRepr (PN.knownNat @32))
+    AFE.SizeT -> Some (LCT.BVRepr (PN.knownNat @32))
+    AFE.UidT -> Some (LCT.BVRepr (PN.knownNat @32))
 
 {-
 Note [AArch32 and TLS]

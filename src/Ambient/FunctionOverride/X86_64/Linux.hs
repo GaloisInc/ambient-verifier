@@ -12,11 +12,13 @@ module Ambient.FunctionOverride.X86_64.Linux (
     x86_64LinuxIntegerArgumentRegisters
   , x86_64LinuxIntegerReturnRegisters
   , x86_64LinuxFunctionABI
+  , x86_64LinuxTypes
   ) where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
+import           Data.Parameterized.Some ( Some(..) )
 
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.X86 as DMX
@@ -30,6 +32,7 @@ import qualified What4.Interface as WI
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.FunctionOverride.Extension as AFE
 
 -- | Extract integer arguments from x86_64 registers.
 x86_64LinuxIntegerArgumentRegisters
@@ -100,3 +103,16 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs kernelOvs 
                                    ]
                     , AF.functionKernelAddrMapping = kernelOvs
                     }
+
+-- | A lookup function from 'AFE.TypeAlias' to types with the appropriate width
+-- on X86_64 Linux.
+x86_64LinuxTypes :: AFE.TypeLookup
+x86_64LinuxTypes = AFE.TypeLookup $ \tp ->
+  case tp of
+    AFE.Byte -> Some (LCT.BVRepr (PN.knownNat @8))
+    AFE.Int -> Some (LCT.BVRepr (PN.knownNat @32))
+    AFE.Long -> Some (LCT.BVRepr (PN.knownNat @64))
+    AFE.PidT -> Some (LCT.BVRepr (PN.knownNat @32))
+    AFE.Pointer -> Some (LCLM.LLVMPointerRepr (PN.knownNat @64))
+    AFE.SizeT -> Some (LCT.BVRepr (PN.knownNat @64))
+    AFE.UidT -> Some (LCT.BVRepr (PN.knownNat @32))

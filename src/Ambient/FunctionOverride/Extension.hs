@@ -9,7 +9,9 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 module Ambient.FunctionOverride.Extension (
-    ExtensionParser
+    TypeAlias(..)
+  , TypeLookup(..)
+  , ExtensionParser
   , SomeExtensionWrapper(..)
   , extensionParser
   , extensionTypeParser
@@ -60,6 +62,19 @@ import qualified What4.ProgramLoc as WP
 import qualified Ambient.Exception as AE
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.ArgumentMapping as AFA
+
+-- | The additional types ambient-verifier supports beyond those built into
+-- crucible-syntax.
+data TypeAlias = Byte | Int | Long | PidT | Pointer | SizeT | UidT
+  deriving (Show, Eq, Enum, Bounded)
+
+-- | A list of every type alias.
+allTypeAliases :: [TypeAlias]
+allTypeAliases = [minBound .. maxBound]
+
+-- | Lookup function from a 'TypeAlias' to the underlying crucible type it
+-- represents.
+newtype TypeLookup = TypeLookup (TypeAlias -> (Some LCT.TypeRepr))
 
 -- | Load all crucible syntax function overrides in an override directory.
 -- This function reads all files matching @<dirPath>/function/*.cbl@ and
@@ -138,14 +153,16 @@ isOverride path (LCSC.ACFG _ _ g) =
 
 -- | Parser for type extensions to crucible syntax
 extensionTypeParser
-  :: (LCSE.MonadSyntax LCSA.Atomic m, 1 <= w)
-  => PN.NatRepr w
+  :: (LCSE.MonadSyntax LCSA.Atomic m)
+  => Map.Map LCSA.AtomName (Some LCT.TypeRepr)
+  -- ^ A mapping from additional type names to the crucible types they
+  -- represent
   -> m (Some LCT.TypeRepr)
-extensionTypeParser ptrWidth = do
-  LCSA.AtomName name <- LCSC.atomName
-  case DT.unpack name of
-    "Pointer" -> return $ Some (LCLM.LLVMPointerRepr ptrWidth)
-    _ -> empty
+extensionTypeParser types = do
+  name <- LCSC.atomName
+  case Map.lookup name types of
+    Just someTypeRepr -> return someTypeRepr
+    Nothing -> empty
 
 -- | The constraints on the abstract parser monad
 type ExtensionParser m ext s = ( LCSE.MonadSyntax LCSA.Atomic m
@@ -219,6 +236,15 @@ extensionParser wrappers hooks =
                     go (SomeExtensionWrapper writeWrapper)
                   _ -> empty
               Nothing -> empty
+      LCSA.AtomName "bv-typed-literal" -> do
+        -- Bitvector literals with a type argument are a special case.  We must
+        -- parse the type argument separately before parsing the remaining
+        -- argument as an Atom.
+        LCSE.depCons (LCSC.extensionTypeParser hooks) $ \(Some tp) ->
+          case tp of
+            LCT.BVRepr{} ->
+              go (SomeExtensionWrapper (buildBvTypedLitWrapper tp))
+            _ -> empty
       _ ->
         case Map.lookup name wrappers of
           Nothing -> empty
@@ -462,7 +488,30 @@ pointerWrite bytes endianness ptr val = do
                                    toPtrAtom
   return (LCCR.EvalExt writeExt)
 
--- | Syntax extension wrappers for AArch32
+-- | Wrapper for constructing bitvector literals matching the size of an
+-- 'LCT.BVRepr'.  This enables users to instantiate literals with portable
+-- types (such as SizeT).
+--
+-- > bv-typed-literal type integer
+buildBvTypedLitWrapper
+  :: LCT.TypeRepr (LCT.BVType w)
+  -> ExtensionWrapper arch
+                      (Ctx.EmptyCtx Ctx.::> LCT.IntegerType)
+                      (LCT.BVType w)
+buildBvTypedLitWrapper tp = ExtensionWrapper
+  { extName = LCSA.AtomName "bv-typed-literal"
+  , extArgTypes = Ctx.empty Ctx.:> LCT.IntegerRepr
+  , extWrapper = \args -> Ctx.uncurryAssignment (bvTypedLit tp) args }
+
+-- | Create a bitvector literal matching the size of an 'LCT.BVRepr'
+bvTypedLit :: forall s ext w m
+           . ( ExtensionParser m ext s )
+          => LCT.TypeRepr (LCT.BVType w)
+          -> LCCR.Atom s LCT.IntegerType
+          -> m (LCCR.AtomValue ext s (LCT.BVType w))
+bvTypedLit (LCT.BVRepr w) val = return (LCCR.EvalApp (LCE.IntegerToBV w val))
+
+-- | Syntax extension wrappers
 extensionWrappers
   :: (w ~ DMC.ArchAddrWidth arch, 1 <= w, KnownNat w, DMC.MemWidth w)
   => Map.Map LCSA.AtomName (SomeExtensionWrapper arch)
@@ -477,8 +526,13 @@ machineCodeParserHooks
   :: forall w arch proxy
    . (w ~ DMC.ArchAddrWidth arch, 1 <= w, KnownNat w, DMC.MemWidth w)
   => proxy arch
-  -> PN.NatRepr w
+  -> TypeLookup
+  -- ^ A lookup function from a 'TypeAlias' to the underlying Crucible type
+  -- it represents.
   -> LCSC.ParserHooks (DMS.MacawExt arch)
-machineCodeParserHooks proxy ptrWidth =
-  LCSC.ParserHooks (extensionTypeParser ptrWidth)
-                   (extensionParser extensionWrappers (machineCodeParserHooks proxy ptrWidth))
+machineCodeParserHooks proxy typeLookup =
+  let TypeLookup lookupFn = typeLookup
+      types = Map.fromList [ (LCSA.AtomName (DT.pack (show t)), lookupFn t)
+                           | t <- allTypeAliases ] in
+  LCSC.ParserHooks (extensionTypeParser types)
+                   (extensionParser extensionWrappers (machineCodeParserHooks proxy typeLookup))

@@ -39,17 +39,27 @@ Example::
 Types
 -----
 
-The main type addition is for representing pointers:
+One main type addition is for representing pointers:
 
 - ``Pointer``
 
 Unlike C/C++, these pointers are untyped and essentially correspond to ``uint8_t*``.
+
+``ambient-verifier`` also adds a few wrappers around ``Bitvector`` types for portability and convenience:
+
+- ``Byte`` is an alias for ``Bitvector 8``.
+- ``Int`` is an alias for ``Bitvector 32``.
+- ``Long`` is an alias for ``Bitvector 32`` on Arm32 and ``Bitvector 64`` on X86_64.
+- ``PidT`` is an alias for ``Bitvector 32``.
+- ``SizeT`` is an alias for ``Bitvector 32`` on Arm32 and ``Bitvector 64`` on X86_64.
+- ``UidT`` is an alias for ``Bitvector 32``.
 
 Operations
 ----------
 
 The extra operations supported in ``ambient-verifier`` are:
 
+- ``bv-typed-literal :: Type -> Integer -> Bitvector w`` where the first argument is a ``Bitvector`` type alias (see the Types section), the second argument is the value the ``Bitvector`` should contain, and ``w`` is the number of bits in the returned ``Bitvector`` (will match the width of the ``Type`` argument).
 - ``pointer-add :: Pointer -> Bitvector w -> Pointer`` where ``w`` is the number of bits in a pointer (usually 32 or 64).
 - ``pointer-sub :: Pointer -> Bitvector w -> Pointer`` where ``w`` is the number of bits in a pointer (usually 32 or 64).
 - ``pointer-eq :: Pointer -> Pointer -> Bool``.

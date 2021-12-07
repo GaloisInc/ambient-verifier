@@ -14,7 +14,6 @@ import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
-import qualified Data.Parameterized.NatRepr as PN
 import           Data.Parameterized.Some ( Some(..) )
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
@@ -117,7 +116,8 @@ withBinary name bytes hdlAlloc _sym k = do
                 archVals
                 ASXL.x86_64LinuxSyscallABI
                 AFXL.x86_64LinuxFunctionABI
-                (AFE.machineCodeParserHooks (Proxy @DMX.X86_64) (PN.knownNat @64))
+                (AFE.machineCodeParserHooks (Proxy @DMX.X86_64)
+                                            AFXL.x86_64LinuxTypes)
                 (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
                 lb
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_X86_64 DE.ELFCLASS64)
@@ -135,7 +135,8 @@ withBinary name bytes hdlAlloc _sym k = do
                 archVals
                 ASAL.aarch32LinuxSyscallABI
                 (AFAL.aarch32LinuxFunctionABI tlsGlob)
-                (AFE.machineCodeParserHooks (Proxy @Macaw.AArch32.ARM) (PN.knownNat @32))
+                (AFE.machineCodeParserHooks (Proxy @Macaw.AArch32.ARM)
+                                            AFAL.aarch32LinuxTypes)
                 (AMAL.aarch32LinuxInitGlobals tlsGlob)
                 lb
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_ARM DE.ELFCLASS32)
