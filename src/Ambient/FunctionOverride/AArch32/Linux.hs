@@ -103,10 +103,9 @@ callKUserGetTLSOverride ::
 callKUserGetTLSOverride _sym tlsGlob = do
   globState <- use (LCSE.stateTree . LCSE.actFrame . LCSE.gpGlobals)
   case LCSG.lookupGlobal tlsGlob globState of
-    Nothing -> AP.panic AP.Memory
-                        "readGlobal"
-                        [ "Failed to find global variable: "
-                          ++ show (LCCC.globalName tlsGlob) ]
+    Nothing -> AP.panic AP.FunctionOverride "callKUserGetTLSOverride"
+                 [ "Failed to find global TLS variable: "
+                   ++ show (LCCC.globalName tlsGlob) ]
     Just tlsPtr -> pure tlsPtr
 
 aarch32LinuxFunctionABI ::

@@ -7,6 +7,12 @@ module Ambient.Memory.AArch32.Linux (
 import qualified Data.BitVector.Sized as BVS
 
 import qualified Data.Macaw.ARM as DMA
+ -- Sometimes, GHC is unable to find instances of RegAddrWidth that are
+ -- available by way of transitive module imports. The only reliable way of
+ -- preventing this issue that I've found is to import the defining module for
+ -- the instances directly. This is most likely a GHC bug (perhaps
+ -- https://gitlab.haskell.org/ghc/ghc/-/issues/16234), but oh well.
+import           Data.Macaw.ARM.ARMReg ()
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.Backend as LCB
