@@ -36,6 +36,8 @@ Example::
     (let res (pointer-add p1 p2))
     (return res)))
 
+The ``overrides`` directory contains various overrides that we have curated for particular applications.
+
 Types
 -----
 

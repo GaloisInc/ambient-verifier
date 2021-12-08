@@ -91,9 +91,6 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs kernelOvs 
   let ?ptrWidth = PN.knownNat @64 in
   let hackyOverrides = [ AF.SomeFunctionOverride (AF.buildHackyBumpMallocOverride bumpEndVar)
                        , AF.SomeFunctionOverride (AF.buildHackyBumpCallocOverride bumpEndVar memVar)
-                       , AF.SomeFunctionOverride AF.hackyFreeOverride
-                       , AF.SomeFunctionOverride AF.hackyGdErrorExOverride
-                       , AF.SomeFunctionOverride AF.hackyPrintfOverride
                        ]
   in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters

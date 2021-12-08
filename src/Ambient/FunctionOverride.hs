@@ -22,9 +22,6 @@ module Ambient.FunctionOverride (
   , buildMallocOverride
   , buildCallocOverride
     -- * Hacky overrides
-  , hackyFreeOverride
-  , hackyGdErrorExOverride
-  , hackyPrintfOverride
   , buildHackyBumpMallocOverride
   , buildHackyBumpCallocOverride
   ) where
@@ -43,8 +40,6 @@ import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
-
-import           Ambient.Override
 
 -------------------------------------------------------------------------------
 -- Function Call Overrides
@@ -219,77 +214,6 @@ buildHackyBumpCallocOverride endGlob memVar = FunctionOverride
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
   , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyBumpCalloc sym endGlob memVar) args
   }
-
--- | Mock @free@ by doing nothing.
-hackyFreeOverride :: ( LCB.IsSymInterface sym
-                     , LCLM.HasPtrWidth w
-                     )
-                  => FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext
-                                            LCT.UnitType
-hackyFreeOverride = FunctionOverride
-  { functionName = "free"
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCT.UnitRepr
-  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyCallFree sym) args
-  }
-
-hackyCallFree :: LCB.IsSymInterface sym
-              => sym
-              -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-              -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym LCT.UnitType)
-hackyCallFree _sym _ptr = pure ()
-
--- | Mock @gd_error_ex@ by doing nothing.
-hackyGdErrorExOverride :: ( LCB.IsSymInterface sym
-                          , LCLM.HasPtrWidth w
-                          )
-                       => FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                               Ctx.::> LCLM.LLVMPointerType w
-                                                               Ctx.::> LCLM.LLVMPointerType w) ext
-                                                 LCT.UnitType
-hackyGdErrorExOverride = FunctionOverride
-  { functionName = "gd_error_ex"
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCT.UnitRepr
-  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyCallGdErrorEx sym) args
-  }
-
-hackyCallGdErrorEx :: LCB.IsSymInterface sym
-                   => sym
-                   -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-                   -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-                   -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-                   -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym LCT.UnitType)
-hackyCallGdErrorEx _sym _priority _format _va_args = pure ()
-
--- | Mock @printf@ by doing nothing and returing zero.
-hackyPrintfOverride :: ( LCB.IsSymInterface sym
-                       , LCLM.HasPtrWidth w
-                       )
-                    => FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                            Ctx.::> LCLM.LLVMPointerType w) ext
-                                              (LCLM.LLVMPointerType w)
-hackyPrintfOverride = FunctionOverride
-  { functionName = "printf"
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyCallPrintf sym) args
-  }
-
-hackyCallPrintf :: ( LCB.IsSymInterface sym
-                   , LCLM.HasPtrWidth w
-                   )
-                => sym
-                -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-                -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-                -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-hackyCallPrintf sym _format _va_args = liftIO $ do
-  let intRepr = LCT.knownNat @32
-  zeroBV <- WI.bvLit sym intRepr $ BVS.zero intRepr
-  bvToPtr sym zeroBV ?ptrWidth
 
 -------------------------------------------------------------------------------
 -- Function Call ABI Specification
