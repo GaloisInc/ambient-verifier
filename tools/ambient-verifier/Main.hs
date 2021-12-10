@@ -1,7 +1,10 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Main ( main ) where
 
 import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
+import qualified Control.Exception as X
 import qualified Data.ByteString as BS
 import qualified Data.Yaml as DY
 import qualified Data.Text.Encoding as TE
@@ -12,6 +15,7 @@ import qualified Prettyprinter.Render.Text as PPT
 import qualified System.IO as IO
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Exception as AE
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Verifier as AV
 
@@ -75,7 +79,10 @@ verify o = do
   return ()
 
 main :: IO ()
-main = verify =<< OA.execParser opts
+main =
+  X.catch
+    (verify =<< OA.execParser opts)
+    (\(e :: AE.AmbientException) -> IO.hPutStrLn IO.stderr (show (PP.pretty e)))
   where
     opts = OA.info (O.parser OA.<**> OA.helper)
              ( OA.fullDesc

@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE StandaloneDeriving #-}
 module Ambient.Exception (
@@ -9,8 +10,11 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ElfEdit as DE
 import qualified Data.Text as T
 import qualified Prettyprinter as PP
+import qualified Text.Megaparsec as MP
 
 import qualified Data.Macaw.Memory as DMM
+import qualified Lang.Crucible.Syntax.Concrete as LCSC
+import qualified Lang.Crucible.Syntax.ExprParse as LCSE
 
 data AmbientException where
   -- | The given binary format is not supported
@@ -42,8 +46,12 @@ data AmbientException where
   ExecutionTimeout :: AmbientException
   -- | The event trace for the named property is malformed
   MalformedEventTrace :: T.Text -> AmbientException
-  -- | A failure when processing a crucible syntax override
-  CrucibleSyntaxFailure :: String -> AmbientException
+  -- | A failure from Megaparsec in a crucible syntax override
+  CrucibleSyntaxMegaparsecFailure :: (MP.VisualStream s, MP.TraversableStream s, MP.ShowErrorComponent e, Show s, Show (MP.Token s), Show e) => MP.ParseErrorBundle s e -> AmbientException
+  -- | A failure during expression parsing in a crucible syntax override
+  CrucibleSyntaxExprParseFailure :: LCSC.ExprErr s -> AmbientException
+  -- | Could not find a function in a crucible syntax file
+  CrucibleSyntaxFunctionNotFound :: String -> FilePath -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -82,5 +90,12 @@ instance PP.Pretty AmbientException where
         PP.pretty "Symbolic execution timed out"
       MalformedEventTrace name ->
         PP.pretty "The event trace for property'" <> PP.pretty name <> PP.pretty "' is malformed"
-      CrucibleSyntaxFailure errorMessage ->
-        PP.pretty "Error during processing of crucible syntax override: " <> PP.pretty errorMessage
+      CrucibleSyntaxMegaparsecFailure err ->
+        PP.pretty "Parse failure in crucible syntax override: " <> PP.pretty (MP.errorBundlePretty err)
+      CrucibleSyntaxExprParseFailure err ->
+        PP.pretty "Parse failure in crucible syntax override: " <>
+          case err of
+            LCSC.SyntaxParseError se -> PP.pretty (LCSE.printSyntaxError se)
+            _ -> PP.pretty (show err)
+      CrucibleSyntaxFunctionNotFound name path ->
+        PP.pretty "Expected to find a function named '" <> PP.pretty name <> PP.pretty "' in '" <> PP.pretty path <> PP.pretty "'"

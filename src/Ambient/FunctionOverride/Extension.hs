@@ -106,20 +106,15 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
                             path
                             contents
       case parsed of
-        Left err ->
-          CMC.throwM (AE.CrucibleSyntaxFailure (MP.errorBundlePretty err))
+        Left err -> CMC.throwM (AE.CrucibleSyntaxMegaparsecFailure err)
         Right asts -> do
           let ?parserHooks = hooks
           eAcfgs <- LCSC.top ng halloc [] $ LCSC.cfgs asts
           case eAcfgs of
-            Left err -> CMC.throwM (AE.CrucibleSyntaxFailure (show err))
+            Left err -> CMC.throwM (AE.CrucibleSyntaxExprParseFailure err)
             Right acfgs -> case List.find (isOverride path) acfgs of
-              Nothing -> CMC.throwM (AE.CrucibleSyntaxFailure (
-                   "Expected to find a function named '"
-                ++ (SF.takeBaseName path)
-                ++ "' in '"
-                ++ path
-                ++ "'"))
+              Nothing ->
+                CMC.throwM (AE.CrucibleSyntaxFunctionNotFound (SF.takeBaseName path) path)
               Just acfg -> return acfg
 
 -- Convert an ACFG to a FunctionOverride
