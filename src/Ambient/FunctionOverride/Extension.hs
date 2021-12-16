@@ -372,7 +372,59 @@ wrapPointerSub = ExtensionWrapper
                             Ctx.:> LCT.BVRepr LCT.knownNat
   , extWrapper = \args -> Ctx.uncurryAssignment (binopRhsBvToPtr DMS.PtrSub) args }
 
+-- | Compute the difference between two pointers in bytes using 'DMS.PtrSub'
+pointerDiff :: ( w ~ DMC.ArchAddrWidth arch
+               , ext ~ DMS.MacawExt arch
+               , ExtensionParser m ext s
+               , 1 <= w
+               , KnownNat w
+               , DMM.MemWidth w )
+            => LCCR.Atom s (LCLM.LLVMPointerType w)
+            -> LCCR.Atom s (LCLM.LLVMPointerType w)
+            -> m (LCCR.AtomValue ext s (LCT.BVType w))
+pointerDiff lhs rhs = do
+  ptrRes <- binop DMS.PtrSub lhs rhs
+  ptrAtom <- LCSC.freshAtom WP.InternalPos ptrRes
+  -- 'DMS.PtrSub' of two pointers produces a bitvector (LLVMPointer with region
+  -- 0) so 'DMS.PtrToBits' is safe here.
+  return (LCCR.EvalApp (LCE.ExtensionApp (DMS.PtrToBits LCT.knownNat ptrAtom)))
 
+-- | Wrapper for the 'DMS.PtrSub' syntax extension that enables users to
+-- subtract pointers from pointers:
+--
+-- > pointer-diff ptr1 ptr2
+wrapPointerDiff
+  :: ( w ~ DMC.ArchAddrWidth arch
+     , 1 <= w
+     , KnownNat w
+     , DMC.MemWidth w )
+  => ExtensionWrapper arch
+                      (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                    Ctx.::> LCLM.LLVMPointerType w )
+                      (LCT.BVType w)
+wrapPointerDiff = ExtensionWrapper
+  { extName = LCSA.AtomName "pointer-diff"
+  , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+                            Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
+  , extWrapper = \args -> Ctx.uncurryAssignment pointerDiff args }
+
+-- | Wrapper for 'DMS.MacawNullPtr' to construct a null pointer.
+--
+-- > make-null
+wrapMakeNull
+  :: ( w ~ DMC.ArchAddrWidth arch
+     , 1 <= w
+     , KnownNat w
+     , DMC.MemWidth w )
+  => ExtensionWrapper arch
+                      Ctx.EmptyCtx
+                      (LCLM.LLVMPointerType w)
+wrapMakeNull = ExtensionWrapper
+  { extName = LCSA.AtomName "make-null"
+  , extArgTypes = Ctx.empty
+  , extWrapper = \_ ->
+      let nullptr = DMS.MacawNullPtr (DMC.addrWidthRepr WI.knownNat) in
+      return (LCCR.EvalApp (LCE.ExtensionApp nullptr)) }
 
 -- | Wrapper for the 'DMS.PtrEq' syntax extension that enables users to test
 -- the equality of two pointers.
@@ -512,8 +564,10 @@ extensionWrappers
   => Map.Map LCSA.AtomName (SomeExtensionWrapper arch)
 extensionWrappers = Map.fromList
   [ (LCSA.AtomName "pointer-add", SomeExtensionWrapper wrapPointerAdd)
+  , (LCSA.AtomName "pointer-diff", SomeExtensionWrapper wrapPointerDiff)
   , (LCSA.AtomName "pointer-sub", SomeExtensionWrapper wrapPointerSub)
   , (LCSA.AtomName "pointer-eq", SomeExtensionWrapper wrapPointerEq)
+  , (LCSA.AtomName "make-null", SomeExtensionWrapper wrapMakeNull)
   ]
 
 -- | All of the crucible syntax extensions to support machine code

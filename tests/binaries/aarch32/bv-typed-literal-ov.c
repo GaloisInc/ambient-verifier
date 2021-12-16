@@ -1,5 +1,7 @@
 #include <unistd.h>
 
+#include "ambient_assert.h"
+
 /*
  * This test checks that the crucible syntax function override mechanism is
  * performing appropriately for bitvector literals with portable types.  It
@@ -16,10 +18,8 @@ int main(void) {
   size_t val = zero_size_t();
   int* nullptr = NULL;
 
-  // NULL pointer dereference if val contains a nonzero value
-  if (val) {
-    return *nullptr;
-  }
+  // Assert val is zero
+  ambient_assert(!val);
   return 0;
 }
 

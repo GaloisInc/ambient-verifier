@@ -36,8 +36,20 @@ read-symbolic-syscall-num.exe: read-symbolic-syscall-num.c
 alloc.exe: alloc.c
 	musl-gcc -nostartfiles -static $< -o $@
 
-crucible-syntax-function-ov.exe: crucible-syntax-function-ov.c
-	$(CC) -nostartfiles -static $< -o $@
+crucible-syntax-function-ov.exe: crucible-syntax-function-ov.c ambient_assert.o
+	$(CC) -nostartfiles -static $^ -o $@
+
+bv-typed-literal-ov.exe: bv-typed-literal-ov.c ambient_assert.o
+	$(CC) -nostdlib -static $^ -o $@
+
+read-write-pointer-ov.exe: read-write-pointer-ov.c ambient_assert.o
+	$(CC) -nostdlib -static $^ -o $@
+
+ptr-diff-null-ov.exe: ptr-diff-null-ov.c ambient_assert.o
+	$(CC) -nostdlib -static $^ -o $@
 
 %.exe: %.c
 	$(CC) -nostdlib -static $< -o $@
+
+%.o: %.c %.h
+	$(CC) -nostdlib -c $<

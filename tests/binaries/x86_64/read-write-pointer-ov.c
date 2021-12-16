@@ -1,5 +1,7 @@
 #include <unistd.h>
 
+#include "ambient_assert.h"
+
 /*
  * This test checks that the crucible syntax function override mechanism is
  * performing appropriately for pointer reads and writes.  It works by
@@ -19,12 +21,9 @@ int main(void) {
   int dst = 0;
   copy(&src, &dst);
 
-  if (dst == 1) {
-    res = &dst;
-  };
+  ambient_assert(dst == src);
 
-  // NULL pointer dereference if copy failed
-  return *res;
+  return 0;
 }
 
 void _start(void) {
