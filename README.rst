@@ -69,3 +69,19 @@ The extra operations supported in ``ambient-verifier`` are:
 - ``pointer-eq :: Pointer -> Pointer -> Bool``.
 - ``pointer-read :: Nat -> Endianness -> Pointer -> Bitvector w`` where the first argument is the size of the read in bytes, the second argument is ``le`` or ``be``, and ``w`` is the size of the read in bits (will match the ``Nat`` argument).
 - ``pointer-write :: Nat -> Endianness -> Pointer -> Bitvector w -> Unit`` where the first argument is the size of the write in bytes, the second argument is ``le`` or ``be``, and ``w`` is the size of the write in bits (must match the ``Nat`` argument).
+
+Limitations
+===========
+
+The verifier only supports statically linked programs at present (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/6>`_). Moreover, the implementations of the ``_start()`` function in ``glibc`` (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/22>`_) and ``musl`` (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/23>`_) gives the verifier trouble. To work around these issues, it is recommended that you:
+
+1. Implement a custom ``_start()`` function in your binary like so::
+
+     void _start(void) {
+       main();
+     }
+
+   While this is too simple of an implementation of ``_start()`` for actually running the binary, it avoids the complexities of ``_start()``'s actual implementation in ``glibc`` and ``musl``.
+2. Compile the binary with the following flags::
+
+   $ ${CC} -static -nostartfiles -no-pie foo.c -o foo.exe
