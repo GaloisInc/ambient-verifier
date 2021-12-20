@@ -9,6 +9,11 @@ CC=arm-linux-gnueabi-gcc
 syscall.exe: syscall.c
 	$(CC) -nostartfiles -static $< -o $@
 
+# This tests musl's implementation of _start, so we deliberately do not pass
+# -nostartfiles here.
+do-nothing.exe: do-nothing.c
+	musl-gcc -static -no-pie $< -o $@
+
 fsbase.exe: fsbase.c
 	$(CC) -nostartfiles -static $< -o $@
 
