@@ -39,6 +39,9 @@ alloc.exe: alloc.c
 crucible-syntax-function-ov.exe: crucible-syntax-function-ov.c
 	$(CC) -nostartfiles -static $< -o $@
 
+non-ptr-width-ov.exe: non-ptr-width-ov.c ambient_assert.o
+	$(CC) -nostartfiles -static $^ -o $@
+
 bv-typed-literal-ov.exe: bv-typed-literal-ov.c ambient_assert.o
 	$(CC) -nostdlib -static $^ -o $@
 

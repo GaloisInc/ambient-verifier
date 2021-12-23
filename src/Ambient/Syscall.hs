@@ -386,13 +386,14 @@ data SyscallABI arch sym p =
     syscallArgumentRegisters
       :: forall args atps
        . (LCB.IsSymInterface sym)
-      => LCT.CtxRepr atps
+      => sym
+      -> LCT.CtxRepr atps
       -- Types of argument registers
       -> LCS.RegEntry sym (LCT.StructType atps)
       -- Argument register values
       -> LCT.CtxRepr args
       -- Types of syscall arguments
-      -> Ctx.Assignment (LCS.RegEntry sym) args
+      -> IO (Ctx.Assignment (LCS.RegEntry sym) args)
       -- Syscall argument values
 
     -- Extract the syscall number from the register state

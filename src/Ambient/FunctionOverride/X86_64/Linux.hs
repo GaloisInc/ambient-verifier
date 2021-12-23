@@ -15,15 +15,18 @@ module Ambient.FunctionOverride.X86_64.Linux (
   , x86_64LinuxTypes
   ) where
 
+import           Control.Monad.IO.Class ( liftIO )
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
 import           Data.Parameterized.Some ( Some(..) )
+import           GHC.TypeNats ( type (<=), KnownNat )
 
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.X86 as DMX
 import qualified Data.Macaw.X86.Symbolic as DMXS
 import qualified Data.Macaw.X86.X86Reg as DMXR
+import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Types as LCT
@@ -36,14 +39,16 @@ import qualified Ambient.FunctionOverride.Extension as AFE
 
 -- | Extract integer arguments from x86_64 registers.
 x86_64LinuxIntegerArgumentRegisters
-  :: LCT.CtxRepr atps
+  :: (LCB.IsSymInterface sym)
+  => sym
+  -> LCT.CtxRepr atps
   -- ^ Types of argument registers
   -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes DMX.X86_64)
   -- ^ Argument register values
-  -> Ctx.Assignment (LCS.RegEntry sym) atps
-x86_64LinuxIntegerArgumentRegisters argTypes regs =
+  -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
+x86_64LinuxIntegerArgumentRegisters sym argTypes regs =
   let regList = map lookupReg DMX.x86ArgumentRegs in
-  AO.buildArgumentRegisterAssignment (PN.knownNat @64) argTypes regList
+  AO.buildArgumentRegisterAssignment sym (PN.knownNat @64) argTypes regList
   where
     lookupReg r =
       case DMXS.lookupX86Reg r regs of
@@ -55,14 +60,17 @@ x86_64LinuxIntegerArgumentRegisters argTypes regs =
 
 -- | Assemble x86_64 integer return register state from override return value.
 x86_64LinuxIntegerReturnRegisters
-  :: LCT.TypeRepr t
+  :: forall p sym ext r args rtp t
+   . ( LCB.IsSymInterface sym )
+  => sym
+  -> LCT.TypeRepr t
   -- ^ Override return type
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym t)
   -- ^ OverrideSim action producing the override's return value
   -> LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64)
   -- ^ Argument register values from before override execution
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64))
-x86_64LinuxIntegerReturnRegisters ovTyp ovSim initRegs =
+x86_64LinuxIntegerReturnRegisters sym ovTyp ovSim initRegs =
   case ovTyp of
     LCT.UnitRepr -> do
       ovSim
@@ -76,11 +84,32 @@ x86_64LinuxIntegerReturnRegisters ovTyp ovSim initRegs =
         Nothing -> AP.panic AP.FunctionOverride
                             "x86_64LinuxIntegerReturnRegisters"
                             ["Failed to update rax register"]
+    LCLM.LLVMPointerRepr w
+      | Just WI.Refl <- WI.testEquality w (WI.knownNat @8) -> bvZext ovSim
+    LCLM.LLVMPointerRepr w
+      | Just WI.Refl <- WI.testEquality w (WI.knownNat @32) -> bvZext ovSim
     _ -> AP.panic AP.FunctionOverride
                   "x86_64LinuxIntegerReturnRegisters"
                   ["Unsupported override return type: " ++ show ovTyp]
     -- NOTE: If we encounter an override that returns a 128 bit int we'll
     -- need to add support for that here
+  where
+    -- | Zero extend an LLMVPointer in region 0 (a bitvector) to fit in an
+    -- integer register
+    bvZext
+      :: (1 <= srcW, KnownNat srcW)
+      => LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (LCLM.LLVMPointerType srcW))
+      -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64))
+    bvZext ov = do
+      result <- ov
+      asBv <- liftIO $ LCLM.projectLLVM_bv sym result
+      asPtr <- liftIO $ AO.bvToPtr sym asBv (WI.knownNat @64)
+      let mRegs = DMXS.updateX86Reg DMXR.RAX (\_ -> (LCS.RV asPtr)) initRegs
+      case mRegs of
+        Just regs -> return regs
+        Nothing -> AP.panic AP.FunctionOverride
+                            "x86_64LinuxIntegerReturnRegisters"
+                            ["Failed to update rax register"]
 
 x86_64LinuxFunctionABI :: AF.BuildFunctionABI DMX.X86_64 sym p
 x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs kernelOvs ->

@@ -231,18 +231,20 @@ data FunctionABI arch sym p =
     -- the function call
     functionIntegerArgumentRegisters
       :: forall atps
-       . LCT.CtxRepr atps
+       . sym
+      -> LCT.CtxRepr atps
       -- Types of argument registers
       -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes arch)
       -- Argument register values
-      -> Ctx.Assignment (LCS.RegEntry sym) atps
+      -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
       -- Function argument values
 
     -- Build an OverrideSim action with appropriate return register types from
     -- a given OverrideSim action
   , functionIntegerReturnRegisters
      :: forall t r args rtp
-      . LCT.TypeRepr t
+      . sym
+     -> LCT.TypeRepr t
      -- Function return type
      -> LCS.OverrideSim p sym (DMS.MacawExt arch) r args rtp (LCS.RegValue sym t)
      -- OverrideSim action producing the functions's return value

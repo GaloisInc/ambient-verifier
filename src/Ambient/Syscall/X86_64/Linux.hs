@@ -29,11 +29,12 @@ import qualified Ambient.Syscall as AS
 -- 'syscallArgumentRegisters for more info.
 x86_64LinuxSyscallArgumentRegisters :: forall sym args atps
    . ( LCB.IsSymInterface sym )
-  => LCT.CtxRepr atps
+  => sym
+  -> LCT.CtxRepr atps
   -> LCS.RegEntry sym (LCT.StructType atps)
   -> LCT.CtxRepr args
-  -> Ctx.Assignment (LCS.RegEntry sym) args
-x86_64LinuxSyscallArgumentRegisters regTyps regs syscallTyps =
+  -> IO (Ctx.Assignment (LCS.RegEntry sym) args)
+x86_64LinuxSyscallArgumentRegisters sym regTyps regs syscallTyps =
   case (LCS.regValue regs) of
     Ctx.Empty Ctx.:> _
               Ctx.:> rdi
@@ -59,7 +60,7 @@ x86_64LinuxSyscallArgumentRegisters regTyps regs syscallTyps =
           -- Extract argument registers and put in list.
           let regEntries = map toRegEntry [rdi, rsi, rdx, r10, r8, r9] in
           -- Build an assignment from 'regEntries'
-          AO.buildArgumentRegisterAssignment (PN.knownNat @64) syscallTyps regEntries
+          AO.buildArgumentRegisterAssignment sym (PN.knownNat @64) syscallTyps regEntries
         _ -> AP.panic AP.Syscall
                       "x86_64LinuxSyscallArgumentRegisters"
                       ["Unexpected argument register types"]

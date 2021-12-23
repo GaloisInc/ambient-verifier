@@ -206,14 +206,14 @@ lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
                             )
     mkAndBindOverride state regs fnOverride = do
       -- Construct an override for the function
-      let args :: Ctx.Assignment (LCS.RegEntry sym) fnArgs
-          args = AF.functionIntegerArgumentRegisters abi (AF.functionArgTypes fnOverride) regs
+      (args :: Ctx.Assignment (LCS.RegEntry sym) fnArgs) <- AF.functionIntegerArgumentRegisters abi sym (AF.functionArgTypes fnOverride) regs
 
       let retOV :: forall r'
                  . LCSO.OverrideSim p sym ext r' args ret
                                    (Ctx.Assignment (LCS.RegValue' sym)
                                                    (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
           retOV = AF.functionIntegerReturnRegisters abi
+                                                    sym
                                                     (AF.functionReturnType fnOverride)
                                                     (AF.functionOverride fnOverride sym args)
                                                     regs
@@ -291,8 +291,7 @@ lookupSyscall sym abi hdlAlloc =
       Nothing -> CMC.throwM $ AE.UnsupportedSyscallNumber syscallNum
       Just (ASy.SomeSyscall (syscall :: ASy.Syscall p sym args ext ret)) -> do
         -- Construct an override for the system call
-        let args :: Ctx.Assignment (LCS.RegEntry sym) args
-            args = ASy.syscallArgumentRegisters abi atps reg (ASy.syscallArgTypes syscall)
+        (args :: Ctx.Assignment (LCS.RegEntry sym) args) <- ASy.syscallArgumentRegisters abi sym atps reg (ASy.syscallArgTypes syscall)
 
         let retOV :: forall r
                    . LCSO.OverrideSim p sym ext r atps (LCT.StructType rtps)
