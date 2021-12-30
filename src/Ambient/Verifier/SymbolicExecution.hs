@@ -19,6 +19,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.List as PL
 import qualified Data.Parameterized.Map as MapF
+import           Data.Parameterized.Some ( Some(..) )
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
 import           GHC.TypeNats ( KnownNat, type (<=) )
@@ -369,6 +370,37 @@ All of the same reasoning applies to function addresses, which are resolved in
 a similar fashion.
 -}
 
+-- | Initialize a list of globals to have fresh symbolic values and insert them
+-- into global state.
+insertFreshGlobals :: (LCB.IsSymInterface sym)
+                   => sym
+                   -> [Some LCS.GlobalVar]
+                   -- ^ List of global variables to initialize
+                   -> LCSG.SymGlobalState sym
+                   -- ^ Global state to insert variables into
+                   -> IO (LCSG.SymGlobalState sym)
+                   -- ^ Updated global state
+insertFreshGlobals sym globs state =
+  case globs of
+    [] -> return state
+    (Some glob):globs' -> do
+      let tp = LCS.globalType glob
+      let name = DT.unpack (LCS.globalName glob)
+      case LCT.asBaseType tp of
+        LCT.NotBaseType ->
+          case tp of
+            LCLM.LLVMPointerRepr w -> do
+              -- Create a pointer with symbolic region and offset
+              region <- WI.freshNat sym (WSym.safeSymbol (name ++ "-region"))
+              offset <- WI.freshConstant sym
+                                         (WSym.safeSymbol (name ++ "-offset"))
+                                         (WI.BaseBVRepr w)
+              let ptr = LCLM.LLVMPointer region offset
+              insertFreshGlobals sym globs' (LCSG.insertGlobal glob ptr state)
+            _ -> CMC.throwM (AE.UnsuportedGlobalVariableType name tp)
+        LCT.AsBaseType bt -> do
+          val <- WI.freshConstant sym (WSym.safeSymbol name) bt
+          insertFreshGlobals sym globs' (LCSG.insertGlobal glob val state)
 
 simulateFunction
   :: ( CMC.MonadThrow m
@@ -458,6 +490,9 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
   (mem4, globals0) <- liftIO $ initGlobals sym mem3
   let globals1 = LCSG.insertGlobal memVar mem4 $
                  LCSG.insertGlobal heapEndGlob heapEndPtr globals0
+  let functionOvGlobals = concat [ AF.functionGlobals ov
+                                 | AF.SomeFunctionOverride ov <- functionOvs ]
+  globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
   let arguments = LCS.RegMap (Ctx.singleton regsWithStack)
 
   -- Initialize the file system
@@ -465,10 +500,10 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
     case mFsRoot of
       Nothing -> return LCSy.emptyInitialFileSystemContents
       Just fsRoot -> LCSL.loadInitialFiles sym fsRoot
-  (fs, globals2, LCLS.SomeOverrideSim initFSOverride) <- liftIO $
-    LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] globals1
+  (fs, globals3, LCLS.SomeOverrideSim initFSOverride) <- liftIO $
+    LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] globals2
 
-  (wmConfig, globals3) <- liftIO $ AVW.initWMConfig sym halloc globals2 (secProperties seConf)
+  (wmConfig, globals4) <- liftIO $ AVW.initWMConfig sym halloc globals3 (secProperties seConf)
 
   -- FIXME: We might want to add all known functions to the map here. As an
   -- alternative design, we might be able to lazily add functions as they are
@@ -483,7 +518,7 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
     let ctx = LCS.initSimContext sym (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
-    let s0 = LCS.InitialState ctx globals3 LCS.defaultAbortHandler regsRepr simAction
+    let s0 = LCS.InitialState ctx globals4 LCS.defaultAbortHandler regsRepr simAction
 
     let wmCallback = secWMMCallback seConf
     let wmSolver = secSolver seConf

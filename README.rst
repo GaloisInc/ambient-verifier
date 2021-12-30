@@ -31,6 +31,7 @@ When verifying programs, it is almost always useful to be able to stub out progr
 To better support end users, and enable faster experimentation, ``ambient-verifier`` supports a concrete syntax for overrides that is based on a simple s-expression grammar.  The concrete syntax is documented in the `crucible-syntax <https://github.com/GaloisInc/crucible/blob/master/crucible-syntax/README.txt>`_ repository.  In addition to the base constructs provided by the core concrete syntax, ``ambient-verifier`` supports additional primitives.  A directory containing overrides can be specified to the verifier using the ``--overrides`` command line option.
 
 Example::
+
   (defun @padd ((p1 Pointer) (p2 (Bitvector 64))) Pointer
   (start start:
     (let res (pointer-add p1 p2))
@@ -69,6 +70,24 @@ The extra operations supported in ``ambient-verifier`` are:
 - ``pointer-eq :: Pointer -> Pointer -> Bool``.
 - ``pointer-read :: Nat -> Endianness -> Pointer -> Bitvector w`` where the first argument is the size of the read in bytes, the second argument is ``le`` or ``be``, and ``w`` is the size of the read in bits (will match the ``Nat`` argument).
 - ``pointer-write :: Nat -> Endianness -> Pointer -> Bitvector w -> Unit`` where the first argument is the size of the write in bytes, the second argument is ``le`` or ``be``, and ``w`` is the size of the write in bits (must match the ``Nat`` argument).
+
+Global Variables
+----------------
+
+Overrides may declare global variables using ``defglobal`` at the top level::
+
+  (defglobal $$varname Type)
+
+The verifier permits global variable declarations anywhere in the top level,
+including after their use sites.  Currently global variables are scoped to the
+files they are declared in, but `we plan to expand global variable scope to
+cover all override files soon
+<https://gitlab-ext.galois.com/ambient/verifier/-/issues/52>`_.
+
+The verifier instantiates global variables as fresh symbolic values.  To change
+the value of a global variable, use ``set-global!``::
+
+  (set-global! $$varname value)
 
 Limitations
 ===========

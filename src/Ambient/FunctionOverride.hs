@@ -30,6 +30,7 @@ import           Control.Monad.IO.Class ( liftIO )
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
+import           Data.Parameterized.Some ( Some )
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
@@ -50,6 +51,8 @@ import qualified What4.Interface as WI
 data FunctionOverride p sym args ext ret =
   FunctionOverride { functionName :: WF.FunctionName
                    -- ^ Name of the function
+                   , functionGlobals :: [Some LCS.GlobalVar]
+                   -- ^ Global variables the function uses
                    , functionArgTypes :: LCT.CtxRepr args
                    -- ^ Types of the arguments to the function
                    , functionReturnType :: LCT.TypeRepr ret
@@ -77,6 +80,7 @@ buildCallocOverride :: ( LCB.IsSymInterface sym
                                               (LCLM.LLVMPointerType w)
 buildCallocOverride mvar = FunctionOverride
   { functionName = "calloc"
+  , functionGlobals = []
   , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
   , functionOverride = \sym args -> Ctx.uncurryAssignment (callCalloc sym mvar) args
@@ -110,6 +114,7 @@ buildMallocOverride :: ( LCB.IsSymInterface sym
                                               (LCLM.LLVMPointerType w)
 buildMallocOverride mvar = FunctionOverride
   { functionName = "malloc"
+  , functionGlobals = []
   , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
   , functionOverride = \sym args -> Ctx.uncurryAssignment (callMalloc sym mvar) args
@@ -165,6 +170,7 @@ buildHackyBumpMallocOverride
                                               (LCLM.LLVMPointerType w)
 buildHackyBumpMallocOverride endGlob = FunctionOverride
   { functionName = "malloc"
+  , functionGlobals = []
   , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
   , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyBumpMalloc sym endGlob) args
@@ -210,6 +216,7 @@ buildHackyBumpCallocOverride
                             (LCLM.LLVMPointerType w)
 buildHackyBumpCallocOverride endGlob memVar = FunctionOverride
   { functionName = "calloc"
+  , functionGlobals = []
   , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
   , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyBumpCalloc sym endGlob memVar) args

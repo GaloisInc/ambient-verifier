@@ -15,6 +15,7 @@ import qualified Text.Megaparsec as MP
 import qualified Data.Macaw.Memory as DMM
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.Syntax.ExprParse as LCSE
+import qualified Lang.Crucible.Types as LCT
 
 data AmbientException where
   -- | The given binary format is not supported
@@ -52,6 +53,8 @@ data AmbientException where
   CrucibleSyntaxExprParseFailure :: LCSC.ExprErr s -> AmbientException
   -- | Could not find a function in a crucible syntax file
   CrucibleSyntaxFunctionNotFound :: String -> FilePath -> AmbientException
+  -- | Global variable declared with an unsuported type
+  UnsuportedGlobalVariableType :: String -> LCT.TypeRepr t -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -99,3 +102,5 @@ instance PP.Pretty AmbientException where
             _ -> PP.pretty (show err)
       CrucibleSyntaxFunctionNotFound name path ->
         PP.pretty "Expected to find a function named '" <> PP.pretty name <> PP.pretty "' in '" <> PP.pretty path <> PP.pretty "'"
+      UnsuportedGlobalVariableType name tp ->
+        PP.pretty "Unable to construct symbolic value for global variable '" <> PP.pretty name <> PP.pretty "' with type '" <> PP.pretty tp <> PP.pretty "'"

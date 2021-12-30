@@ -93,9 +93,9 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
   mapM go paths
   where
     go path = do
-      acfg <- loadCrucibleSyntaxOverride path
+      (globals, acfg) <- loadCrucibleSyntaxOverride path
       let name = DS.fromString (SF.takeBaseName path)
-      return (acfgToFunctionOverride name acfg)
+      return (acfgToFunctionOverride name acfg globals)
 
     -- Load a single crucible syntax override
     loadCrucibleSyntaxOverride path = do
@@ -109,20 +109,25 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
         Left err -> CMC.throwM (AE.CrucibleSyntaxMegaparsecFailure err)
         Right asts -> do
           let ?parserHooks = hooks
-          eAcfgs <- LCSC.top ng halloc [] $ LCSC.cfgs asts
+          eAcfgs <- LCSC.top ng halloc [] $ LCSC.prog asts
           case eAcfgs of
             Left err -> CMC.throwM (AE.CrucibleSyntaxExprParseFailure err)
-            Right acfgs -> case List.find (isOverride path) acfgs of
+            Right (globals, acfgs) -> case List.find (isOverride path) acfgs of
               Nothing ->
                 CMC.throwM (AE.CrucibleSyntaxFunctionNotFound (SF.takeBaseName path) path)
-              Just acfg -> return acfg
+              Just acfg -> do
+                let someGlobals = [ Some glob
+                                  | (_, (Pair.Pair _ glob)) <- Map.toList globals ]
+                return (someGlobals, acfg)
 
 -- Convert an ACFG to a FunctionOverride
 acfgToFunctionOverride
   :: WF.FunctionName
   -> LCSC.ACFG ext
+  -> [ Some LCS.GlobalVar ]
+  -- ^ GlobalVars used in function override
   -> AF.SomeFunctionOverride p sym ext
-acfgToFunctionOverride name (LCSC.ACFG argTypes retType cfg) =
+acfgToFunctionOverride name (LCSC.ACFG argTypes retType cfg) globals =
   let argMap = AFA.bitvectorArgumentMapping argTypes
       (ptrTypes, ptrTypeMapping) = AFA.pointerArgumentMappping argMap
       retRepr = AFA.promoteBVToPtr retType
@@ -130,6 +135,7 @@ acfgToFunctionOverride name (LCSC.ACFG argTypes retType cfg) =
        LCCC.SomeCFG ssaCfg ->
          AF.SomeFunctionOverride $ AF.FunctionOverride
          { AF.functionName = name
+         , AF.functionGlobals = globals
          , AF.functionArgTypes = ptrTypes
          , AF.functionReturnType = retRepr
          , AF.functionOverride = \sym args -> do
