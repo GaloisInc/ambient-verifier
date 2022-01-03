@@ -24,7 +24,7 @@ import qualified What4.Interface as WI
 import qualified Ambient.Panic as AP
 
 -- | Bitvector conversion from the full register width to a narrow type
-data BvConversion sym w tp where
+newtype BvConversion sym w tp where
   BvConversion :: (LCS.RegEntry sym (LCLM.LLVMPointerType w) -> IO (LCS.RegEntry sym tp))
                -> BvConversion sym w tp
 

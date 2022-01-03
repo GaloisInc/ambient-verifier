@@ -24,7 +24,7 @@ type EventTraceType = LCT.SequenceType LCT.IntegerType
 eventTraceRepr :: LCT.TypeRepr EventTraceType
 eventTraceRepr = LCT.SequenceRepr LCT.IntegerRepr
 
-data Properties =
+newtype Properties =
   Properties { properties :: [(APD.Property APD.StateID, LCS.GlobalVar EventTraceType)]
              }
 
