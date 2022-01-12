@@ -5,6 +5,7 @@ module Main ( main ) where
 import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Data.ByteString as BS
+import qualified Data.List as List
 import           Data.Maybe ( maybeToList )
 import qualified Data.Yaml as DY
 import           GHC.Generics ( Generic )
@@ -16,7 +17,12 @@ import qualified Test.Tasty as TT
 import qualified Test.Tasty.ExpectedFailure as TTE
 import qualified Test.Tasty.HUnit as TTH
 
+import qualified Lang.Crucible.CFG.Reg as LCCR
+import qualified Lang.Crucible.FunctionHandle as LCF
+import qualified Lang.Crucible.Syntax.Concrete as LCSC
+
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
@@ -127,6 +133,51 @@ toTest expectedOutputFile = TTH.testCase testName $ do
 toFailingTest :: FilePath -> TT.TestTree
 toFailingTest = TTE.expectFail . toTest
 
+-- | This checks that the number of failing goals matches the number of
+-- override tests that end in @_failing@.  This works well for evaluating the
+-- simple tests we currently have, but we may want a more robust solution if we
+-- ever have more complex override tests.
+overrideTestsPassed :: CC.Chan (Maybe AD.Diagnostic) -> IO Bool
+overrideTestsPassed chan = do
+    res <- go 0
+    return (res == 0)
+  where
+    -- Increment 'delta' on a disproved goal, and decrement 'delta' when
+    -- encountering a test function ending in @_failing@
+    go :: Int -> IO (Int)
+    go delta = do
+      md <- CC.readChan chan
+      case md of
+        Nothing -> return delta
+        Just diag ->
+          case diag of
+            AD.DisprovedGoal {} -> go (delta + 1)
+            AD.ExecutingOverrideTest (LCSC.ACFG _ _ g) _ ->
+              let fnName = LCF.handleName (LCCR.cfgHandle g) in
+              if List.isSuffixOf "_failing" (show fnName)
+              then go (delta - 1)
+              else go delta
+            _ -> go delta
+
+-- | Run tests present in crucible override files
+overrideTests :: AO.ABI -> TT.TestTree
+overrideTests abi = TTH.testCase ((show abi) ++ " override tests") $ do
+  -- Create a test instance
+  let tinst = AO.TestInstance { AO.tiSolver = AS.Yices
+                              , AO.tiFloatMode = AS.Real
+                              , AO.tiOverrideDir = "tests/overrides"
+                              , AO.tiAbi = abi
+                              }
+
+  chan <- CC.newChan
+  logger <- CCA.async (overrideTestsPassed chan)
+  AO.testOverrides (logAction chan) tinst AT.defaultTimeout
+
+  CC.writeChan chan Nothing
+  res <- CCA.wait logger
+
+  TTH.assertBool "Override tests failed" res
+
 main :: IO ()
 main = do
   testExpectedOutputs <- SFG.namesMatching "tests/binaries/*/*.expected"
@@ -136,4 +187,5 @@ main = do
                    "VerifierTests"
                    (concat [ map toTest testExpectedOutputs
                            , map toFailingTest failingTestExpectedOutputs
+                           , map overrideTests AO.allABIs
                            ])

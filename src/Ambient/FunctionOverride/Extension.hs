@@ -15,11 +15,13 @@ module Ambient.FunctionOverride.Extension (
   , SomeExtensionWrapper(..)
   , extensionParser
   , extensionTypeParser
+  , runOverrideTests
   , loadCrucibleSyntaxOverrides
   , machineCodeParserHooks
   ) where
 
 import           Control.Applicative ( empty )
+import           Control.Monad ( void )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import           Control.Monad.State.Class ( MonadState )
@@ -35,21 +37,28 @@ import qualified Data.String as DS
 import qualified Data.Text as DT
 import qualified Data.Text.IO as DTI
 import           GHC.TypeNats ( KnownNat, type (<=) )
+import qualified Lumberjack as LJ
 import qualified System.FilePath as SF
 import qualified System.FilePath.Glob as SFG
+import qualified System.IO as IO
 import qualified Text.Megaparsec as MP
 
+import qualified Data.Macaw.Architecture.Info as DMA
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Symbolic as DMS
+import qualified Lang.Crucible.Analysis.Postdom as LCAP
+import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.CFG.Expr as LCE
 import qualified Lang.Crucible.CFG.Extension as LCCE
 import qualified Lang.Crucible.CFG.Reg as LCCR
 import qualified Lang.Crucible.CFG.SSAConversion as LCCS
 import qualified Lang.Crucible.FunctionHandle as LCF
+import qualified Lang.Crucible.LLVM.Intrinsics as LCLI
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Syntax.Atoms as LCSA
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.Syntax.ExprParse as LCSE
@@ -59,9 +68,12 @@ import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.ProgramLoc as WP
 
+import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Exception as AE
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.ArgumentMapping as AFA
+import qualified Ambient.Memory as AM
+import qualified Ambient.Verifier.SymbolicExecution as AVS
 
 -- | The additional types ambient-verifier supports beyond those built into
 -- crucible-syntax.
@@ -76,6 +88,140 @@ allTypeAliases = [minBound .. maxBound]
 -- represents.
 newtype TypeLookup = TypeLookup (TypeAlias -> (Some LCT.TypeRepr))
 
+-- | Load a single crucible syntax override.  This function returns an optional
+-- tuple containing:
+-- 1. A list of global variables declared in the file
+-- 2. A list of 'LCSC.ACFG' for which 'fnNamePred' returned 'True'
+-- 3. A list of 'LCSC.ACFG' containing all functions in the .cbl file.
+-- If 'fnName' cannot be found in the .cbl file, this function returns
+-- 'Nothing'.
+loadCrucibleSyntaxOverride
+  :: LCCE.IsSyntaxExtension ext
+  => FilePath
+  -- ^ Path to .cbl file to load
+  -> (WF.FunctionName -> Bool)
+  -- ^ Predicate for function names indicating which functions in the .cbl file
+  -- to load
+  -> Nonce.NonceGenerator IO s
+  -> LCF.HandleAllocator
+  -> LCSC.ParserHooks ext
+  -- ^ ParserHooks for the desired syntax extension
+  -> IO ([Some LCS.GlobalVar], [LCSC.ACFG ext], [LCSC.ACFG ext])
+loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks = do
+  contents <- DTI.readFile path
+  let parsed = MP.parse (  LCSS.skipWhitespace
+                        *> MP.many (LCSS.sexp LCSA.atom)
+                        <* MP.eof)
+                        path
+                        contents
+  case parsed of
+    Left err -> CMC.throwM (AE.CrucibleSyntaxMegaparsecFailure err)
+    Right asts -> do
+      let ?parserHooks = hooks
+      eAcfgs <- LCSC.top ng halloc [] $ LCSC.prog asts
+      case eAcfgs of
+        Left err -> CMC.throwM (AE.CrucibleSyntaxExprParseFailure err)
+        Right (globals, acfgs) -> do
+          let someGlobals = [ Some glob
+                            | (_, (Pair.Pair _ glob)) <- Map.toList globals ]
+          let matches = filter evalFnNamePred acfgs
+          return (someGlobals, matches, acfgs)
+  where
+    evalFnNamePred (LCSC.ACFG _ _ g) =
+      fnNamePred (LCF.handleName (LCCR.cfgHandle g))
+
+-- | Run tests for crucible syntax function overrides.  This function reads all
+-- files matching @<dirPath>/function/*.cbl@ and symbolically executes any
+-- function with a name starting with @test_@.
+runOverrideTests :: forall ext s sym arch w
+                  . ( ?memOpts :: LCLM.MemOptions
+                    , ext ~ DMS.MacawExt arch
+                    , LCCE.IsSyntaxExtension ext
+                    , LCB.IsSymInterface sym
+                    , w ~ DMC.ArchAddrWidth arch
+                    , KnownNat w
+                    , DMM.MemWidth w
+                    , 1 <= w
+                    , 16 <= w
+                    )
+                 => LJ.LogAction IO AD.Diagnostic
+                 -> sym
+                 -> DMA.ArchitectureInfo arch
+                 -> DMS.GenArchVals DMS.LLVMMemory arch
+                 -> FilePath
+                 -- ^ Override directory
+                 -> Nonce.NonceGenerator IO s
+                 -> LCF.HandleAllocator
+                 -> LCSC.ParserHooks ext
+                 -- ^ ParserHooks for the desired syntax extension
+                 -> IO ()
+runOverrideTests logAction sym archInfo archVals dirPath ng halloc hooks = do
+  paths <- SFG.namesMatching (dirPath SF.</> "function" SF.</> "*.cbl")
+  mapM_ go paths
+  where
+    go :: FilePath -> IO ()
+    go path = do
+      let fnNamePred = \fn -> List.isPrefixOf "test_" (show fn)
+      (ovGlobals, matches, acfgs) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
+      mapM_ (runTest path ovGlobals acfgs) matches
+
+    runTest :: FilePath
+            -> [Some LCS.GlobalVar]
+            -> [LCSC.ACFG ext]
+            -> LCSC.ACFG ext
+            -> IO ()
+    runTest path ovGlobals acfgs acfg = do
+      LJ.writeLog logAction (AD.ExecutingOverrideTest acfg path)
+      case acfg of
+        LCSC.ACFG Ctx.Empty LCT.UnitRepr test -> do
+          let testHdl = LCCR.cfgHandle test
+          let fns = LCS.fnBindingsFromList
+                [ case LCCS.toSSA g of
+                    LCCC.SomeCFG ssa ->
+                      LCS.FnBinding (LCCR.cfgHandle g)
+                                    (LCS.UseCFG ssa (LCAP.postdomInfo ssa))
+                | LCSC.ACFG _ _ g <- acfgs
+                ]
+          let mem = DMM.emptyMemory (DMA.archAddrWidth archInfo)
+          initMem <- AVS.initializeMemory sym
+                                          halloc
+                                          archInfo
+                                          mem
+                                          noopInitGlobals
+                                          []
+          let ?recordLLVMAnnotation = \_ _ _ -> return ()
+          DMS.withArchEval archVals sym $ \archEvalFn -> do
+            let fnLookup = DMS.unsupportedFunctionCalls "Ambient override tests"
+            let syscallLookup = DMS.unsupportedSyscalls "Ambient override tests"
+            let extImpl = DMS.macawExtensions archEvalFn
+                                              (AVS.imMemVar initMem)
+                                              (AVS.imGlobalMap initMem)
+                                              fnLookup
+                                              syscallLookup
+                                              (AVS.imValidityCheck initMem)
+            let ctx = LCS.initSimContext sym
+                                         LCLI.llvmIntrinsicTypes
+                                         halloc
+                                         IO.stdout
+                                         fns
+                                         extImpl
+                                         DMS.MacawSimulatorState
+            let simAction = LCS.runOverrideSim LCT.UnitRepr
+                                               (LCS.regValue <$> LCS.callFnVal (LCS.HandleFnVal testHdl) LCS.emptyRegMap)
+            globals1 <- AVS.insertFreshGlobals sym ovGlobals (AVS.imGlobals initMem)
+            let s0 = LCS.InitialState ctx
+                                      globals1
+                                      LCS.defaultAbortHandler
+                                      LCT.UnitRepr
+                                      simAction
+            void $ LCS.executeCrucible [] s0
+        LCSC.ACFG _ _ g ->
+          let fnName = LCF.handleName (LCCR.cfgHandle g) in
+          CMC.throwM (AE.IllegalCrucibleSyntaxTestSignature path fnName)
+
+    noopInitGlobals = AM.InitArchSpecificGlobals $ \_ mem ->
+      return (mem, LCSG.emptyGlobals)
+
 -- | Load all crucible syntax function overrides in an override directory.
 -- This function reads all files matching @<dirPath>/function/*.cbl@ and
 -- generates FunctionOverrides for them.
@@ -85,7 +231,7 @@ loadCrucibleSyntaxOverrides :: LCCE.IsSyntaxExtension ext
                             -> Nonce.NonceGenerator IO s
                             -> LCF.HandleAllocator
                             -> LCSC.ParserHooks ext
-                            -- ^ ParserHooks for the desired syntax xtension
+                            -- ^ ParserHooks for the desired syntax extension
                             -> IO [AF.SomeFunctionOverride p sym ext]
                             -- ^ A list of loaded overrides
 loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
@@ -93,32 +239,21 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
   mapM go paths
   where
     go path = do
-      (globals, acfg) <- loadCrucibleSyntaxOverride path
-      let name = DS.fromString (SF.takeBaseName path)
-      return (acfgToFunctionOverride name acfg globals)
-
-    -- Load a single crucible syntax override
-    loadCrucibleSyntaxOverride path = do
-      contents <- DTI.readFile path
-      let parsed = MP.parse (  LCSS.skipWhitespace
-                            *> MP.many (LCSS.sexp LCSA.atom)
-                            <* MP.eof)
-                            path
-                            contents
-      case parsed of
-        Left err -> CMC.throwM (AE.CrucibleSyntaxMegaparsecFailure err)
-        Right asts -> do
-          let ?parserHooks = hooks
-          eAcfgs <- LCSC.top ng halloc [] $ LCSC.prog asts
-          case eAcfgs of
-            Left err -> CMC.throwM (AE.CrucibleSyntaxExprParseFailure err)
-            Right (globals, acfgs) -> case List.find (isOverride path) acfgs of
-              Nothing ->
-                CMC.throwM (AE.CrucibleSyntaxFunctionNotFound (SF.takeBaseName path) path)
-              Just acfg -> do
-                let someGlobals = [ Some glob
-                                  | (_, (Pair.Pair _ glob)) <- Map.toList globals ]
-                return (someGlobals, acfg)
+      let fnName = SF.takeBaseName path
+      let fnNamePred = \fn -> fn == DS.fromString (SF.takeBaseName path)
+      (globals, matches, _) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
+      case matches of
+        [] -> CMC.throwM (AE.CrucibleSyntaxFunctionNotFound fnName path)
+        [acfg] ->
+          return (acfgToFunctionOverride (DS.fromString fnName) acfg globals)
+        _ ->
+          -- This shouldn't be possible.  Multiple functions with the same name
+          -- should have already been caught by crucible-syntax.
+          error $ "Override '"
+               ++ path
+               ++ "' contains multiple '"
+               ++ fnName
+               ++ "' functions'"
 
 -- Convert an ACFG to a FunctionOverride
 acfgToFunctionOverride
@@ -147,10 +282,6 @@ acfgToFunctionOverride name (LCSC.ACFG argTypes retType cfg) globals =
              -- Convert any BV returns from the user override to LLVMPointers
              LCS.regValue <$> liftIO (AFA.convertBitvector sym retRepr userRes)
          }
-
-isOverride :: String -> LCSC.ACFG ext -> Bool
-isOverride path (LCSC.ACFG _ _ g) =
-  LCF.handleName (LCCR.cfgHandle g) == DS.fromString (SF.takeBaseName path)
 
 -- | Parser for type extensions to crucible syntax
 extensionTypeParser

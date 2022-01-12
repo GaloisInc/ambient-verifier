@@ -9,9 +9,13 @@
 module Ambient.Verifier.SymbolicExecution (
     SymbolicExecutionConfig(..)
   , symbolicallyExecute
+  , insertFreshGlobals
+  , InitialMemory(..)
+  , initializeMemory
   ) where
 
 import           Control.Lens ( (^.), set )
+import           Control.Monad ( foldM )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(..) )
 import qualified Data.BitVector.Sized as BVS
@@ -372,7 +376,8 @@ a similar fashion.
 
 -- | Initialize a list of globals to have fresh symbolic values and insert them
 -- into global state.
-insertFreshGlobals :: (LCB.IsSymInterface sym)
+insertFreshGlobals :: forall sym
+                    . (LCB.IsSymInterface sym)
                    => sym
                    -> [Some LCS.GlobalVar]
                    -- ^ List of global variables to initialize
@@ -380,10 +385,12 @@ insertFreshGlobals :: (LCB.IsSymInterface sym)
                    -- ^ Global state to insert variables into
                    -> IO (LCSG.SymGlobalState sym)
                    -- ^ Updated global state
-insertFreshGlobals sym globs state =
-  case globs of
-    [] -> return state
-    (Some glob):globs' -> do
+insertFreshGlobals sym globs initialState = foldM go initialState globs
+  where
+    go :: LCSG.SymGlobalState sym
+       -> Some LCS.GlobalVar
+       -> IO (LCSG.SymGlobalState sym)
+    go state (Some glob) = do
       let tp = LCS.globalType glob
       let name = DT.unpack (LCS.globalName glob)
       case LCT.asBaseType tp of
@@ -391,16 +398,92 @@ insertFreshGlobals sym globs state =
           case tp of
             LCLM.LLVMPointerRepr w -> do
               -- Create a pointer with symbolic region and offset
-              region <- WI.freshNat sym (WSym.safeSymbol (name ++ "-region"))
+              region <- WI.freshNat sym (WI.safeSymbol (name ++ "-region"))
               offset <- WI.freshConstant sym
-                                         (WSym.safeSymbol (name ++ "-offset"))
+                                         (WI.safeSymbol (name ++ "-offset"))
                                          (WI.BaseBVRepr w)
               let ptr = LCLM.LLVMPointer region offset
-              insertFreshGlobals sym globs' (LCSG.insertGlobal glob ptr state)
+              return $ LCSG.insertGlobal glob ptr state
             _ -> CMC.throwM (AE.UnsuportedGlobalVariableType name tp)
         LCT.AsBaseType bt -> do
-          val <- WI.freshConstant sym (WSym.safeSymbol name) bt
-          insertFreshGlobals sym globs' (LCSG.insertGlobal glob val state)
+          val <- WI.freshConstant sym (WI.safeSymbol name) bt
+          return $ LCSG.insertGlobal glob val state
+
+-- | Initial memory state for symbolic execution
+data InitialMemory sym w =
+  InitialMemory { imMemVar :: LCS.GlobalVar LCLM.Mem
+               -- ^ MemVar to use in simulation
+                , imGlobals :: LCSG.SymGlobalState sym
+               -- ^ Initial global variables
+                , imStackBasePtr :: LCLM.LLVMPtr sym w
+               -- ^ Stack memory base pointer
+                , imHeapEndGlob :: LCS.GlobalVar (LCLMP.LLVMPointerType w)
+               -- ^ Pointer to the end of heap memory
+                , imValidityCheck :: DMS.MkGlobalPointerValidityAssertion sym w
+               -- ^ Additional pointer validity checks to enforce
+                , imGlobalMap :: DMS.GlobalMap sym LCLM.Mem w
+               -- ^ Globals used by the macaw translation; note that this is
+               -- separate from the global variable map passed to crucible, as
+               -- it is only used for initializing the macaw extension
+                }
+
+initializeMemory
+  :: forall sym arch w p ext m
+   . ( ?memOpts :: LCLM.MemOptions
+     , MonadIO m
+     , LCB.IsSymInterface sym
+     , w ~ DMC.ArchAddrWidth arch
+     , DMM.MemWidth w
+     , KnownNat w
+     , 1 <= w
+     , 16 <= w )
+  => sym
+  -> LCF.HandleAllocator
+  -> DMA.ArchitectureInfo arch
+  -> DMM.Memory w
+  -> AM.InitArchSpecificGlobals arch
+  -- ^ Function to initialize special global variables needed for 'arch'
+  -> [ AF.SomeFunctionOverride p sym ext ]
+  -- ^ A list of additional function overrides to register.
+  -> m ( InitialMemory sym w )
+initializeMemory sym halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals) functionOvs = do
+  -- Initialize memory
+  let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
+  let ?recordLLVMAnnotation = \_ _ _ -> return ()
+  (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
+  let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
+  let globalMap = DMSM.mapRegionPointers memPtrTbl
+
+  -- Allocate memory for the stack, initialize it with symbolic contents, and
+  -- then insert it into the memory model
+  stackArrayStorage <- liftIO $ WI.freshConstant sym (WSym.safeSymbol "stack_array") WI.knownRepr
+  stackSizeBV <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr stackSize)
+  let ?ptrWidth = WI.knownRepr
+  (stackBasePtr, mem1) <- liftIO $ LCLM.doMalloc sym LCLM.StackAlloc LCLM.Mutable "stack_alloc" initMem stackSizeBV LCLD.noAlignment
+  mem2 <- liftIO $ LCLM.doArrayStore sym mem1 stackBasePtr LCLD.noAlignment stackArrayStorage stackSizeBV
+
+  -- Initialize heap memory
+  heapSizeBv <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr heapSize)
+  (heapBasePtr, mem3) <- liftIO $ LCLM.doMalloc sym LCLM.HeapAlloc LCLM.Mutable "<malloc bump>" mem2 heapSizeBv LCLD.noAlignment
+  heapEndPtr <- liftIO $ LCLM.ptrAdd sym WI.knownRepr heapBasePtr heapSizeBv
+  heapEndGlob <- liftIO $ LCCC.freshGlobalVar halloc
+                                              (DT.pack "heapFreeEnd")
+                                              (LCLM.LLVMPointerRepr WI.knownNat)
+
+  memVar <- liftIO $ LCLM.mkMemVar (DT.pack "ambient-verifier::memory") halloc
+  (mem4, globals0) <- liftIO $ initGlobals sym mem3
+  let globals1 = LCSG.insertGlobal memVar mem4 $
+                 LCSG.insertGlobal heapEndGlob heapEndPtr globals0
+  let functionOvGlobals = concat [ AF.functionGlobals ov
+                                 | AF.SomeFunctionOverride ov <- functionOvs ]
+  globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
+
+  return (InitialMemory memVar
+                        globals2
+                        stackBasePtr
+                        heapEndGlob
+                        validityCheck
+                        globalMap)
 
 simulateFunction
   :: ( CMC.MonadThrow m
@@ -425,14 +508,8 @@ simulateFunction
   -> LCF.HandleAllocator
   -> DMS.GenArchVals DMS.LLVMMemory arch
   -> SymbolicExecutionConfig arch sym
-  -> LCLM.MemImpl sym
-  -> DMS.GlobalMap sym LCLM.Mem w
-  -- ^ Globals used by the macaw translation; note that this is separate from
-  -- the global variable map passed to crucible, as it is only used for
-  -- initializing the macaw extension
+  -> InitialMemory sym w
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
-  -> DMS.MkGlobalPointerValidityAssertion sym w
-  -- ^ Additional pointer validity checks to enforce
   -> DMM.Memory w
   -- ^ Memory from function discovery
   -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
@@ -443,8 +520,6 @@ simulateFunction
   -- ^ Function to construct an ABI specification for system calls
   -> AF.BuildFunctionABI arch sym p
   -- ^ Function to construct an ABI specification for function calls
-  -> AM.InitArchSpecificGlobals arch
-  -- ^ Function to initialize special global variables needed for 'arch'
   -> Maybe FilePath
   -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
   -- will be empty
@@ -454,45 +529,20 @@ simulateFunction
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI) (AM.InitArchSpecificGlobals initGlobals) mFsRoot functionOvs = do
+simulateFunction logAction sym execFeatures halloc archVals seConf initialMem cfg discoveryMem addressToFnHandle fnBindings (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI) mFsRoot functionOvs = do
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
   let regsRepr = LCT.StructRepr crucRegTypes
-
-  -- Initialize memory
-
-  -- Allocate memory for the stack, initialize it with symbolic contents, and
-  -- then insert it into the memory model
-  stackArrayStorage <- liftIO $ WI.freshConstant sym (WSym.safeSymbol "stack_array") WI.knownRepr
-  stackSizeBV <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr stackSize)
-  let ?ptrWidth = WI.knownRepr
-  (stackBasePtr, mem1) <- liftIO $ LCLM.doMalloc sym LCLM.StackAlloc LCLM.Mutable "stack_alloc" initMem stackSizeBV LCLD.noAlignment
-  mem2 <- liftIO $ LCLM.doArrayStore sym mem1 stackBasePtr LCLD.noAlignment stackArrayStorage stackSizeBV
 
   -- Set up an initial register state (mostly symbolic, with an initial stack)
   --
   -- Put the stack pointer in the middle of our allocated stack so that both sides can be addressed
   initialRegs <- liftIO $ DMS.macawAssignToCrucM (mkInitialRegVal symArchFns sym) (DMS.crucGenRegAssignment symArchFns)
   stackInitialOffset <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr stackOffset)
-  sp <- liftIO $ LCLM.ptrAdd sym WI.knownRepr stackBasePtr stackInitialOffset
+  sp <- liftIO $ LCLM.ptrAdd sym WI.knownRepr (imStackBasePtr initialMem) stackInitialOffset
   let initialRegsEntry = LCS.RegEntry regsRepr initialRegs
   let regsWithStack = DMS.updateReg archVals initialRegsEntry DMC.sp_reg sp
 
-  -- Initialize heap memory
-  heapSizeBv <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr heapSize)
-  (heapBasePtr, mem3) <- liftIO $ LCLM.doMalloc sym LCLM.HeapAlloc LCLM.Mutable "<malloc bump>" mem2 heapSizeBv LCLD.noAlignment
-  heapEndPtr <- liftIO $ LCLM.ptrAdd sym WI.knownRepr heapBasePtr heapSizeBv
-  heapEndGlob <- liftIO $ LCCC.freshGlobalVar halloc
-                                              (DT.pack "heapFreeEnd")
-                                              (LCLM.LLVMPointerRepr WI.knownNat)
-
-  memVar <- liftIO $ LCLM.mkMemVar (DT.pack "ambient-verifier::memory") halloc
-  (mem4, globals0) <- liftIO $ initGlobals sym mem3
-  let globals1 = LCSG.insertGlobal memVar mem4 $
-                 LCSG.insertGlobal heapEndGlob heapEndPtr globals0
-  let functionOvGlobals = concat [ AF.functionGlobals ov
-                                 | AF.SomeFunctionOverride ov <- functionOvs ]
-  globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
   let arguments = LCS.RegMap (Ctx.singleton regsWithStack)
 
   -- Initialize the file system
@@ -500,10 +550,11 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
     case mFsRoot of
       Nothing -> return LCSy.emptyInitialFileSystemContents
       Just fsRoot -> LCSL.loadInitialFiles sym fsRoot
-  (fs, globals3, LCLS.SomeOverrideSim initFSOverride) <- liftIO $
-    LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] globals2
+  let ?ptrWidth = WI.knownRepr
+  (fs, globals0, LCLS.SomeOverrideSim initFSOverride) <- liftIO $
+    LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] (imGlobals initialMem)
 
-  (wmConfig, globals4) <- liftIO $ AVW.initWMConfig sym halloc globals3 (secProperties seConf)
+  (wmConfig, globals1) <- liftIO $ AVW.initWMConfig sym halloc globals0 (secProperties seConf)
 
   -- FIXME: We might want to add all known functions to the map here. As an
   -- alternative design, we might be able to lazily add functions as they are
@@ -511,21 +562,22 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initMem globa
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let syscallABI = buildSyscallABI fs memVar (AVW.wmProperties wmConfig)
-    let functionABI = buildFunctionABI heapEndGlob memVar functionOvs Map.empty
-    let extImpl = DMS.macawExtensions archEvalFn memVar globalMap (lookupFunction sym archVals discoveryMem addressToFnHandle functionABI halloc) (lookupSyscall sym syscallABI halloc) validityCheck
+    let syscallABI = buildSyscallABI fs (imMemVar initialMem) (AVW.wmProperties wmConfig)
+    let functionABI = buildFunctionABI (imHeapEndGlob initialMem) (imMemVar initialMem) functionOvs Map.empty
+    let extImpl = DMS.macawExtensions archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction sym archVals discoveryMem addressToFnHandle functionABI halloc) (lookupSyscall sym syscallABI halloc) (imValidityCheck initialMem)
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
     let ctx = LCS.initSimContext sym (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
-    let s0 = LCS.InitialState ctx globals4 LCS.defaultAbortHandler regsRepr simAction
+    let s0 = LCS.InitialState ctx globals1 LCS.defaultAbortHandler regsRepr simAction
 
     let wmCallback = secWMMCallback seConf
     let wmSolver = secSolver seConf
     let wmm = AVW.wmmFeature logAction wmSolver archVals wmCallback (AVW.wmProperties wmConfig)
     let executionFeatures = wmm : fmap LCS.genericToExecutionFeature execFeatures
+
     res <- liftIO $ LCS.executeCrucible executionFeatures s0
-    return (memVar, res, wmConfig)
+    return (imMemVar initialMem, res, wmConfig)
 
 -- | Symbolically execute a function
 --
@@ -587,9 +639,6 @@ symbolicallyExecute
        )
 symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI initGlobals mFsRoot functionOvs = do
   let mem = DMB.memoryImage loadedBinary
-  let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
+  initialMem <- initializeMemory sym halloc archInfo mem initGlobals functionOvs
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
-  let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
-  let globalMap = DMSM.mapRegionPointers memPtrTbl
-  simulateFunction logAction sym execFeatures halloc archVals seConf initMem globalMap cfg validityCheck discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI initGlobals mFsRoot functionOvs
+  simulateFunction logAction sym execFeatures halloc archVals seConf initialMem cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI mFsRoot functionOvs

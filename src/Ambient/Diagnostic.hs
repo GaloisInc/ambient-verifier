@@ -23,7 +23,10 @@ import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
 
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.CFG.Reg as LCCR
+import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.Simulator.SimError as LCSS
+import qualified Lang.Crucible.Syntax.Concrete as LCSC
 
 data Diagnostic where
   -- | Report an event from the code discovery phase
@@ -55,6 +58,8 @@ data Diagnostic where
   ExecutingWeirdMachineAt :: Integer -> Diagnostic
   -- | Setting up the goals for the given property
   AssertingGoalsForProperty :: T.Text -> Maybe T.Text -> Diagnostic
+  -- | Executing a user override test
+  ExecutingOverrideTest :: LCSC.ACFG ext -> FilePath -> Diagnostic
 
 ppSymbol :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> String
 ppSymbol (Just fnName) addr = show addr ++ " (" ++ BSC.unpack fnName ++ ")"
@@ -98,3 +103,10 @@ instance PP.Pretty Diagnostic where
       AssertingGoalsForProperty name mdesc ->
         let desc = maybe mempty ((PP.line <>) . PP.pretty) mdesc
         in PP.pretty "Asserting goals for property " <> PP.pretty name <> desc <> PP.line
+      ExecutingOverrideTest (LCSC.ACFG _ _ g) path ->
+           PP.pretty "Executing override test '"
+        <> PP.pretty (LCF.handleName (LCCR.cfgHandle g))
+        <> PP.pretty "' in '"
+        <> PP.pretty path
+        <> PP.pretty "'"
+        <> PP.line

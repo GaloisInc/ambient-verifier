@@ -339,7 +339,8 @@ verify logAction pinst timeoutDuration = do
                                                }
       let ?memOpts = LCLM.defaultMemOptions
       functionOvs <- case piOverrideDir pinst of
-        Just dir -> liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
+        Just dir -> do
+          liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
         Nothing -> return []
       (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI functionABI buildGlobals (piFsRoot pinst) functionOvs
 

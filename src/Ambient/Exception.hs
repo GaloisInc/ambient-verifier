@@ -16,6 +16,7 @@ import qualified Data.Macaw.Memory as DMM
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.Syntax.ExprParse as LCSE
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.FunctionName as WF
 
 data AmbientException where
   -- | The given binary format is not supported
@@ -55,6 +56,8 @@ data AmbientException where
   CrucibleSyntaxFunctionNotFound :: String -> FilePath -> AmbientException
   -- | Global variable declared with an unsuported type
   UnsuportedGlobalVariableType :: String -> LCT.TypeRepr t -> AmbientException
+  -- | Crucible syntax test function has an illegal type signature
+  IllegalCrucibleSyntaxTestSignature :: FilePath -> WF.FunctionName -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -104,3 +107,5 @@ instance PP.Pretty AmbientException where
         PP.pretty "Expected to find a function named '" <> PP.pretty name <> PP.pretty "' in '" <> PP.pretty path <> PP.pretty "'"
       UnsuportedGlobalVariableType name tp ->
         PP.pretty "Unable to construct symbolic value for global variable '" <> PP.pretty name <> PP.pretty "' with type '" <> PP.pretty tp <> PP.pretty "'"
+      IllegalCrucibleSyntaxTestSignature path fnName ->
+        PP.pretty "Test function '" <> PP.pretty fnName <> PP.pretty "' in file '" <> PP.pretty path <> PP.pretty "' has an illegal type signature.  Test functions must take no arguments and have a 'Unit' return type."

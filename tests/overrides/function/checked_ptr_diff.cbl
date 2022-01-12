@@ -13,3 +13,11 @@
   (defblock non-null:
     (let delta (pointer-diff p1 p2))
     (return delta)))
+
+(defun @test_both_null () Unit
+  (start start:
+    (let null (make-null))
+    (let res (funcall @checked_ptr_diff null null))
+    (let zero (bv-typed-literal SizeT 0))
+    (assert! (equal? res zero) "checked_ptr_diff null test")
+    (return ())))

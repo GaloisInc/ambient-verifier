@@ -23,6 +23,22 @@ To build the verifier, first clone this repository and then::
   cabal configure -w ghc-8.10.5 pkg:ambient-verifier
   cabal build pkg:ambient-verifier
 
+Running
+=======
+
+Functionality in the verifier is broken into subcommands:
+
+- ``verify``: Verify a given binary with inputs satisfies verification
+  conditions
+- ``test-overrides``: Run tests present in user override files
+
+More details on available options for the top level verifier, as well as the
+various subcommands can be found using ``--help``::
+
+  cabal run exe:ambient-verifier -- --help
+  cabal run exe:ambient-verifier -- verify --help
+  cabal run exe:ambient-verifier -- test-overrides --help
+
 User-specified Function Overrides
 =================================
 
@@ -88,6 +104,23 @@ The verifier instantiates global variables as fresh symbolic values.  To change
 the value of a global variable, use ``set-global!``::
 
   (set-global! $$varname value)
+
+Tests
+-----
+
+Crucible syntax files may optionally contain functions starting with ``@test_``
+that use ``assert!`` to test the behavior of an override.  Under normal
+operation the verifier ignores these test functions, but when run with the
+``test-overrides`` subcommand the verifier will execute any test functions it
+finds and report test results.  The ``test-overrides`` subcommand has two
+mandatory options:
+
+- ``--overrides`` must point to the directory containing crucible syntax
+  overrides.
+- ``--abi`` must be either ``X86_64Linux`` or ``AArch32Linux``.  This flag
+  sets the ABI to use when interpreting crucible syntax overrides.  For
+  example, using the ``X86_64Linux`` will cause the verifier to execute
+  function override tests using the X86_64 ``Bitvector`` type aliases.
 
 Limitations
 ===========

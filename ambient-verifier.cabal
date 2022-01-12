@@ -56,6 +56,7 @@ library
                       Ambient.Memory.AArch32.Linux,
                       Ambient.Memory.X86_64.Linux,
                       Ambient.Override,
+                      Ambient.OverrideTester,
                       Ambient.Panic,
                       Ambient.Property.Definition,
                       Ambient.Solver,
@@ -124,6 +125,8 @@ test-suite ambient-tests
   main-is: Main.hs
   hs-source-dirs: tests
   build-depends: ambient-verifier,
+                 crucible,
+                 crucible-syntax,
                  directory,
                  filemanip,
                  tasty,

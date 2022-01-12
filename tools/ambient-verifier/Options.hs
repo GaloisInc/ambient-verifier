@@ -1,5 +1,8 @@
 module Options (
-    Options(..)
+    VerifyOptions(..)
+  , TestOverridesOptions(..)
+  , Command(..)
+  , Options(..)
   , parser
   ) where
 
@@ -7,21 +10,49 @@ import qualified Data.Text as T
 import qualified Options.Applicative as OA
 import           Text.Read (readMaybe)
 
+import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 
--- | The options structure for the command line interface to the verifier
+-- | The options structure for the command line interface to the verifier's
+-- \"verify\" subcommand
+data VerifyOptions =
+  VerifyOptions { binaryPath :: FilePath
+                -- ^ The path to the binary to verify
+                , fsRoot :: Maybe FilePath
+                -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file
+                -- system will be empty
+                , commandLineArguments :: [T.Text]
+                -- ^ A list of command line arguments to set up in the environment of
+                -- the program (this should include argv[0] as the command name)
+                --
+                -- See Note [Future Improvements]
+                , stateCharts :: [FilePath]
+                -- ^ File paths to a state charts encoding properties to verify
+                , profileTo :: Maybe FilePath
+                -- ^ A path to write periodic profiling reports to
+                , overrideDir :: Maybe FilePath
+                -- ^ Path to the crucible syntax overrides directory.  If this is
+                -- 'Nothing', then no crucible syntax overrides will be registered.
+                }
+  deriving ( Show )
+
+-- | The options structure for the command line interface to the verifier's
+-- \"test-overrides\" subcommand
+data TestOverridesOptions =
+  TestOverridesOptions { testOverrideDir :: FilePath
+                       -- ^ Path to the crucible syntax overrides directory
+                       , testAbi :: AO.ABI
+                       -- ^ ABI to use when running tests
+                       }
+
+-- | The options structure for subcommands to the verifier
+data Command = Verify VerifyOptions | TestOverrides TestOverridesOptions
+
+-- | To top level options structure for the command line interface to the
+-- verifier
 data Options =
-  Options { binaryPath :: FilePath
-          -- ^ The path to the binary to verify
-          , fsRoot :: Maybe FilePath
-          -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file
-          -- system will be empty
-          , commandLineArguments :: [T.Text]
-          -- ^ A list of command line arguments to set up in the environment of
-          -- the program (this should include argv[0] as the command name)
-          --
-          -- See Note [Future Improvements]
+  Options { command :: Command
           , solver :: AS.Solver
           -- ^ The SMT solver to use for path satisfiability checking and
           -- discharging verification conditions
@@ -30,15 +61,7 @@ data Options =
           -- path satisfiability checking and discharging verification conditions
           , timeoutDuration :: AT.Timeout
           -- ^ The solver timeout for each goal
-          , stateCharts :: [FilePath]
-          -- ^ File paths to a state charts encoding properties to verify
-          , profileTo :: Maybe FilePath
-          -- ^ A path to write periodic profiling reports to
-          , overrideDir :: Maybe FilePath
-          -- ^ Path to the crucible syntax overrides directory.  If this is
-          -- 'Nothing', then no crucible syntax overrides will be registered.
           }
-  deriving ( Show )
 
 -- | Parse a string representation of an integer number of seconds into an
 -- AT.Timeout
@@ -48,50 +71,79 @@ timeoutReader str =
     Nothing -> Nothing
     Just x  -> Just (AT.Seconds x)
 
--- | A parser for the 'Options' type
+-- | A parser for the \"verify\" subcommand
+verifyParser :: OA.Parser Command
+verifyParser = Verify <$> (VerifyOptions
+           <$> OA.strOption ( OA.long "binary"
+                            <> OA.metavar "FILE"
+                            <> OA.help "The path to the binary to verify"
+                            )
+           <*> OA.optional (OA.strOption ( OA.long "fsroot"
+                                         <> OA.metavar "FILE"
+                                         <> OA.help "The path to the symbolic filesystem for the process"
+                                         ))
+           <*> OA.many (OA.strOption ( OA.long "argv"
+                                     <> OA.metavar "STRING"
+                                     <> OA.help "A command line argument to pass to the process"))
+           <*> OA.many (OA.strOption ( OA.long "statechart"
+                                    <> OA.metavar "FILE"
+                                    <> OA.help "A path to a state chart encoding a property to verify"
+                                     ))
+           <*> OA.optional (OA.strOption ( OA.long "profile-to"
+                                      <> OA.metavar "FILE"
+                                      <> OA.help "A file to log symbolic execution profiles to periodically"
+                                       ))
+           <*> OA.optional (OA.strOption ( OA.long "overrides"
+                                         <> OA.metavar "DIRECTORY"
+                                         <> OA.help "A path to a directory of overides in crucible syntax"
+                                         ))
+           )
+
+
+-- | A parser for the \"test-overrides\" subcommand
+testOverridesParser :: OA.Parser Command
+testOverridesParser = TestOverrides <$> (TestOverridesOptions
+           <$> OA.strOption (  OA.long "overrides"
+                            <> OA.metavar "DIRECTORY"
+                            <> OA.help "A path to a directory of overides in crucible syntax to test"
+                            )
+           <*> OA.option OA.auto (  OA.long "abi"
+                                 <> OA.metavar "ABI"
+                                 <> OA.help "The ABI to use when loading crucible syntax files.  Must be 'X86_64Linux' or 'AArch32Linux'."
+                                 )
+           )
+
+
+-- | A parser for the 'Command' type
 parser :: OA.Parser Options
-parser = Options <$> OA.strOption ( OA.long "binary"
-                                  <> OA.metavar "FILE"
-                                  <> OA.help "The path to the binary to verify"
-                                  )
-                 <*> OA.optional (OA.strOption ( OA.long "fsroot"
-                                               <> OA.metavar "FILE"
-                                               <> OA.help "The path to the symbolic filesystem for the process"
-                                               ))
-                 <*> OA.many (OA.strOption ( OA.long "argv"
-                                           <> OA.metavar "STRING"
-                                           <> OA.help "A command line argument to pass to the process"))
-                 <*> OA.option OA.auto ( OA.long "solver"
-                                         <> OA.value AS.Yices
-                                         <> OA.showDefault
-                                         <> OA.metavar "SOLVER"
-                                         <> OA.help "The solver to use for solving goals (including path satisfiability checking)"
-                                       )
-                 <*> OA.option OA.auto ( OA.long "float-mode"
-                                         <> OA.value AS.Real
-                                         <> OA.showDefault
-                                         <> OA.metavar "FLOAT-MODE"
-                                         <> OA.help "The interpretation of floating point operations at the SMT level"
-                                       )
-                 <*> OA.option (OA.maybeReader timeoutReader)
-                               ( OA.long "timeout"
-                                 <> OA.value AT.defaultTimeout
-                                 <> OA.showDefault
-                                 <> OA.metavar "SECONDS"
-                                 <> OA.help "The solver timeout to use for each goal"
-                               )
-                 <*> OA.many (OA.strOption ( OA.long "statechart"
-                                          <> OA.metavar "FILE"
-                                          <> OA.help "A path to a state chart encoding a property to verify"
-                                           ))
-                 <*> OA.optional (OA.strOption ( OA.long "profile-to"
-                                            <> OA.metavar "FILE"
-                                            <> OA.help "A file to log symbolic execution profiles to periodically"
-                                             ))
-                 <*> OA.optional (OA.strOption ( OA.long "overrides"
-                                               <> OA.metavar "DIRECTORY"
-                                               <> OA.help "A path to a directory of overides in crucible syntax"
-                                               ))
+parser = Options <$> OA.subparser
+  (  OA.command "verify"
+                (OA.info (verifyParser OA.<**> OA.helper)
+                         (OA.progDesc "Verify that the given binary with inputs terminates cleanly"))
+  <> OA.command "test-overrides"
+                (OA.info (testOverridesParser OA.<**> OA.helper)
+                         (OA.progDesc "Run function override tests"))
+
+  )
+  <*> OA.option OA.auto ( OA.long "solver"
+                          <> OA.value AS.Yices
+                          <> OA.showDefault
+                          <> OA.metavar "SOLVER"
+                          <> OA.help "The solver to use for solving goals (including path satisfiability checking)"
+                        )
+  <*> OA.option OA.auto ( OA.long "float-mode"
+                          <> OA.value AS.Real
+                          <> OA.showDefault
+                          <> OA.metavar "FLOAT-MODE"
+                          <> OA.help "The interpretation of floating point operations at the SMT level"
+                        )
+  <*> OA.option (OA.maybeReader timeoutReader)
+                ( OA.long "timeout"
+                  <> OA.value AT.defaultTimeout
+                  <> OA.showDefault
+                  <> OA.metavar "SECONDS"
+                  <> OA.help "The solver timeout to use for each goal"
+                )
 
 {- Note [Future Improvements]
 

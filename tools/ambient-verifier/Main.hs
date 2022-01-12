@@ -16,6 +16,7 @@ import qualified System.IO as IO
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Exception as AE
+import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Verifier as AV
 
@@ -46,23 +47,23 @@ loadProperty fp = do
 
 -- | This is the real verification driver that takes the parsed out command line
 -- arguments and sets up the problem instance for the library core
-verify :: O.Options -> IO ()
-verify o = do
-  binary <- BS.readFile (O.binaryPath o)
+verify :: O.Options -> O.VerifyOptions -> IO ()
+verify o vo = do
+  binary <- BS.readFile (O.binaryPath vo)
   -- See Note [Argument Encoding]
-  let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
+  let args = fmap TE.encodeUtf8 (O.commandLineArguments vo)
 
-  props <- mapM loadProperty (O.stateCharts o)
+  props <- mapM loadProperty (O.stateCharts vo)
 
-  let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath o
+  let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath vo
                                  , AV.piBinary = binary
-                                 , AV.piFsRoot = O.fsRoot o
+                                 , AV.piFsRoot = O.fsRoot vo
                                  , AV.piCommandLineArguments = args
                                  , AV.piSolver = O.solver o
                                  , AV.piFloatMode = O.floatMode o
                                  , AV.piProperties = props
-                                 , AV.piProfileTo = O.profileTo o
-                                 , AV.piOverrideDir = O.overrideDir o
+                                 , AV.piProfileTo = O.profileTo vo
+                                 , AV.piOverrideDir = O.overrideDir vo
                                  }
 
   chan <- CC.newChan
@@ -78,15 +79,39 @@ verify o = do
 
   return ()
 
+-- | This is the test runner for user function overrides that takes parsed
+-- command line arguments and sets up the test instance
+testOverrides :: O.Options -> O.TestOverridesOptions -> IO ()
+testOverrides o to = do
+  let tinst =  AO.TestInstance { AO.tiSolver = O.solver o
+                               , AO.tiFloatMode = O.floatMode o
+                               , AO.tiOverrideDir = O.testOverrideDir to
+                               , AO.tiAbi = O.testAbi to
+                               }
+  chan <- CC.newChan
+  logger <- CCA.async (printLogs IO.stdout chan)
+
+  AO.testOverrides (logAction chan) tinst (O.timeoutDuration o)
+
+  -- Tear down the logger by sending the token that causes it to exit cleanly
+  CC.writeChan chan Nothing
+  CCA.wait logger
+
+  return ()
+
 main :: IO ()
 main =
   X.catch
-    (verify =<< OA.execParser opts)
+    (do
+      options <- OA.execParser opts
+      case (O.command options) of
+        O.Verify verifyOpts -> verify options verifyOpts
+        O.TestOverrides testOverridesOpts -> testOverrides options testOverridesOpts
+    )
     (\(e :: AE.AmbientException) -> IO.hPutStrLn IO.stderr (show (PP.pretty e)))
   where
     opts = OA.info (O.parser OA.<**> OA.helper)
              ( OA.fullDesc
-               <> OA.progDesc "Verify that the given binary with inputs terminates cleanly"
                <> OA.header "A verifier for programs containing weird machines"
              )
 
