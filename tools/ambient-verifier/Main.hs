@@ -47,23 +47,23 @@ loadProperty fp = do
 
 -- | This is the real verification driver that takes the parsed out command line
 -- arguments and sets up the problem instance for the library core
-verify :: O.Options -> O.VerifyOptions -> IO ()
-verify o vo = do
-  binary <- BS.readFile (O.binaryPath vo)
+verify :: O.VerifyOptions -> IO ()
+verify o = do
+  binary <- BS.readFile (O.binaryPath o)
   -- See Note [Argument Encoding]
-  let args = fmap TE.encodeUtf8 (O.commandLineArguments vo)
+  let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
 
-  props <- mapM loadProperty (O.stateCharts vo)
+  props <- mapM loadProperty (O.stateCharts o)
 
-  let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath vo
+  let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath o
                                  , AV.piBinary = binary
-                                 , AV.piFsRoot = O.fsRoot vo
+                                 , AV.piFsRoot = O.fsRoot o
                                  , AV.piCommandLineArguments = args
                                  , AV.piSolver = O.solver o
                                  , AV.piFloatMode = O.floatMode o
                                  , AV.piProperties = props
-                                 , AV.piProfileTo = O.profileTo vo
-                                 , AV.piOverrideDir = O.overrideDir vo
+                                 , AV.piProfileTo = O.profileTo o
+                                 , AV.piOverrideDir = O.overrideDir o
                                  }
 
   chan <- CC.newChan
@@ -81,17 +81,17 @@ verify o vo = do
 
 -- | This is the test runner for user function overrides that takes parsed
 -- command line arguments and sets up the test instance
-testOverrides :: O.Options -> O.TestOverridesOptions -> IO ()
-testOverrides o to = do
-  let tinst =  AO.TestInstance { AO.tiSolver = O.solver o
-                               , AO.tiFloatMode = O.floatMode o
-                               , AO.tiOverrideDir = O.testOverrideDir to
-                               , AO.tiAbi = O.testAbi to
+testOverrides :: O.TestOverridesOptions -> IO ()
+testOverrides o = do
+  let tinst =  AO.TestInstance { AO.tiSolver = O.testSolver o
+                               , AO.tiFloatMode = O.testFloatMode o
+                               , AO.tiOverrideDir = O.testOverrideDir o
+                               , AO.tiAbi = O.testAbi o
                                }
   chan <- CC.newChan
   logger <- CCA.async (printLogs IO.stdout chan)
 
-  AO.testOverrides (logAction chan) tinst (O.timeoutDuration o)
+  AO.testOverrides (logAction chan) tinst (O.testTimeoutDuration o)
 
   -- Tear down the logger by sending the token that causes it to exit cleanly
   CC.writeChan chan Nothing
@@ -103,10 +103,10 @@ main :: IO ()
 main =
   X.catch
     (do
-      options <- OA.execParser opts
-      case (O.command options) of
-        O.Verify verifyOpts -> verify options verifyOpts
-        O.TestOverrides testOverridesOpts -> testOverrides options testOverridesOpts
+      command <- OA.execParser opts
+      case command of
+        O.Verify verifyOpts -> verify verifyOpts
+        O.TestOverrides testOverridesOpts -> testOverrides testOverridesOpts
     )
     (\(e :: AE.AmbientException) -> IO.hPutStrLn IO.stderr (show (PP.pretty e)))
   where

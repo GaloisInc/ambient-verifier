@@ -2,7 +2,6 @@ module Options (
     VerifyOptions(..)
   , TestOverridesOptions(..)
   , Command(..)
-  , Options(..)
   , parser
   ) where
 
@@ -27,6 +26,14 @@ data VerifyOptions =
                 -- the program (this should include argv[0] as the command name)
                 --
                 -- See Note [Future Improvements]
+                , solver :: AS.Solver
+                -- ^ The SMT solver to use for path satisfiability checking and
+                -- discharging verification conditions
+                , floatMode :: AS.FloatMode
+                -- ^ The interpretation of floating point values to use during both
+                -- path satisfiability checking and discharging verification conditions
+                , timeoutDuration :: AT.Timeout
+                -- ^ The solver timeout for each goal
                 , stateCharts :: [FilePath]
                 -- ^ File paths to a state charts encoding properties to verify
                 , profileTo :: Maybe FilePath
@@ -44,24 +51,19 @@ data TestOverridesOptions =
                        -- ^ Path to the crucible syntax overrides directory
                        , testAbi :: AO.ABI
                        -- ^ ABI to use when running tests
+                       , testSolver :: AS.Solver
+                       -- ^ The SMT solver to use for path satisfiability
+                       -- checking and discharging verification conditions
+                       , testFloatMode :: AS.FloatMode
+                       -- ^ The interpretation of floating point values to use
+                       -- during both path satisfiability checking and
+                       -- discharging verification conditions
+                       , testTimeoutDuration :: AT.Timeout
+                       -- ^ The solver timeout for each goal
                        }
 
--- | The options structure for subcommands to the verifier
+-- | The options structure for the command line interface to the verifier
 data Command = Verify VerifyOptions | TestOverrides TestOverridesOptions
-
--- | To top level options structure for the command line interface to the
--- verifier
-data Options =
-  Options { command :: Command
-          , solver :: AS.Solver
-          -- ^ The SMT solver to use for path satisfiability checking and
-          -- discharging verification conditions
-          , floatMode :: AS.FloatMode
-          -- ^ The interpretation of floating point values to use during both
-          -- path satisfiability checking and discharging verification conditions
-          , timeoutDuration :: AT.Timeout
-          -- ^ The solver timeout for each goal
-          }
 
 -- | Parse a string representation of an integer number of seconds into an
 -- AT.Timeout
@@ -70,6 +72,41 @@ timeoutReader str =
   case readMaybe str of
     Nothing -> Nothing
     Just x  -> Just (AT.Seconds x)
+
+-- | A parser for the @--solver@ option
+solverParser :: OA.Parser AS.Solver
+solverParser = OA.option OA.auto ( OA.long "solver"
+                                <> OA.value AS.Yices
+                                <> OA.showDefault
+                                <> OA.metavar "SOLVER"
+                                <> OA.help "The solver to use for solving goals (including path satisfiability checking)"
+                                 )
+
+-- | A parser for the @--float-mode@ option
+floatModeParser :: OA.Parser AS.FloatMode
+floatModeParser =  OA.option OA.auto ( OA.long "float-mode"
+                                    <> OA.value AS.Real
+                                    <> OA.showDefault
+                                    <> OA.metavar "FLOAT-MODE"
+                                    <> OA.help "The interpretation of floating point operations at the SMT level"
+                                     )
+
+-- | A parser for the @--timeout@ option
+timeoutParser :: OA.Parser AT.Timeout
+timeoutParser =  OA.option (OA.maybeReader timeoutReader)
+                           (  OA.long "timeout"
+                           <> OA.value AT.defaultTimeout
+                           <> OA.showDefault
+                           <> OA.metavar "SECONDS"
+                           <> OA.help "The solver timeout to use for each goal"
+                           )
+
+-- | A parser for the @--overrides@ option
+overridesParser :: OA.Parser FilePath
+overridesParser = OA.strOption (  OA.long "overrides"
+                               <> OA.metavar "DIRECTORY"
+                               <> OA.help "A path to a directory of overides in crucible syntax to test"
+                               )
 
 -- | A parser for the \"verify\" subcommand
 verifyParser :: OA.Parser Command
@@ -85,6 +122,9 @@ verifyParser = Verify <$> (VerifyOptions
            <*> OA.many (OA.strOption ( OA.long "argv"
                                      <> OA.metavar "STRING"
                                      <> OA.help "A command line argument to pass to the process"))
+           <*> solverParser
+           <*> floatModeParser
+           <*> timeoutParser
            <*> OA.many (OA.strOption ( OA.long "statechart"
                                     <> OA.metavar "FILE"
                                     <> OA.help "A path to a state chart encoding a property to verify"
@@ -93,30 +133,27 @@ verifyParser = Verify <$> (VerifyOptions
                                       <> OA.metavar "FILE"
                                       <> OA.help "A file to log symbolic execution profiles to periodically"
                                        ))
-           <*> OA.optional (OA.strOption ( OA.long "overrides"
-                                         <> OA.metavar "DIRECTORY"
-                                         <> OA.help "A path to a directory of overides in crucible syntax"
-                                         ))
+           <*> OA.optional overridesParser
            )
 
 
 -- | A parser for the \"test-overrides\" subcommand
 testOverridesParser :: OA.Parser Command
 testOverridesParser = TestOverrides <$> (TestOverridesOptions
-           <$> OA.strOption (  OA.long "overrides"
-                            <> OA.metavar "DIRECTORY"
-                            <> OA.help "A path to a directory of overides in crucible syntax to test"
-                            )
+           <$> overridesParser
            <*> OA.option OA.auto (  OA.long "abi"
                                  <> OA.metavar "ABI"
                                  <> OA.help "The ABI to use when loading crucible syntax files.  Must be 'X86_64Linux' or 'AArch32Linux'."
                                  )
+           <*> solverParser
+           <*> floatModeParser
+           <*> timeoutParser
            )
 
 
 -- | A parser for the 'Command' type
-parser :: OA.Parser Options
-parser = Options <$> OA.subparser
+parser :: OA.Parser Command
+parser = OA.subparser
   (  OA.command "verify"
                 (OA.info (verifyParser OA.<**> OA.helper)
                          (OA.progDesc "Verify that the given binary with inputs terminates cleanly"))
@@ -124,26 +161,7 @@ parser = Options <$> OA.subparser
                 (OA.info (testOverridesParser OA.<**> OA.helper)
                          (OA.progDesc "Run function override tests"))
 
-  )
-  <*> OA.option OA.auto ( OA.long "solver"
-                          <> OA.value AS.Yices
-                          <> OA.showDefault
-                          <> OA.metavar "SOLVER"
-                          <> OA.help "The solver to use for solving goals (including path satisfiability checking)"
-                        )
-  <*> OA.option OA.auto ( OA.long "float-mode"
-                          <> OA.value AS.Real
-                          <> OA.showDefault
-                          <> OA.metavar "FLOAT-MODE"
-                          <> OA.help "The interpretation of floating point operations at the SMT level"
-                        )
-  <*> OA.option (OA.maybeReader timeoutReader)
-                ( OA.long "timeout"
-                  <> OA.value AT.defaultTimeout
-                  <> OA.showDefault
-                  <> OA.metavar "SECONDS"
-                  <> OA.help "The solver timeout to use for each goal"
-                )
+ )
 
 {- Note [Future Improvements]
 
