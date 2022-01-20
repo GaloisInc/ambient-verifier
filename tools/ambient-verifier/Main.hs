@@ -64,6 +64,7 @@ verify o = do
                                  , AV.piProperties = props
                                  , AV.piProfileTo = O.profileTo o
                                  , AV.piOverrideDir = O.overrideDir o
+                                 , AV.piSolverInteractionFile = O.solverInteractionFile o
                                  }
 
   chan <- CC.newChan

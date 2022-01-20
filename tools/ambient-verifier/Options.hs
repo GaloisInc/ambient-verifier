@@ -41,6 +41,8 @@ data VerifyOptions =
                 , overrideDir :: Maybe FilePath
                 -- ^ Path to the crucible syntax overrides directory.  If this is
                 -- 'Nothing', then no crucible syntax overrides will be registered.
+                , solverInteractionFile :: Maybe FilePath
+                -- ^ Optional location to write solver interactions log to
                 }
   deriving ( Show )
 
@@ -134,6 +136,10 @@ verifyParser = Verify <$> (VerifyOptions
                                       <> OA.help "A file to log symbolic execution profiles to periodically"
                                        ))
            <*> OA.optional overridesParser
+           <*> OA.optional (OA.strOption ( OA.long "log-solver-interactions"
+                                        <> OA.metavar "FILE"
+                                        <> OA.help "Log solver interactions to FILE"
+                                       ))
            )
 
 

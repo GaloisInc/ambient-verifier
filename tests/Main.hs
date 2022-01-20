@@ -106,6 +106,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piProperties = maybeToList mprop
                                  , AV.piProfileTo = Nothing
                                  , AV.piOverrideDir = overrideDir expectedResult
+                                 , AV.piSolverInteractionFile = Nothing
                                  }
 
   chan <- CC.newChan

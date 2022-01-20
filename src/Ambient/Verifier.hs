@@ -13,6 +13,7 @@ import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Control.Exception as X
 import           Control.Lens ( (^.) )
+import           Control.Monad ( void )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
@@ -22,6 +23,7 @@ import qualified Data.Map.Strict as Map
 import           Data.Maybe ( maybeToList )
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
+import qualified Data.Text as DT
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
 
@@ -42,6 +44,8 @@ import qualified Lang.Crucible.Simulator.PathSatisfiability as LCSP
 import qualified Lang.Crucible.Simulator.Profiling as LCSProf
 import qualified Lang.Crucible.Simulator.SimError as LCSS
 import qualified Lang.Crucible.Simulator.SymSequence as LCSS
+import qualified What4.Config as WConf
+import qualified What4.Concrete as WC
 import qualified What4.Interface as WI
 import qualified What4.Partial as WP
 
@@ -98,6 +102,8 @@ data ProgramInstance =
                   -- ^ Path to the crucible syntax overrides directory.  If
                   -- this is 'Nothing', then no crucible syntax overrides will
                   -- be registered.
+                  , piSolverInteractionFile :: Maybe FilePath
+                  -- ^ Optional location to write solver interactions log to
                   }
 
 -- | Retrieve a mapping from symbol names to addresses from code discovery
@@ -311,6 +317,15 @@ verify logAction pinst timeoutDuration = do
   hdlAlloc <- liftIO LCF.newHandleAllocator
   Some ng <- liftIO PN.newIONonceGenerator
   AS.withOnlineSolver (piSolver pinst) (piFloatMode pinst) ng $ \sym -> do
+    liftIO $ case (piSolverInteractionFile pinst) of
+      Just path -> do
+        let config = WI.getConfiguration sym
+        interactionFileSetter <- WConf.getOptionSetting LCBO.solverInteractionFile
+                                                        config
+        void $ WConf.setOption interactionFileSetter
+                               (WC.ConcreteString (WI.UnicodeLiteral (DT.pack path)))
+      Nothing -> return ()
+
     -- Load up the binary, which existentially introduces the architecture of the
     -- binary in the context of the continuation
     AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals loadedBinary -> DMA.withArchConstraints archInfo $ do
