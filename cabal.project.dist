@@ -34,5 +34,4 @@ packages: .
           submodules/macaw-loader/macaw-loader-x86
           submodules/macaw-loader/macaw-loader-ppc
           submodules/macaw-loader/macaw-loader-aarch32
-          submodules/pate
           submodules/portable-executable/pe-parser

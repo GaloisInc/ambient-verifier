@@ -40,9 +40,6 @@
 [submodule "submodules/dismantle"]
 	path = submodules/dismantle
 	url = git@github.com:travitch/dismantle.git
-[submodule "submodules/pate"]
-	path = submodules/pate
-	url = git@github.com:GaloisInc/pate.git
 [submodule "submodules/llvm-pretty"]
 	path = submodules/llvm-pretty
 	url = git@github.com:elliottt/llvm-pretty.git

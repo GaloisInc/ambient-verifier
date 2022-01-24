@@ -10,7 +10,7 @@ default:
     - export LC_ALL=en_US.UTF-8
     - mkdir -p $HOME/.ghcup/bin
     - export PATH=$HOME/.ghcup/bin:$PATH
-    - wget https://downloads.haskell.org/~ghcup/0.1.14/x86_64-linux-ghcup-0.1.14 -O $HOME/.ghcup/bin/ghcup
+    - wget https://downloads.haskell.org/~ghcup/0.1.17.3/x86_64-linux-ghcup-0.1.17.3 -O $HOME/.ghcup/bin/ghcup
     - chmod +x $HOME/.ghcup/bin/ghcup
     - ghcup install cabal
     - git config --global url."https://github.com/".insteadOf "git@github.com:"
@@ -35,5 +35,5 @@ ambient-verifier:
     - cabal test pkg:ambient-verifier
   parallel:
     matrix:
-      - GHCVER: [8.8.4, 8.10.5]
+      - GHCVER: [8.8.4, 8.10.7, 9.0.2]
         CABALVER: [1]
