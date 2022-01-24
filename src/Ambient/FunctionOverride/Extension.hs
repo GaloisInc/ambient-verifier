@@ -425,8 +425,8 @@ data SomeExtensionWrapper arch =
   forall args ret. SomeExtensionWrapper (ExtensionWrapper arch args ret)
 
 -- | Wrap a statement extension binary operator
-binop :: (DMM.MemWidth w, KnownNat w, Monad m)
-      => (  DMM.AddrWidthRepr w
+binop :: (KnownNat w, Monad m)
+      => (  WI.NatRepr w
          -> lhsType
          -> rhsType
          -> LCCE.StmtExtension ext (LCCR.Atom s) tp )
@@ -437,19 +437,16 @@ binop :: (DMM.MemWidth w, KnownNat w, Monad m)
       -- ^ Right-hand side operand
       -> m (LCCR.AtomValue ext s tp)
 binop op lhs rhs =
-  return (LCCR.EvalExt (op (DMC.addrWidthRepr WI.knownNat) lhs rhs))
+  return (LCCR.EvalExt (op WI.knownNat lhs rhs))
 
 
 -- | Wrap a syntax extension binary operator, converting a bitvector in the
 -- right-hand side position to an 'LLVMPointerType' before wrapping.
---
--- Note: we could make this more general to accept any width bitvector offset
 binopRhsBvToPtr :: ( ext ~ DMS.MacawExt arch
                    , ExtensionParser m ext s
                    , 1 <= w
-                   , DMM.MemWidth w
                    , KnownNat w )
-                => (  DMM.AddrWidthRepr w
+                => (  WI.NatRepr w
                    -> lhsType
                    -> LCCR.Atom s (LCLM.LLVMPointerType w)
                    -> LCCE.StmtExtension ext (LCCR.Atom s) tp)
@@ -507,7 +504,7 @@ wrapPointerSub = ExtensionWrapper
   { extName = LCSA.AtomName "pointer-sub"
   , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
                             Ctx.:> LCT.BVRepr LCT.knownNat
-  , extWrapper = \args -> Ctx.uncurryAssignment (binopRhsBvToPtr DMS.PtrSub) args }
+  , extWrapper = \args -> Ctx.uncurryAssignment (binopRhsBvToPtr (DMS.PtrSub . DMM.addrWidthRepr)) args }
 
 -- | Compute the difference between two pointers in bytes using 'DMS.PtrSub'
 pointerDiff :: ( w ~ DMC.ArchAddrWidth arch
@@ -520,7 +517,7 @@ pointerDiff :: ( w ~ DMC.ArchAddrWidth arch
             -> LCCR.Atom s (LCLM.LLVMPointerType w)
             -> m (LCCR.AtomValue ext s (LCT.BVType w))
 pointerDiff lhs rhs = do
-  ptrRes <- binop DMS.PtrSub lhs rhs
+  ptrRes <- binop (DMS.PtrSub . DMM.addrWidthRepr) lhs rhs
   ptrAtom <- LCSC.freshAtom WP.InternalPos ptrRes
   -- 'DMS.PtrSub' of two pointers produces a bitvector (LLVMPointer with region
   -- 0) so 'DMS.PtrToBits' is safe here.
@@ -580,7 +577,7 @@ wrapPointerEq = ExtensionWrapper
  { extName = LCSA.AtomName "pointer-eq"
  , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
                            Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
- , extWrapper = \args -> Ctx.uncurryAssignment (binop DMS.PtrEq) args }
+ , extWrapper = \args -> Ctx.uncurryAssignment (binop (DMS.PtrEq . DMM.addrWidthRepr)) args }
 
 -- | Wrapper for the 'DMS.MacawReadMem' syntax extension that enables users to
 -- read through a pointer to retrieve a bitvector of data at the underlying

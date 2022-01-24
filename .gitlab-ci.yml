@@ -35,5 +35,5 @@ ambient-verifier:
     - cabal test pkg:ambient-verifier
   parallel:
     matrix:
-      - GHCVER: [8.6.5, 8.8.4, 8.10.5]
+      - GHCVER: [8.8.4, 8.10.5]
         CABALVER: [1]
