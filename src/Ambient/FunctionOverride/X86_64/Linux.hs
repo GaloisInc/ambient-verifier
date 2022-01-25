@@ -39,16 +39,16 @@ import qualified Ambient.FunctionOverride.Extension as AFE
 
 -- | Extract integer arguments from x86_64 registers.
 x86_64LinuxIntegerArgumentRegisters
-  :: (LCB.IsSymInterface sym)
-  => sym
+  :: (LCB.IsSymBackend sym bak)
+  => bak
   -> LCT.CtxRepr atps
   -- ^ Types of argument registers
   -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes DMX.X86_64)
   -- ^ Argument register values
   -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
-x86_64LinuxIntegerArgumentRegisters sym argTypes regs =
+x86_64LinuxIntegerArgumentRegisters bak argTypes regs =
   let regList = map lookupReg DMX.x86ArgumentRegs in
-  AO.buildArgumentRegisterAssignment sym (PN.knownNat @64) argTypes regList
+  AO.buildArgumentRegisterAssignment bak (PN.knownNat @64) argTypes regList
   where
     lookupReg r =
       case DMXS.lookupX86Reg r regs of
@@ -60,9 +60,9 @@ x86_64LinuxIntegerArgumentRegisters sym argTypes regs =
 
 -- | Assemble x86_64 integer return register state from override return value.
 x86_64LinuxIntegerReturnRegisters
-  :: forall p sym ext r args rtp t
-   . ( LCB.IsSymInterface sym )
-  => sym
+  :: forall p sym bak ext r args rtp t
+   . ( LCB.IsSymBackend sym bak )
+  => bak
   -> LCT.TypeRepr t
   -- ^ Override return type
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym t)
@@ -70,7 +70,7 @@ x86_64LinuxIntegerReturnRegisters
   -> LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64)
   -- ^ Argument register values from before override execution
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64))
-x86_64LinuxIntegerReturnRegisters sym ovTyp ovSim initRegs =
+x86_64LinuxIntegerReturnRegisters bak ovTyp ovSim initRegs =
   case ovTyp of
     LCT.UnitRepr -> do
       ovSim
@@ -94,6 +94,8 @@ x86_64LinuxIntegerReturnRegisters sym ovTyp ovSim initRegs =
     -- NOTE: If we encounter an override that returns a 128 bit int we'll
     -- need to add support for that here
   where
+    sym = LCB.backendGetSym bak
+
     -- | Zero extend an LLMVPointer in region 0 (a bitvector) to fit in an
     -- integer register
     bvZext
@@ -102,7 +104,7 @@ x86_64LinuxIntegerReturnRegisters sym ovTyp ovSim initRegs =
       -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64))
     bvZext ov = do
       result <- ov
-      asBv <- liftIO $ LCLM.projectLLVM_bv sym result
+      asBv <- liftIO $ LCLM.projectLLVM_bv bak result
       asPtr <- liftIO $ AO.bvToPtr sym asBv (WI.knownNat @64)
       let mRegs = DMXS.updateX86Reg DMXR.RAX (\_ -> (LCS.RV asPtr)) initRegs
       case mRegs of

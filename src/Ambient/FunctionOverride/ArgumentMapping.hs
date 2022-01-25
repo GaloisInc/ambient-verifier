@@ -161,18 +161,18 @@ pointerArgumentTypes pam =
 -- | Translate a single argument from its current type to the type expected by
 -- the user-specified override.
 convertBitvector
-  :: (LCB.IsSymInterface sym)
-  => sym
+  :: (LCB.IsSymBackend sym bak)
+  => bak
   -> LCT.TypeRepr tp
   -- ^ The type expected by the user-specified override
   -> LCS.RegEntry sym tp'
   -- ^ The value to convert
   -> IO (LCS.RegEntry sym tp)
-convertBitvector sym to_tp re =
+convertBitvector bak to_tp re =
   case (LCS.regType re, to_tp) of
     (LCLM.LLVMPointerRepr w1, LCT.BVRepr w2)
       | Just PC.Refl <- PC.testEquality w1 w2 -> do
-          bv <- LCLM.projectLLVM_bv sym (LCS.regValue re)
+          bv <- LCLM.projectLLVM_bv bak (LCS.regValue re)
           return (LCS.RegEntry (LCT.BVRepr w1) bv)
     (LCT.BVRepr w1, LCLM.LLVMPointerRepr w2)
       | Just PC.Refl <- PC.testEquality w1 w2 -> do
@@ -184,25 +184,27 @@ convertBitvector sym to_tp re =
                                                                      , " override expected: " ++ show to_tp
                                                                      , " actual argument type: " ++ show from_tp
                                                                      ]
+  where
+    sym = LCB.backendGetSym bak
 
 -- | Given a 'PointerArgumentMapping' and a list of actual arguments
 -- ('LCS.RegEntry') passed from crucible, convert the arguments that should be
 -- bitvectors into plain bitvectors so that they can be passed to user
 -- overrides.
 buildFunctionOverrideArgs
-  :: forall sym tps
-   . (LCB.IsSymInterface sym)
-  => sym
+  :: forall sym bak tps
+   . (LCB.IsSymBackend sym bak)
+  => bak
   -> Ctx.Assignment PointerArgumentMapping tps
   -> Ctx.Assignment (SomeIndex (CtxToPointerType tps)) tps
   -> Ctx.Assignment (LCS.RegEntry sym) (CtxToPointerType tps)
   -> IO (Ctx.Assignment (LCS.RegEntry sym) tps)
-buildFunctionOverrideArgs sym pam argIdxs args =
+buildFunctionOverrideArgs bak pam argIdxs args =
   Ctx.generateM (Ctx.size pam) $ \idx ->
       case pam Ctx.! idx of
         PointerArgumentMapping _macawRepr overrideRepr -> do
           case argIdxs Ctx.! idx of
-            SomeIndex argIdx -> convertBitvector sym overrideRepr (args Ctx.! argIdx)
+            SomeIndex argIdx -> convertBitvector bak overrideRepr (args Ctx.! argIdx)
 
 {- Note [Bitvector Argument Mapping]
 

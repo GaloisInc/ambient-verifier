@@ -31,11 +31,11 @@ tlsMemorySize = 4 * 1024
 
 -- | Create and initialize a pointer to store the TLS value.
 -- See @Note [AArch32 and TLS]@ in "Ambient.FunctionOverride.AArch32.Linux".
-initTLSMemory :: ( LCB.IsSymInterface sym
+initTLSMemory :: ( LCB.IsSymBackend sym bak
                  , LCLM.HasLLVMAnn sym
                  , ?memOpts :: LCLM.MemOptions
                  )
-              => sym
+              => bak
               -> LCLM.MemImpl sym
                  -- ^ MemImpl to add the TLS pointer to
               -> IO ( LCLM.LLVMPtr sym (DMC.ArchAddrWidth DMA.ARM)
@@ -43,14 +43,15 @@ initTLSMemory :: ( LCB.IsSymInterface sym
                     , LCLM.MemImpl sym
                       -- Updated MemImpl containing new TLS pointer
                     )
-initTLSMemory sym mem0 = do
+initTLSMemory bak mem0 = do
+  let sym = LCB.backendGetSym bak
   let ?ptrWidth = WI.knownRepr
   arrayStorage <- WI.freshConstant sym (WSym.safeSymbol "tls") WI.knownRepr
   tlsMemorySizeBV <- WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr tlsMemorySize)
   oneByte <- WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr 1)
   (tlsPtr, mem1) <-
-    LCLM.doCalloc sym mem0 tlsMemorySizeBV oneByte LCLD.noAlignment
-  mem2 <- LCLM.doArrayStore sym
+    LCLM.doCalloc bak mem0 tlsMemorySizeBV oneByte LCLD.noAlignment
+  mem2 <- LCLM.doArrayStore bak
                             mem1
                             tlsPtr
                             LCLD.noAlignment
@@ -68,8 +69,8 @@ aarch32LinuxInitGlobals ::
      -- ^ Global variable for TLS
   -> AM.InitArchSpecificGlobals DMA.ARM
 aarch32LinuxInitGlobals tlsGlob =
-  AM.InitArchSpecificGlobals $ \sym mem0 -> do
-    (tlsPtr, mem1) <- initTLSMemory sym mem0
+  AM.InitArchSpecificGlobals $ \bak mem0 -> do
+    (tlsPtr, mem1) <- initTLSMemory bak mem0
     return (mem1, LCSG.insertGlobal tlsGlob tlsPtr LCSG.emptyGlobals)
 
 -- | There are currently no overrides for macaw-aarch32-symbolic

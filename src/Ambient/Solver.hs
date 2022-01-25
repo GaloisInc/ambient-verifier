@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 -- | This module provides an interface for instantiating SMT solvers
 --
 -- The intent of this module is to make it easy to select a solver from the
@@ -14,7 +15,7 @@ module Ambient.Solver (
   ) where
 
 import qualified Control.Monad.Catch as CMC
-import           Control.Monad.IO.Class ( MonadIO )
+import           Control.Monad.IO.Class ( MonadIO(..) )
 import qualified Data.Parameterized.Nonce as PN
 import qualified What4.Expr as WE
 import qualified What4.ProblemFeatures as WP
@@ -66,11 +67,19 @@ offlineSolver s =
 -- This function provides an online solver suitable for path satisfiability
 -- checking.
 withOnlineSolver
-  :: (MonadIO m, CMC.MonadMask m)
+  :: forall m scope a
+   . (MonadIO m, CMC.MonadMask m)
   => Solver
   -> FloatMode
   -> PN.NonceGenerator IO scope
-  -> (forall sym solver fs . (sym ~ LCBO.OnlineBackend scope solver fs, LCB.IsSymInterface sym, WPO.OnlineSolver solver) => sym -> m a)
+  -> ( forall sym bak solver st fs
+      . ( sym ~ WE.ExprBuilder scope st fs
+        , bak ~ LCBO.OnlineBackend solver scope st fs
+        , LCB.IsSymBackend sym bak
+        , WPO.OnlineSolver solver
+        )
+     => bak -> m a
+     )
   -> m a
 withOnlineSolver solver fm ng k =
   case solver of
@@ -79,24 +88,40 @@ withOnlineSolver solver fm ng k =
       case fm of
         IEEE -> CMC.throwM (AE.UnsupportedSolverCombination (show solver) (show fm))
         Real -> CMC.throwM (AE.UnsupportedSolverCombination (show solver) (show fm))
-        UF -> LCBO.withBoolectorOnlineBackend WE.FloatUninterpretedRepr ng LCBO.NoUnsatFeatures k
+        UF   -> withSym WE.FloatUninterpretedRepr $ \sym ->
+                LCBO.withBoolectorOnlineBackend sym LCBO.NoUnsatFeatures k
     CVC4 ->
       case fm of
-        IEEE -> LCBO.withCVC4OnlineBackend WE.FloatIEEERepr ng LCBO.NoUnsatFeatures WP.noFeatures k
-        Real -> LCBO.withCVC4OnlineBackend WE.FloatRealRepr ng LCBO.NoUnsatFeatures WP.noFeatures k
-        UF -> LCBO.withCVC4OnlineBackend WE.FloatUninterpretedRepr ng LCBO.NoUnsatFeatures WP.noFeatures k
+        IEEE -> withSym WE.FloatIEEERepr $ \sym ->
+                LCBO.withCVC4OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
+        Real -> withSym WE.FloatRealRepr $ \sym ->
+                LCBO.withCVC4OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
+        UF   -> withSym WE.FloatUninterpretedRepr $ \sym ->
+                LCBO.withCVC4OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
     Yices ->
       case fm of
         IEEE -> CMC.throwM (AE.UnsupportedSolverCombination (show solver) (show fm))
         -- Without 'useSymbolicArrays' what4 attempts to generate terms that
         -- Yices doesn't support and throws an exception
-        Real -> LCBO.withYicesOnlineBackend WE.FloatRealRepr ng LCBO.NoUnsatFeatures WP.useSymbolicArrays k
-        UF -> LCBO.withYicesOnlineBackend WE.FloatUninterpretedRepr ng LCBO.NoUnsatFeatures WP.useSymbolicArrays k
+        Real -> withSym WE.FloatRealRepr $ \sym ->
+                LCBO.withYicesOnlineBackend sym LCBO.NoUnsatFeatures WP.useSymbolicArrays k
+        UF   -> withSym WE.FloatUninterpretedRepr $ \sym ->
+                LCBO.withYicesOnlineBackend sym LCBO.NoUnsatFeatures WP.useSymbolicArrays k
     Z3 ->
       case fm of
-        IEEE -> LCBO.withZ3OnlineBackend WE.FloatIEEERepr ng LCBO.NoUnsatFeatures WP.noFeatures k
-        Real -> LCBO.withZ3OnlineBackend WE.FloatRealRepr ng LCBO.NoUnsatFeatures WP.noFeatures k
-        UF -> LCBO.withZ3OnlineBackend WE.FloatUninterpretedRepr ng LCBO.NoUnsatFeatures WP.noFeatures k
+        IEEE -> withSym WE.FloatIEEERepr $ \sym ->
+                LCBO.withZ3OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
+        Real -> withSym WE.FloatRealRepr $ \sym ->
+                LCBO.withZ3OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
+        UF   -> withSym WE.FloatUninterpretedRepr $ \sym ->
+                LCBO.withZ3OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
+  where
+    withSym :: WE.FloatModeRepr fm
+            -> (forall st. WE.ExprBuilder scope st (WE.Flags fm) -> m a)
+            -> m a
+    withSym fmr symAction = do
+      sym <- liftIO $ WE.newExprBuilder fmr WE.EmptyExprBuilderState ng
+      symAction sym
 
 {- Note [Float Mode Duplication]
 

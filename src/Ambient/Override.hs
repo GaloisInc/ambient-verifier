@@ -31,9 +31,9 @@ newtype BvConversion sym w tp where
 -- | Build an Assignment representing the arguments to a system call or
 -- function argument from a list of registers
 buildArgumentRegisterAssignment
-  :: forall w args sym
-   . (1 <= w, KnownNat w, LCB.IsSymInterface sym)
-  => sym
+  :: forall w args sym bak
+   . (1 <= w, KnownNat w, LCB.IsSymBackend sym bak)
+  => bak
   -> PN.NatRepr w
   -- ^ Pointer width
   -> LCT.CtxRepr args
@@ -42,8 +42,10 @@ buildArgumentRegisterAssignment
   -- ^ List of argument registers
   -> IO (Ctx.Assignment (LCS.RegEntry sym) args)
   -- ^ Argument values
-buildArgumentRegisterAssignment sym ptrW argTyps regEntries = go argTyps regEntries'
+buildArgumentRegisterAssignment bak ptrW argTyps regEntries = go argTyps regEntries'
   where
+    sym = LCB.backendGetSym bak
+
     -- Drop unused registers from regEntries and reverse list to account for
     -- right-to-left processing when using 'Ctx.viewAssign'
     regEntries' = reverse (take (Ctx.sizeInt (Ctx.size argTyps)) regEntries)
@@ -89,7 +91,7 @@ buildArgumentRegisterAssignment sym ptrW argTyps regEntries = go argTyps regEntr
             -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
             -> IO (LCS.RegEntry sym (LCLM.LLVMPointerType bvW))
     bvTrunc bvW ptr = do
-      bv <- LCLM.projectLLVM_bv sym (LCS.regValue ptr)
+      bv <- LCLM.projectLLVM_bv bak (LCS.regValue ptr)
       rv <- bvToPtr sym bv bvW
       return (LCS.RegEntry (LCLM.LLVMPointerRepr bvW) rv)
 
@@ -112,13 +114,14 @@ bvToPtr sym bv ptrW =
 
 -- | Convert a 64-bit LLVMPointer to a 32-bit vector by dropping the upper 32
 -- bits
-ptrToBv32 :: ( LCB.IsSymInterface sym )
-          => sym
+ptrToBv32 :: ( LCB.IsSymBackend sym bak )
+          => bak
           -> PN.NatRepr w
           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
           -> IO (LCS.RegEntry sym (LCT.BVType 32))
-ptrToBv32 sym nr ptr = do
-  bvW <- LCLM.projectLLVM_bv sym (LCS.regValue ptr)
+ptrToBv32 bak nr ptr = do
+  let sym = LCB.backendGetSym bak
+  bvW <- LCLM.projectLLVM_bv bak (LCS.regValue ptr)
   case PN.compareNat nr (WI.knownNat @32) of
     PN.NatLT _ -> AP.panic AP.Override "ptrToBv32" ["Pointer too small to truncate to 32 bits: " ++ show nr]
     PN.NatEQ -> return $! LCS.RegEntry LCT.knownRepr bvW

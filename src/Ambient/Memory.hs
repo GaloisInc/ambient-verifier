@@ -15,10 +15,10 @@ import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 -- It takes an initial 'LCMC.MemImpl' and modifies it as necessary, also
 -- returning any auxiliary global variables to support the changes.
 newtype InitArchSpecificGlobals arch =
-  InitArchSpecificGlobals (  forall sym
+  InitArchSpecificGlobals (  forall sym bak
                              .  ( LCLM.HasLLVMAnn sym
-                                , LCB.IsSymInterface sym )
-                             => sym
+                                , LCB.IsSymBackend sym bak )
+                             => bak
                              -> LCLM.MemImpl sym
                              -> IO ( LCLM.MemImpl sym
                                    , LCSG.SymGlobalState sym) )

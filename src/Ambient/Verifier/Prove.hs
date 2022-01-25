@@ -118,14 +118,14 @@ proveOneGoal logAction sym adapter workers sem assumptionsInScope p timeoutDurat
 -- 'WS.SolverAdapter'), which means that it spawns a fresh solver instance for
 -- each goal.
 proveObligations
-  :: (LCB.IsSymInterface sym, sym ~ WE.ExprBuilder t st fs, MonadIO m)
+  :: (LCB.IsSymBackend sym bak, sym ~ WE.ExprBuilder t st fs, MonadIO m)
   => LJ.LogAction IO AD.Diagnostic
-  -> sym
+  -> bak
   -> WS.SolverAdapter st
   -> AT.Timeout
   -> m ()
-proveObligations logAction sym adapter timeoutDuration = do
-  mobligations <- liftIO (LCB.getProofObligations sym)
+proveObligations logAction bak adapter timeoutDuration = do
+  mobligations <- liftIO (LCB.getProofObligations bak)
   case mobligations of
     Nothing -> return ()
     Just obligations -> do
@@ -140,6 +140,8 @@ proveObligations logAction sym adapter timeoutDuration = do
       workers <- liftIO $ IORef.readIORef workersRef
       liftIO $ mapM_ CCA.wait workers
   where
+    sym = LCB.backendGetSym bak
+
     go workers sem assumptionsInScope goals =
       case goals of
         LCB.Assuming asumps childGoals ->

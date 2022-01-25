@@ -58,8 +58,9 @@ data FunctionOverride p sym args ext ret =
                    , functionReturnType :: LCT.TypeRepr ret
                    -- ^ Return type of the function
                    , functionOverride
-                       :: (LCB.IsSymInterface sym)
-                       => sym
+                       :: forall bak
+                        . (LCB.IsSymBackend sym bak)
+                       => bak
                        -> Ctx.Assignment (LCS.RegEntry sym) args
                        -- Arguments to function
                        -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))
@@ -69,8 +70,7 @@ data FunctionOverride p sym args ext ret =
 data SomeFunctionOverride p sym ext =
   forall args ret . SomeFunctionOverride (FunctionOverride p sym args ext ret)
 
-buildCallocOverride :: ( LCB.IsSymInterface sym
-                       , LCLM.HasLLVMAnn sym
+buildCallocOverride :: ( LCLM.HasLLVMAnn sym
                        , ?memOpts :: LCLM.MemOptions
                        , LCLM.HasPtrWidth w
                        )
@@ -83,29 +83,28 @@ buildCallocOverride mvar = FunctionOverride
   , functionGlobals = []
   , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \sym args -> Ctx.uncurryAssignment (callCalloc sym mvar) args
+  , functionOverride = \bak args -> Ctx.uncurryAssignment (callCalloc bak mvar) args
   }
 
-callCalloc :: (LCB.IsSymInterface sym
+callCalloc :: ( LCB.IsSymBackend sym bak
               , LCLM.HasLLVMAnn sym
               , ?memOpts :: LCLM.MemOptions
               , LCLM.HasPtrWidth w
               )
-           => sym
+           => bak
            -> LCS.GlobalVar LCLM.Mem
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
               -- ^ The number of elements in the array
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
               -- ^ The number of bytes to allocate
            -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callCalloc sym mvar (LCS.regValue -> num) (LCS.regValue -> sz) =
+callCalloc bak mvar (LCS.regValue -> num) (LCS.regValue -> sz) =
   LCS.modifyGlobal mvar $ \mem -> liftIO $
-  do numBV <- LCLM.projectLLVM_bv sym num
-     szBV  <- LCLM.projectLLVM_bv sym sz
-     LCLM.doCalloc sym mem szBV numBV LCLD.noAlignment
+  do numBV <- LCLM.projectLLVM_bv bak num
+     szBV  <- LCLM.projectLLVM_bv bak sz
+     LCLM.doCalloc bak mem szBV numBV LCLD.noAlignment
 
-buildMallocOverride :: ( LCB.IsSymInterface sym
-                       , ?memOpts :: LCLM.MemOptions
+buildMallocOverride :: ( ?memOpts :: LCLM.MemOptions
                        , LCLM.HasLLVMAnn sym
                        , LCLM.HasPtrWidth w
                        )
@@ -117,24 +116,24 @@ buildMallocOverride mvar = FunctionOverride
   , functionGlobals = []
   , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \sym args -> Ctx.uncurryAssignment (callMalloc sym mvar) args
+  , functionOverride = \bak args -> Ctx.uncurryAssignment (callMalloc bak mvar) args
   }
 
-callMalloc :: ( LCB.IsSymInterface sym
+callMalloc :: ( LCB.IsSymBackend sym bak
               , ?memOpts :: LCLM.MemOptions
               , LCLM.HasLLVMAnn sym
               , LCLM.HasPtrWidth w
               )
-           => sym
+           => bak
            -> LCS.GlobalVar LCLM.Mem
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
               -- ^ The number of bytes to allocate
            -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callMalloc sym mvar (LCS.regValue -> sz) =
+callMalloc bak mvar (LCS.regValue -> sz) =
   LCS.modifyGlobal mvar $ \mem -> liftIO $
   do let displayString = "<malloc function override>"
-     szBV <- LCLM.projectLLVM_bv sym sz
-     LCLM.doMalloc sym LCLM.HeapAlloc LCLM.Mutable displayString mem szBV LCLD.noAlignment
+     szBV <- LCLM.projectLLVM_bv bak sz
+     LCLM.doMalloc bak LCLM.HeapAlloc LCLM.Mutable displayString mem szBV LCLD.noAlignment
 
 -------------------------------------------------------------------------------
 -- Hacky Overrides
@@ -144,26 +143,25 @@ callMalloc sym mvar (LCS.regValue -> sz) =
 -- something to work. We should replace these with proper solutions later.
 -- See #19 for one possible way to do this.
 
-hackyBumpMalloc :: ( LCB.IsSymInterface sym
+hackyBumpMalloc :: ( LCB.IsSymBackend sym bak
                    , LCLM.HasPtrWidth w
                    )
-                => sym
+                => bak
                 -> LCS.GlobalVar (LCLM.LLVMPointerType w)
                 -- ^ Global pointing to end of heap bump allocation
                 -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
                 -- ^ The number of bytes to allocate
                 -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-hackyBumpMalloc sym endGlob (LCS.regValue -> sz) = do
-  szBv <- liftIO $ LCLM.projectLLVM_bv sym sz
+hackyBumpMalloc bak endGlob (LCS.regValue -> sz) = do
+  let sym = LCB.backendGetSym bak
+  szBv <- liftIO $ LCLM.projectLLVM_bv bak sz
   LCS.modifyGlobal endGlob $ \endPtr -> liftIO $ do
     -- Bump up end pointer
     endPtr' <- LCLM.ptrSub sym ?ptrWidth endPtr szBv
     return (endPtr', endPtr')
 
 buildHackyBumpMallocOverride
-  :: ( LCB.IsSymInterface sym
-     , LCLM.HasPtrWidth w
-     )
+  :: LCLM.HasPtrWidth w
   => LCS.GlobalVar (LCLM.LLVMPointerType w)
   -- ^ Global pointing to end of heap bump allocation
   -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext
@@ -173,14 +171,14 @@ buildHackyBumpMallocOverride endGlob = FunctionOverride
   , functionGlobals = []
   , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyBumpMalloc sym endGlob) args
+  , functionOverride = \bak args -> Ctx.uncurryAssignment (hackyBumpMalloc bak endGlob) args
   }
 
-hackyBumpCalloc :: ( LCB.IsSymInterface sym
+hackyBumpCalloc :: ( LCB.IsSymBackend sym bak
                    , LCLM.HasLLVMAnn sym
                    , LCLM.HasPtrWidth w
                    )
-                => sym
+                => bak
                 -> LCS.GlobalVar (LCLM.LLVMPointerType w)
                 -- ^ Global pointing to end of heap bump allocation
                 -> LCS.GlobalVar LCLM.Mem
@@ -189,24 +187,24 @@ hackyBumpCalloc :: ( LCB.IsSymInterface sym
                 -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
                 -- ^ The number of bytes to allocate
                 -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-hackyBumpCalloc sym endGlob memVar (LCS.regValue -> num) (LCS.regValue -> sz) = do
+hackyBumpCalloc bak endGlob memVar (LCS.regValue -> num) (LCS.regValue -> sz) = do
+  let sym = LCB.backendGetSym bak
   LCS.modifyGlobal endGlob $ \endPtr -> do
     res <- LCS.modifyGlobal memVar $ \mem -> liftIO $ do
       -- Bump up end pointer
-      numBV <- LCLM.projectLLVM_bv sym num
-      szBV  <- LCLM.projectLLVM_bv sym sz
+      numBV <- LCLM.projectLLVM_bv bak num
+      szBV  <- LCLM.projectLLVM_bv bak sz
       allocSzBv <- WI.bvMul sym numBV szBV
       endPtr' <- LCLM.ptrSub sym ?ptrWidth endPtr allocSzBv
 
       -- Zero memory
       zero <- WI.bvLit sym WI.knownNat (BVS.zero WI.knownNat)
-      mem' <- LCLM.doMemset sym ?ptrWidth mem endPtr' zero allocSzBv
+      mem' <- LCLM.doMemset bak ?ptrWidth mem endPtr' zero allocSzBv
       return (endPtr', mem')
     return (res, res)
 
 buildHackyBumpCallocOverride
-  :: ( LCB.IsSymInterface sym
-     , LCLM.HasLLVMAnn sym
+  :: ( LCLM.HasLLVMAnn sym
      , LCLM.HasPtrWidth w
      )
   => LCS.GlobalVar (LCLM.LLVMPointerType w)
@@ -219,7 +217,7 @@ buildHackyBumpCallocOverride endGlob memVar = FunctionOverride
   , functionGlobals = []
   , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \sym args -> Ctx.uncurryAssignment (hackyBumpCalloc sym endGlob memVar) args
+  , functionOverride = \bak args -> Ctx.uncurryAssignment (hackyBumpCalloc bak endGlob memVar) args
   }
 
 -------------------------------------------------------------------------------
@@ -237,8 +235,9 @@ data FunctionABI arch sym p =
     -- Given a full register state, extract all of the arguments we need for
     -- the function call
     functionIntegerArgumentRegisters
-      :: forall atps
-       . sym
+      :: forall bak atps
+       . LCB.IsSymBackend sym bak
+      => bak
       -> LCT.CtxRepr atps
       -- Types of argument registers
       -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes arch)
@@ -249,8 +248,9 @@ data FunctionABI arch sym p =
     -- Build an OverrideSim action with appropriate return register types from
     -- a given OverrideSim action
   , functionIntegerReturnRegisters
-     :: forall t r args rtp
-      . sym
+     :: forall bak t r args rtp
+      . LCB.IsSymBackend sym bak
+     => bak
      -> LCT.TypeRepr t
      -- Function return type
      -> LCS.OverrideSim p sym (DMS.MacawExt arch) r args rtp (LCS.RegValue sym t)
@@ -280,8 +280,7 @@ data FunctionABI arch sym p =
 
 -- A function to construct a FunctionABI with memory access
 newtype BuildFunctionABI arch sym p = BuildFunctionABI (
-       LCB.IsSymInterface sym
-    => LCS.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth arch))
+       LCS.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth arch))
     -> LCS.GlobalVar LCLM.Mem
     -- MemVar for the execution
     -> [ SomeFunctionOverride p sym (DMS.MacawExt arch) ]

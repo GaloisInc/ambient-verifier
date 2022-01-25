@@ -37,11 +37,11 @@ segmentBaseOffset :: Integer
 segmentBaseOffset = segmentSize `div` 2
 
 -- | Create an initialize a new memory segment
-initSegmentMemory :: ( LCB.IsSymInterface sym
+initSegmentMemory :: ( LCB.IsSymBackend sym bak
                      , LCLM.HasLLVMAnn sym
                      , ?memOpts :: LCLM.MemOptions
                      )
-                  => sym
+                  => bak
                   -> LCLM.MemImpl sym
                   -- ^ MemImpl to add the memory segment to
                   -> String
@@ -50,14 +50,15 @@ initSegmentMemory :: ( LCB.IsSymInterface sym
                        -- Base pointer for new memory segment
                         , LCLM.MemImpl sym )
                        -- ^ Updated MemImpl containing new memory segment
-initSegmentMemory sym mem0 symbol = do
+initSegmentMemory bak mem0 symbol = do
+  let sym = LCB.backendGetSym bak
   let ?ptrWidth = WI.knownRepr
   arrayStorage <- WI.freshConstant sym (WSym.safeSymbol symbol) WI.knownRepr
   segmentSizeBV <- WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr segmentSize)
   oneByte <- WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr 1)
   (segmentPtr, mem1) <-
-    LCLM.doCalloc sym mem0 segmentSizeBV oneByte LCLD.noAlignment
-  mem2 <- LCLM.doArrayStore sym
+    LCLM.doCalloc bak mem0 segmentSizeBV oneByte LCLD.noAlignment
+  mem2 <- LCLM.doArrayStore bak
                             mem1
                             segmentPtr
                             LCLD.noAlignment
@@ -89,9 +90,9 @@ x86_64LinuxInitGlobals
   -- ^ Global variable for GSBASE pointer
   -> AM.InitArchSpecificGlobals DMX.X86_64
 x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob =
-  AM.InitArchSpecificGlobals $ \sym mem0 -> do
-    (fsbasePtr, mem1) <- initSegmentMemory sym mem0 "fs_array"
-    (gsbasePtr, mem2) <- initSegmentMemory sym mem1 "gs_array"
+  AM.InitArchSpecificGlobals $ \bak mem0 -> do
+    (fsbasePtr, mem1) <- initSegmentMemory bak mem0 "fs_array"
+    (gsbasePtr, mem2) <- initSegmentMemory bak mem1 "gs_array"
     let globals0 = LCSG.insertGlobal fsbaseGlob fsbasePtr LCSG.emptyGlobals
     return (mem2, LCSG.insertGlobal gsbaseGlob gsbasePtr globals0)
 

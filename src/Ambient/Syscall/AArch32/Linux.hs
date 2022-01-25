@@ -88,16 +88,16 @@ aarch32LinuxGetReg tps regs reg
 
 -- | The syscall number is in r7 (see @man 2 syscall@)
 aarch32LinuxSyscallNumberRegister
-  :: forall sym w atps
-   . ( LCB.IsSymInterface sym
+  :: forall sym bak w atps
+   . ( LCB.IsSymBackend sym bak
      , w ~ DMC.ArchAddrWidth DMA.ARM
      )
-  => sym
+  => bak
   -> Ctx.Assignment LCT.TypeRepr atps
   -> LCS.RegEntry sym (LCT.StructType atps)
   -> IO (LCS.RegEntry sym (LCT.BVType w))
-aarch32LinuxSyscallNumberRegister sym repr regs = do
-  bv <- LCLM.projectLLVM_bv sym (LCS.unRV (aarch32LinuxGetReg repr regs r7))
+aarch32LinuxSyscallNumberRegister bak repr regs = do
+  bv <- LCLM.projectLLVM_bv bak (LCS.unRV (aarch32LinuxGetReg repr regs r7))
   return LCS.RegEntry { LCS.regType = LCT.BVRepr PN.knownNat
                       , LCS.regValue = bv
                       }
@@ -108,18 +108,18 @@ aarch32LinuxSyscallNumberRegister sym repr regs = do
 --
 -- See @man 2 syscall@
 aarch32LinuxSyscallArgumentRegisters
-  :: (LCB.IsSymInterface sym)
-  => sym
+  :: (LCB.IsSymBackend sym bak)
+  => bak
   -> LCT.CtxRepr atps
   -> LCS.RegEntry sym (LCT.StructType atps)
   -> LCT.CtxRepr args
   -> IO (Ctx.Assignment (LCS.RegEntry sym) args)
-aarch32LinuxSyscallArgumentRegisters sym regTypes regs syscallTypes
+aarch32LinuxSyscallArgumentRegisters bak regTypes regs syscallTypes
   | Just PC.Refl <- PC.testEquality regTypes syscallABIRepr =
       case LCS.regValue regs of
         Ctx.Empty Ctx.:> r0 Ctx.:> r1 Ctx.:> r2 Ctx.:> r3 Ctx.:> r4 Ctx.:> r5 Ctx.:> r6 Ctx.:> _ ->
           let regEntries = map toRegEntry [r0, r1, r2, r3, r4, r5, r6]
-          in AO.buildArgumentRegisterAssignment sym ptrWidth syscallTypes regEntries
+          in AO.buildArgumentRegisterAssignment bak ptrWidth syscallTypes regEntries
   | otherwise = AP.panic AP.Syscall "aarch32LinuxSyscallArgumentRegisters" [ "Unexpected argument register shape: " ++ show regTypes ]
   where
     ptrWidth = PN.knownNat @32

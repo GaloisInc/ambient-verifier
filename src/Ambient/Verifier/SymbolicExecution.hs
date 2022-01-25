@@ -55,6 +55,7 @@ import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
 import qualified Lang.Crucible.SymIO as LCSy
 import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.Expr as WE
 import qualified What4.Expr.GroundEval as WEG
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
@@ -124,12 +125,13 @@ mkInitialRegVal symArchFns sym r = do
 -- NOTE: This currently only works for concrete function addresses, but once
 -- https://github.com/GaloisInc/crucible/pull/615 lands, we should update it to
 -- return a mux of all possible targets.
-lookupFunction :: forall sym arch p ext w scope solver fs args ret mem
-   . ( LCB.IsSymInterface sym
+lookupFunction :: forall sym bak arch p ext w scope solver st fs args ret mem
+   . ( LCB.IsSymBackend sym bak
      , LCLM.HasLLVMAnn sym
      , LCCE.IsSyntaxExtension ext
      , DMS.SymArchConstraints arch
-     , sym ~ LCBO.OnlineBackend scope solver fs
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
      , p ~ DMS.MacawSimulatorState sym
      , ext ~ DMS.MacawExt arch
      , w ~ DMC.ArchAddrWidth arch
@@ -138,7 +140,7 @@ lookupFunction :: forall sym arch p ext w scope solver fs args ret mem
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , WPO.OnlineSolver solver
      )
-   => sym
+   => bak
    -> DMS.GenArchVals mem arch
    -> DMM.Memory w
    -- ^ Memory from function discovery
@@ -148,9 +150,9 @@ lookupFunction :: forall sym arch p ext w scope solver fs args ret mem
    -- ^ Function call ABI specification for 'arch'
    -> LCF.HandleAllocator
    -> DMS.LookupFunctionHandle sym arch
-lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
+lookupFunction bak archVals discoveryMem addressToFnHandle abi hdlAlloc =
   DMS.LookupFunctionHandle $ \state _mem regs -> do
-  LCBO.withSolverProcess sym (panic ["Online solving not enabled"]) $ \proc -> do
+  LCBO.withSolverProcess bak (panic ["Online solving not enabled"]) $ \proc -> do
     let regsEntry = LCS.RegEntry regsRepr regs
     -- Extract instruction pointer value and look the address up in
     -- 'addressToFnHandle'
@@ -175,6 +177,8 @@ lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
           Just (AF.SomeFunctionOverride fnOverride) ->
             mkAndBindOverride state regs fnOverride
   where
+    sym = LCB.backendGetSym bak
+
     symArchFns :: DMS.MacawSymbolicArchFunctions arch
     symArchFns = DMS.archFunctions archVals
 
@@ -211,16 +215,16 @@ lookupFunction sym archVals discoveryMem addressToFnHandle abi hdlAlloc =
                             )
     mkAndBindOverride state regs fnOverride = do
       -- Construct an override for the function
-      (args :: Ctx.Assignment (LCS.RegEntry sym) fnArgs) <- AF.functionIntegerArgumentRegisters abi sym (AF.functionArgTypes fnOverride) regs
+      (args :: Ctx.Assignment (LCS.RegEntry sym) fnArgs) <- AF.functionIntegerArgumentRegisters abi bak (AF.functionArgTypes fnOverride) regs
 
       let retOV :: forall r'
                  . LCSO.OverrideSim p sym ext r' args ret
                                    (Ctx.Assignment (LCS.RegValue' sym)
                                                    (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
           retOV = AF.functionIntegerReturnRegisters abi
-                                                    sym
+                                                    bak
                                                     (AF.functionReturnType fnOverride)
-                                                    (AF.functionOverride fnOverride sym args)
+                                                    (AF.functionOverride fnOverride bak args)
                                                     regs
 
       let ov :: LCSO.Override p sym ext args ret
@@ -267,27 +271,30 @@ bindOverrideHandle state hdlAlloc atps rtps ov = do
 -- | This function is used to generate a function handle for an override once a
 -- syscall is encountered
 lookupSyscall
-  :: forall sym arch p ext scope solver fs
+  :: forall sym bak arch p ext scope solver st fs
    . ( WI.IsExpr (WI.SymExpr sym)
-     , LCB.IsSymInterface sym
+     , LCB.IsSymBackend sym bak
      , LCLM.HasLLVMAnn sym
      , DMS.SymArchConstraints arch
      , p ~ DMS.MacawSimulatorState sym
      , ext ~ DMS.MacawExt arch
-     , sym ~ LCBO.OnlineBackend scope solver fs
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
      )
-  => sym
+  => bak
   -> ASy.SyscallABI arch sym p
   -- ^ System call ABI specification for 'arch'
   -> LCF.HandleAllocator
   -> DMS.LookupSyscallHandle sym arch
-lookupSyscall sym abi hdlAlloc =
+lookupSyscall bak abi hdlAlloc =
   DMS.LookupSyscallHandle $ \(atps :: LCT.CtxRepr atps) (rtps :: LCT.CtxRepr rtps) state reg ->
-  LCBO.withSolverProcess sym (AP.panic AP.SymbolicExecution "lookupSyscall"
+  LCBO.withSolverProcess bak (AP.panic AP.SymbolicExecution "lookupSyscall"
                                        ["Online solving not enabled"]) $ \proc -> do
+    let sym = LCB.backendGetSym bak
+
     -- Extract system call number from register state
-    syscallReg <- liftIO $ ASy.syscallNumberRegister abi sym atps reg
+    syscallReg <- liftIO $ ASy.syscallNumberRegister abi bak atps reg
     let regVal = LCS.regValue syscallReg
     syscallNum <- resolveConcreteStackVal sym (Proxy @arch) proc regVal
 
@@ -296,14 +303,14 @@ lookupSyscall sym abi hdlAlloc =
       Nothing -> CMC.throwM $ AE.UnsupportedSyscallNumber syscallNum
       Just (ASy.SomeSyscall (syscall :: ASy.Syscall p sym args ext ret)) -> do
         -- Construct an override for the system call
-        (args :: Ctx.Assignment (LCS.RegEntry sym) args) <- ASy.syscallArgumentRegisters abi sym atps reg (ASy.syscallArgTypes syscall)
+        (args :: Ctx.Assignment (LCS.RegEntry sym) args) <- ASy.syscallArgumentRegisters abi bak atps reg (ASy.syscallArgTypes syscall)
 
         let retOV :: forall r
                    . LCSO.OverrideSim p sym ext r atps (LCT.StructType rtps)
                                       (Ctx.Assignment (LCS.RegValue' sym) rtps)
             retOV = ASy.syscallReturnRegisters abi
                                                (ASy.syscallReturnType syscall)
-                                               (ASy.syscallOverride syscall sym args)
+                                               (ASy.syscallOverride syscall bak args)
                                                atps reg rtps
 
         let ov :: LCSO.Override p sym ext atps (LCT.StructType rtps)
@@ -320,7 +327,7 @@ lookupSyscall sym abi hdlAlloc =
 -- See @Note [Resolving concrete syscall numbers and function addresses]@.
 resolveConcreteStackVal ::
      ( DMS.SymArchConstraints arch
-     , sym ~ LCBO.OnlineBackend scope solver fs
+     , sym ~ WE.ExprBuilder scope st fs
      , WPO.OnlineSolver solver
      )
   => sym
@@ -428,16 +435,16 @@ data InitialMemory sym w =
                 }
 
 initializeMemory
-  :: forall sym arch w p ext m
+  :: forall sym bak arch w p ext m
    . ( ?memOpts :: LCLM.MemOptions
      , MonadIO m
-     , LCB.IsSymInterface sym
+     , LCB.IsSymBackend sym bak
      , w ~ DMC.ArchAddrWidth arch
      , DMM.MemWidth w
      , KnownNat w
      , 1 <= w
      , 16 <= w )
-  => sym
+  => bak
   -> LCF.HandleAllocator
   -> DMA.ArchitectureInfo arch
   -> DMM.Memory w
@@ -446,11 +453,13 @@ initializeMemory
   -> [ AF.SomeFunctionOverride p sym ext ]
   -- ^ A list of additional function overrides to register.
   -> m ( InitialMemory sym w )
-initializeMemory sym halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals) functionOvs = do
+initializeMemory bak halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals) functionOvs = do
+  let sym = LCB.backendGetSym bak
+
   -- Initialize memory
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) sym endianness DMSM.ConcreteMutable mem
+  (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) bak endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
 
@@ -459,19 +468,19 @@ initializeMemory sym halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals
   stackArrayStorage <- liftIO $ WI.freshConstant sym (WSym.safeSymbol "stack_array") WI.knownRepr
   stackSizeBV <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr stackSize)
   let ?ptrWidth = WI.knownRepr
-  (stackBasePtr, mem1) <- liftIO $ LCLM.doMalloc sym LCLM.StackAlloc LCLM.Mutable "stack_alloc" initMem stackSizeBV LCLD.noAlignment
-  mem2 <- liftIO $ LCLM.doArrayStore sym mem1 stackBasePtr LCLD.noAlignment stackArrayStorage stackSizeBV
+  (stackBasePtr, mem1) <- liftIO $ LCLM.doMalloc bak LCLM.StackAlloc LCLM.Mutable "stack_alloc" initMem stackSizeBV LCLD.noAlignment
+  mem2 <- liftIO $ LCLM.doArrayStore bak mem1 stackBasePtr LCLD.noAlignment stackArrayStorage stackSizeBV
 
   -- Initialize heap memory
   heapSizeBv <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr heapSize)
-  (heapBasePtr, mem3) <- liftIO $ LCLM.doMalloc sym LCLM.HeapAlloc LCLM.Mutable "<malloc bump>" mem2 heapSizeBv LCLD.noAlignment
+  (heapBasePtr, mem3) <- liftIO $ LCLM.doMalloc bak LCLM.HeapAlloc LCLM.Mutable "<malloc bump>" mem2 heapSizeBv LCLD.noAlignment
   heapEndPtr <- liftIO $ LCLM.ptrAdd sym WI.knownRepr heapBasePtr heapSizeBv
   heapEndGlob <- liftIO $ LCCC.freshGlobalVar halloc
                                               (DT.pack "heapFreeEnd")
                                               (LCLM.LLVMPointerRepr WI.knownNat)
 
   memVar <- liftIO $ LCLM.mkMemVar (DT.pack "ambient-verifier::memory") halloc
-  (mem4, globals0) <- liftIO $ initGlobals sym mem3
+  (mem4, globals0) <- liftIO $ initGlobals bak mem3
   let globals1 = LCSG.insertGlobal memVar mem4 $
                  LCSG.insertGlobal heapEndGlob heapEndPtr globals0
   let functionOvGlobals = concat [ AF.functionGlobals ov
@@ -490,20 +499,21 @@ simulateFunction
      , MonadIO m
      , ext ~ DMS.MacawExt arch
      , LCCE.IsSyntaxExtension ext
-     , LCB.IsSymInterface sym
+     , LCB.IsSymBackend sym bak
      , LCLM.HasLLVMAnn sym
      , DMS.SymArchConstraints arch
      , w ~ DMC.ArchAddrWidth arch
      , 16 <= w
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , args ~ (LCT.EmptyCtx LCT.::> ret)
-     , sym ~ LCBO.OnlineBackend scope solver fs
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
      , ?memOpts :: LCLM.MemOptions
      , p ~ DMS.MacawSimulatorState sym
      )
   => LJ.LogAction IO AD.Diagnostic
-  -> sym
+  -> bak
   -> [LCS.GenericExecutionFeature sym]
   -> LCF.HandleAllocator
   -> DMS.GenArchVals DMS.LLVMMemory arch
@@ -529,7 +539,8 @@ simulateFunction
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-simulateFunction logAction sym execFeatures halloc archVals seConf initialMem cfg discoveryMem addressToFnHandle fnBindings (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI) mFsRoot functionOvs = do
+simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem addressToFnHandle fnBindings (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI) mFsRoot functionOvs = do
+  let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
   let regsRepr = LCT.StructRepr crucRegTypes
@@ -564,11 +575,11 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initialMem cf
   DMS.withArchEval archVals sym $ \archEvalFn -> do
     let syscallABI = buildSyscallABI fs (imMemVar initialMem) (AVW.wmProperties wmConfig)
     let functionABI = buildFunctionABI (imHeapEndGlob initialMem) (imMemVar initialMem) functionOvs Map.empty
-    let extImpl = DMS.macawExtensions archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction sym archVals discoveryMem addressToFnHandle functionABI halloc) (lookupSyscall sym syscallABI halloc) (imValidityCheck initialMem)
+    let extImpl = DMS.macawExtensions archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals discoveryMem addressToFnHandle functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
-    let ctx = LCS.initSimContext sym (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
+    let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
     let s0 = LCS.InitialState ctx globals1 LCS.defaultAbortHandler regsRepr simAction
 
     let wmCallback = secWMMCallback seConf
@@ -587,10 +598,10 @@ simulateFunction logAction sym execFeatures halloc archVals seConf initialMem cf
 -- default memory model for machine code); we will almost certainly need a
 -- modified memory model.
 symbolicallyExecute
-  :: forall m sym arch binFmt w blocks args ret scope solver fs ext p
+  :: forall m sym bak arch binFmt w blocks args ret solver scope st fs ext p
    . ( CMC.MonadThrow m
      , MonadIO m
-     , LCB.IsSymInterface sym
+     , LCB.IsSymBackend sym bak
      , LCCE.IsSyntaxExtension (DMS.MacawExt arch)
      , ext ~ DMS.MacawExt arch
      , LCCE.IsSyntaxExtension ext
@@ -602,13 +613,14 @@ symbolicallyExecute
      , KnownNat w
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , args ~ (LCT.EmptyCtx LCT.::> ret)
-     , sym ~ LCBO.OnlineBackend scope solver fs
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
      , ?memOpts :: LCLM.MemOptions
      , p ~ DMS.MacawSimulatorState sym
      )
   => LJ.LogAction IO AD.Diagnostic
-  -> sym
+  -> bak
   -> LCF.HandleAllocator
   -> DMA.ArchitectureInfo arch
   -> DMS.GenArchVals DMS.LLVMMemory arch
@@ -637,8 +649,8 @@ symbolicallyExecute
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-symbolicallyExecute logAction sym halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI initGlobals mFsRoot functionOvs = do
+symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI initGlobals mFsRoot functionOvs = do
   let mem = DMB.memoryImage loadedBinary
-  initialMem <- initializeMemory sym halloc archInfo mem initGlobals functionOvs
+  initialMem <- initializeMemory bak halloc archInfo mem initGlobals functionOvs
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  simulateFunction logAction sym execFeatures halloc archVals seConf initialMem cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI mFsRoot functionOvs
+  simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI mFsRoot functionOvs

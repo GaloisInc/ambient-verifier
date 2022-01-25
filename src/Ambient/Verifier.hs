@@ -239,15 +239,16 @@ getFinalGlobal _sym mergeBranches global execResult =
 -- The verification condition is that the final state is at least one of the
 -- accept states and definitely not one of the non-accept states.
 assertPropertySatisfied
-  :: ( LCB.IsSymInterface sym
+  :: ( LCB.IsSymBackend sym bak
      , LCS.RegValue sym tp ~ LCSS.SymSequence sym (WI.SymExpr sym WI.BaseIntegerType)
      )
   => LJ.LogAction IO AD.Diagnostic
-  -> sym
+  -> bak
   -> LCS.ExecResult p sym ext u
   -> (APD.Property APD.StateID, LCS.GlobalVar tp)
   -> IO ()
-assertPropertySatisfied logAction sym execResult (prop, globalTraceVar) = do
+assertPropertySatisfied logAction bak execResult (prop, globalTraceVar) = do
+  let sym = LCB.backendGetSym bak
   LJ.writeLog logAction (AD.AssertingGoalsForProperty (APD.propertyName prop) (APD.propertyDesscription prop))
   let merge = LCSS.muxSymSequence sym
   evtTrace <- getFinalGlobal sym merge globalTraceVar execResult
@@ -264,7 +265,7 @@ assertPropertySatisfied logAction sym execResult (prop, globalTraceVar) = do
                 eq <- WI.intEq sym acceptInt (partial ^. WP.partialValue)
                 WI.orPred sym eq val
           allAccept <- F.foldlM testAccept (WI.falsePred sym) acceptIds
-          LCB.assert sym allAccept (LCSS.AssertFailureSimError ("Property not satisfied " ++ show (APD.propertyName prop)) "")
+          LCB.assert bak allAccept (LCSS.AssertFailureSimError ("Property not satisfied " ++ show (APD.propertyName prop)) "")
         APD.PossiblyOneOfOr conditionalAccepts -> do
           let testConditionalAccept val (acceptId, others) = do
                 -- We want it to be the case that either the final state is
@@ -282,7 +283,7 @@ assertPropertySatisfied logAction sym execResult (prop, globalTraceVar) = do
                 otherIfNotAccept <- WI.impliesPred sym neqAccept isAnyAllowedOther
                 WI.orPred sym val =<< WI.orPred sym eqAccept otherIfNotAccept
           valid <- F.foldlM testConditionalAccept (WI.falsePred sym) conditionalAccepts
-          LCB.assert sym valid (LCSS.AssertFailureSimError ("Property not satisfied " ++ show (APD.propertyName prop)) "")
+          LCB.assert bak valid (LCSS.AssertFailureSimError ("Property not satisfied " ++ show (APD.propertyName prop)) "")
 
 
 setupProfiling
@@ -316,7 +317,8 @@ verify
 verify logAction pinst timeoutDuration = do
   hdlAlloc <- liftIO LCF.newHandleAllocator
   Some ng <- liftIO PN.newIONonceGenerator
-  AS.withOnlineSolver (piSolver pinst) (piFloatMode pinst) ng $ \sym -> do
+  AS.withOnlineSolver (piSolver pinst) (piFloatMode pinst) ng $ \bak -> do
+    let sym = LCB.backendGetSym bak
     liftIO $ case (piSolverInteractionFile pinst) of
       Just path -> do
         let config = WI.getConfiguration sym
@@ -346,7 +348,7 @@ verify logAction pinst timeoutDuration = do
       -- We set up path satisfiability checking here so that we do not have to
       -- require the online backend constraints in the body of our symbolic
       -- execution code
-      psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability sym)
+      psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability bak)
       let execFeatures = maybeToList (fmap fst profFeature) ++ [psf]
       let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
                                                , AVS.secWMMCallback = AVWme.wmExecutor archInfo loadedBinary hdlAlloc archVals execFeatures sym
@@ -357,9 +359,9 @@ verify logAction pinst timeoutDuration = do
         Just dir -> do
           liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
         Nothing -> return []
-      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction sym hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI functionABI buildGlobals (piFsRoot pinst) functionOvs
+      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI functionABI buildGlobals (piFsRoot pinst) functionOvs
 
-      liftIO $ mapM_ (assertPropertySatisfied logAction sym execResult) (AEt.properties (AVW.wmProperties wmConfig))
+      liftIO $ mapM_ (assertPropertySatisfied logAction bak execResult) (AEt.properties (AVW.wmProperties wmConfig))
 
       -- Prove all of the side conditions asserted during symbolic execution;
       -- these are captured in the symbolic backend (sym)
@@ -370,7 +372,7 @@ verify logAction pinst timeoutDuration = do
       -- NOTE: We currently use the same solver for goal solving as we do for
       -- symbolic execution/path sat checking. This is not required, and we
       -- could easily support allowing the user to choose two different solvers.
-      AVP.proveObligations logAction sym (AS.offlineSolver (piSolver pinst)) timeoutDuration
+      AVP.proveObligations logAction bak (AS.offlineSolver (piSolver pinst)) timeoutDuration
       _ <- liftIO $ mapM CCA.cancel (fmap snd profFeature)
       return ()
 

@@ -133,11 +133,11 @@ loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks = do
 -- | Run tests for crucible syntax function overrides.  This function reads all
 -- files matching @<dirPath>/function/*.cbl@ and symbolically executes any
 -- function with a name starting with @test_@.
-runOverrideTests :: forall ext s sym arch w
+runOverrideTests :: forall ext s sym bak arch w
                   . ( ?memOpts :: LCLM.MemOptions
                     , ext ~ DMS.MacawExt arch
                     , LCCE.IsSyntaxExtension ext
-                    , LCB.IsSymInterface sym
+                    , LCB.IsSymBackend sym bak
                     , w ~ DMC.ArchAddrWidth arch
                     , KnownNat w
                     , DMM.MemWidth w
@@ -145,7 +145,7 @@ runOverrideTests :: forall ext s sym arch w
                     , 16 <= w
                     )
                  => LJ.LogAction IO AD.Diagnostic
-                 -> sym
+                 -> bak
                  -> DMA.ArchitectureInfo arch
                  -> DMS.GenArchVals DMS.LLVMMemory arch
                  -> FilePath
@@ -155,10 +155,12 @@ runOverrideTests :: forall ext s sym arch w
                  -> LCSC.ParserHooks ext
                  -- ^ ParserHooks for the desired syntax extension
                  -> IO ()
-runOverrideTests logAction sym archInfo archVals dirPath ng halloc hooks = do
+runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
   paths <- SFG.namesMatching (dirPath SF.</> "function" SF.</> "*.cbl")
   mapM_ go paths
   where
+    sym = LCB.backendGetSym bak
+
     go :: FilePath -> IO ()
     go path = do
       let fnNamePred = \fn -> List.isPrefixOf "test_" (show fn)
@@ -183,7 +185,7 @@ runOverrideTests logAction sym archInfo archVals dirPath ng halloc hooks = do
                 | LCSC.ACFG _ _ g <- acfgs
                 ]
           let mem = DMM.emptyMemory (DMA.archAddrWidth archInfo)
-          initMem <- AVS.initializeMemory sym
+          initMem <- AVS.initializeMemory bak
                                           halloc
                                           archInfo
                                           mem
@@ -199,7 +201,7 @@ runOverrideTests logAction sym archInfo archVals dirPath ng halloc hooks = do
                                               fnLookup
                                               syscallLookup
                                               (AVS.imValidityCheck initMem)
-            let ctx = LCS.initSimContext sym
+            let ctx = LCS.initSimContext bak
                                          LCLI.llvmIntrinsicTypes
                                          halloc
                                          IO.stdout
@@ -273,14 +275,14 @@ acfgToFunctionOverride name (LCSC.ACFG argTypes retType cfg) globals =
          , AF.functionGlobals = globals
          , AF.functionArgTypes = ptrTypes
          , AF.functionReturnType = retRepr
-         , AF.functionOverride = \sym args -> do
+         , AF.functionOverride = \bak args -> do
              -- Translate any arguments that are LLVMPointers but should be Bitvectors into Bitvectors
              --
              -- This generates side conditions asserting that the block ID is zero
-             pointerArgs <- liftIO $ AFA.buildFunctionOverrideArgs sym argMap ptrTypeMapping args
+             pointerArgs <- liftIO $ AFA.buildFunctionOverrideArgs bak argMap ptrTypeMapping args
              userRes <- LCS.callCFG ssaCfg (LCS.RegMap pointerArgs)
              -- Convert any BV returns from the user override to LLVMPointers
-             LCS.regValue <$> liftIO (AFA.convertBitvector sym retRepr userRes)
+             LCS.regValue <$> liftIO (AFA.convertBitvector bak retRepr userRes)
          }
 
 -- | Parser for type extensions to crucible syntax

@@ -27,14 +27,14 @@ import qualified Ambient.Syscall as AS
 
 -- | Extract syscall arguments from x86_64 registers.  See documentation on
 -- 'syscallArgumentRegisters for more info.
-x86_64LinuxSyscallArgumentRegisters :: forall sym args atps
-   . ( LCB.IsSymInterface sym )
-  => sym
+x86_64LinuxSyscallArgumentRegisters :: forall sym bak args atps
+   . ( LCB.IsSymBackend sym bak )
+  => bak
   -> LCT.CtxRepr atps
   -> LCS.RegEntry sym (LCT.StructType atps)
   -> LCT.CtxRepr args
   -> IO (Ctx.Assignment (LCS.RegEntry sym) args)
-x86_64LinuxSyscallArgumentRegisters sym regTyps regs syscallTyps =
+x86_64LinuxSyscallArgumentRegisters bak regTyps regs syscallTyps =
   case (LCS.regValue regs) of
     Ctx.Empty Ctx.:> _
               Ctx.:> rdi
@@ -60,7 +60,7 @@ x86_64LinuxSyscallArgumentRegisters sym regTyps regs syscallTyps =
           -- Extract argument registers and put in list.
           let regEntries = map toRegEntry [rdi, rsi, rdx, r10, r8, r9] in
           -- Build an assignment from 'regEntries'
-          AO.buildArgumentRegisterAssignment sym (PN.knownNat @64) syscallTyps regEntries
+          AO.buildArgumentRegisterAssignment bak (PN.knownNat @64) syscallTyps regEntries
         _ -> AP.panic AP.Syscall
                       "x86_64LinuxSyscallArgumentRegisters"
                       ["Unexpected argument register types"]
@@ -74,15 +74,15 @@ x86_64LinuxSyscallArgumentRegisters sym regTyps regs syscallTyps =
 
 -- | Extract syscall number from x86_64 registers.  See documentation on
 -- 'syscallNumberRegister' for more info.
-x86_64LinuxSyscallNumberRegister :: forall sym w atps
-   . ( LCB.IsSymInterface sym
+x86_64LinuxSyscallNumberRegister :: forall sym bak w atps
+   . ( LCB.IsSymBackend sym bak
      , DMC.RegAddrWidth (DMC.ArchReg DMX.X86_64) ~ w )
-  => sym
+  => bak
   -> Ctx.Assignment LCT.TypeRepr atps
   -> LCS.RegEntry sym (LCT.StructType atps)
   -> IO (LCS.RegEntry sym (LCT.BVType w))
-x86_64LinuxSyscallNumberRegister sym typs regs = do
-  bv <- LCLM.projectLLVM_bv sym (LCS.unRV (x86_64LinuxGetReg typs regs DMX.RAX))
+x86_64LinuxSyscallNumberRegister bak typs regs = do
+  bv <- LCLM.projectLLVM_bv bak (LCS.unRV (x86_64LinuxGetReg typs regs DMX.RAX))
   return LCS.RegEntry { LCS.regType = LCT.BVRepr WI.knownNat
                       , LCS.regValue = bv }
 

@@ -42,16 +42,16 @@ import qualified Ambient.Panic as AP
 
 -- | Integer arguments are passed in the first four registers in ARM
 aarch32LinuxIntegerArgumentRegisters
-  :: forall atps sym
-   . (LCB.IsSymInterface sym)
-  => sym
+  :: forall atps sym bak
+   . (LCB.IsSymBackend sym bak)
+  => bak
   -> LCT.CtxRepr atps
   -- ^ The argument types
   -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes DMA.ARM)
   -- ^ A register structure containing symbolic values
   -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
-aarch32LinuxIntegerArgumentRegisters sym argTypes regFile =
-  AO.buildArgumentRegisterAssignment sym ptrWidth argTypes regList
+aarch32LinuxIntegerArgumentRegisters bak argTypes regFile =
+  AO.buildArgumentRegisterAssignment bak ptrWidth argTypes regList
   where
     ptrWidth = PN.knownNat @32
     regList = map lookupReg [ ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
@@ -68,13 +68,13 @@ aarch32LinuxIntegerArgumentRegisters sym argTypes regFile =
 --
 -- Otherwise, an integer return value is placed into r0
 aarch32LinuxIntegerReturnRegisters
-  :: (LCB.IsSymInterface sym)
-  => sym
+  :: (LCB.IsSymBackend sym bak)
+  => bak
   -> LCT.TypeRepr tp
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym tp)
   -> LCS.RegValue sym (DMS.ArchRegStruct DMA.ARM)
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMA.ARM))
-aarch32LinuxIntegerReturnRegisters sym ovTy ovSim initRegs =
+aarch32LinuxIntegerReturnRegisters bak ovTy ovSim initRegs =
   case ovTy of
     LCT.UnitRepr -> ovSim >> return initRegs
     LCLM.LLVMPointerRepr w
@@ -86,18 +86,18 @@ aarch32LinuxIntegerReturnRegisters sym ovTy ovSim initRegs =
       | Just PC.Refl <- PC.testEquality w (PN.knownNat @8) -> do
           -- Zero extend 8-bit return value to fit in 32-bit register
           result <- ovSim
-          asBv <- liftIO $ LCLM.projectLLVM_bv sym result
+          asBv <- liftIO $ LCLM.projectLLVM_bv bak result
           asPtr <- liftIO $ AO.bvToPtr sym asBv (PN.knownNat @32)
           let r0 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
           return $! DMAS.updateReg r0 (const (LCS.RV asPtr)) initRegs
     _ -> AP.panic AP.FunctionOverride "aarch32LinuxIntegerReturnRegisters" [ "Unsupported return type: " ++ show ovTy ]
+  where
+    sym = LCB.backendGetSym bak
 
 -- | Model @__kuser_get_tls@ by returning the value stored in the TLS global
 -- variable. See @Note [AArch32 and TLS]@.
 buildKUserGetTLSOverride ::
-     ( LCB.IsSymInterface sym
-     , LCLM.HasPtrWidth w
-     )
+     LCLM.HasPtrWidth w
   => LCCC.GlobalVar (LCLM.LLVMPointerType w)
      -- ^ Global variable for TLS
   -> AF.FunctionOverride p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
@@ -106,18 +106,18 @@ buildKUserGetTLSOverride tlsGlob = AF.FunctionOverride
   , AF.functionGlobals = []
   , AF.functionArgTypes = Ctx.empty
   , AF.functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , AF.functionOverride = \sym args -> Ctx.uncurryAssignment (callKUserGetTLSOverride sym tlsGlob) args
+  , AF.functionOverride = \bak args -> Ctx.uncurryAssignment (callKUserGetTLSOverride bak tlsGlob) args
   }
 
 callKUserGetTLSOverride ::
-     ( LCB.IsSymInterface sym
+     ( LCB.IsSymBackend sym bak
      , LCLM.HasPtrWidth w
      )
-  => sym
+  => bak
   -> LCCC.GlobalVar (LCLM.LLVMPointerType w)
      -- ^ Global variable for TLS
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callKUserGetTLSOverride _sym tlsGlob = do
+callKUserGetTLSOverride _bak tlsGlob = do
   globState <- use (LCSE.stateTree . LCSE.actFrame . LCSE.gpGlobals)
   case LCSG.lookupGlobal tlsGlob globState of
     Nothing -> AP.panic AP.FunctionOverride "callKUserGetTLSOverride"

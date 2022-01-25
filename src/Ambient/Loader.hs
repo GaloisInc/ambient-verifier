@@ -31,7 +31,6 @@ import qualified Data.Macaw.X86 as DMX
 import           Data.Macaw.X86.Symbolic ()
 import qualified Data.Macaw.ARM as Macaw.AArch32
 import           Data.Macaw.AArch32.Symbolic ()
-import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Common as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
@@ -66,7 +65,9 @@ import qualified Ambient.Syscall.X86_64.Linux as ASXL
 -- want to change that in the future (either to another fixed value or to make
 -- it configurable)
 withBinary
-  :: (CMC.MonadThrow m, MonadIO m, sym ~ LCBO.OnlineBackend scope solver fs)
+  :: ( CMC.MonadThrow m
+     , MonadIO m
+     )
   => FilePath
   -> BS.ByteString
   -> LCF.HandleAllocator
