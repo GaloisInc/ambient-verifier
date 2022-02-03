@@ -58,6 +58,8 @@ data AmbientException where
   UnsuportedGlobalVariableType :: String -> LCT.TypeRepr t -> AmbientException
   -- | Crucible syntax test function has an illegal type signature
   IllegalCrucibleSyntaxTestSignature :: FilePath -> WF.FunctionName -> AmbientException
+  -- | Binary contains functions in multiple memory regions
+  MultipleFunctionRegions :: AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -109,3 +111,5 @@ instance PP.Pretty AmbientException where
         PP.pretty "Unable to construct symbolic value for global variable '" <> PP.pretty name <> PP.pretty "' with type '" <> PP.pretty tp <> PP.pretty "'"
       IllegalCrucibleSyntaxTestSignature path fnName ->
         PP.pretty "Test function '" <> PP.pretty fnName <> PP.pretty "' in file '" <> PP.pretty path <> PP.pretty "' has an illegal type signature.  Test functions must take no arguments and have a 'Unit' return type."
+      MultipleFunctionRegions ->
+        PP.pretty "Binaries containing functions in multiple memory regions are not currently supported."

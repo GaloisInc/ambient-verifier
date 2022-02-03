@@ -125,7 +125,7 @@ mandatory options:
 Limitations
 ===========
 
-The verifier only supports statically linked programs at present (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/6>`_). Moreover, the implementations of the ``_start()`` function in ``glibc`` (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/22>`_) and ``musl`` (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/23>`_) gives the verifier trouble. To work around these issues, it is recommended that you:
+The verifier only supports statically linked programs and standalone position independent executables (PIEs) that do not make use of procedure linkage tables (PLTs) (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/6>`_). Moreover, the implementations of the ``_start()`` function in ``glibc`` (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/22>`_) and ``musl`` (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/23>`_) gives the verifier trouble. To work around these issues, it is recommended that you:
 
 1. Implement a custom ``_start()`` function in your binary like so::
 
@@ -137,3 +137,9 @@ The verifier only supports statically linked programs at present (`related issue
 2. Compile the binary with the following flags::
 
    $ ${CC} -static -nostartfiles -no-pie foo.c -o foo.exe
+
+   While the ``-static`` and ``-no-pie`` flags are not strictly necessary (the
+   verifier supports PIEs without PLTs), compilers sometimes generate PLTs for
+   more complicated PIEs.  Therefore, we recommend ``-static`` and ``-no-pie``
+   when possible because they are more likely to produce a binary that the
+   verifier can reason about.

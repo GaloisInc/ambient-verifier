@@ -57,8 +57,17 @@ bv-typed-literal-ov.exe: bv-typed-literal-ov.c ambient_assert.o
 read-write-pointer-ov.exe: read-write-pointer-ov.c ambient_assert.o
 	$(CC) -nostdlib -static -no-pie $^ -o $@
 
+read-write-pointer-ov-pie.exe: read-write-pointer-ov.c ambient_assert.o
+	$(CC) -nostdlib -pie $^ -o $@
+
 ptr-diff-null-ov.exe: ptr-diff-null-ov.c ambient_assert.o
 	$(CC) -nostdlib -static -no-pie $^ -o $@
+
+just-exit-pie.exe: just-exit.c
+	$(CC) -nostdlib -pie $^ -o $@
+
+function-call-pie.exe: function-call.c
+	$(CC) -nostartfiles -pie $^ -o $@
 
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@

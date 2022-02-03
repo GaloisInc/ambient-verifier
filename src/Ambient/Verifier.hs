@@ -23,6 +23,7 @@ import qualified Data.Map.Strict as Map
 import           Data.Maybe ( maybeToList )
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
+import qualified Data.Set as Set
 import qualified Data.Text as DT
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
@@ -343,6 +344,16 @@ verify logAction pinst timeoutDuration = do
           entryAddr
           cfg0
 
+      let fnRegions = Set.fromList [ DMM.segmentBase (DMM.segoffSegment s)
+                                   | (s, _) <- handles ]
+      fnRegion <- case Set.size fnRegions of
+                       0 -> -- Should not be possible
+                         AP.panic AP.Verifier
+                                  "verify"
+                                  ["Failed to identify any functions"]
+                       1 -> return $ Set.elemAt 0 fnRegions
+                       _ -> CMC.throwM AE.MultipleFunctionRegions
+
       profFeature <- liftIO $ mapM setupProfiling (piProfileTo pinst)
 
       -- We set up path satisfiability checking here so that we do not have to
@@ -359,7 +370,15 @@ verify logAction pinst timeoutDuration = do
         Just dir -> do
           liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
         Nothing -> return []
-      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) (Map.fromList handles) bindings syscallABI functionABI buildGlobals (piFsRoot pinst) functionOvs
+      let fnConf = AVS.FunctionConfig {
+          AVS.fcAddressToFnHandle = Map.fromList handles
+        , AVS.fcFnBindings = bindings
+        , AVS.fcBuildSyscallABI = syscallABI
+        , AVS.fcBuildFunctionABI = functionABI
+        , AVS.fcFunctionOverrides = functionOvs
+        , AVS.fcRegion = fnRegion
+        }
+      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) buildGlobals (piFsRoot pinst) fnConf
 
       liftIO $ mapM_ (assertPropertySatisfied logAction bak execResult) (AEt.properties (AVW.wmProperties wmConfig))
 

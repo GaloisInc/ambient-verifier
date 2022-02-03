@@ -15,6 +15,9 @@ syscall.exe: syscall.c
 do-nothing.exe: do-nothing.c
 	$(MUSL_CC) -static -no-pie -no-pie $< -o $@
 
+do-nothing-pie.exe: do-nothing.c
+	$(CC) -nostartfiles -pie $< -o $@
+
 fsbase.exe: fsbase.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@
 
@@ -53,6 +56,9 @@ bv-typed-literal-ov.exe: bv-typed-literal-ov.c ambient_assert.o
 
 ptr-diff-null-ov.exe: ptr-diff-null-ov.c ambient_assert.o
 	$(CC) -nostdlib -static -no-pie $^ -o $@
+
+ptr-diff-null-ov-pie.exe: ptr-diff-null-ov.c ambient_assert.o
+	$(CC) -nostdlib -pie $^ -o $@
 
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@

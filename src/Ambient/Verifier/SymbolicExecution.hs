@@ -12,6 +12,7 @@ module Ambient.Verifier.SymbolicExecution (
   , insertFreshGlobals
   , InitialMemory(..)
   , initializeMemory
+  , FunctionConfig(..)
   ) where
 
 import           Control.Lens ( (^.), set )
@@ -144,13 +145,13 @@ lookupFunction :: forall sym bak arch p ext w scope solver st fs args ret mem
    -> DMS.GenArchVals mem arch
    -> DMM.Memory w
    -- ^ Memory from function discovery
-   -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
-   -- ^ Mapping from function addresses to function handles
+   -> FunctionConfig w args ret arch sym p ext
+   -- ^ Configuration parameters concerning functions and overrides
    -> AF.FunctionABI arch sym p
    -- ^ Function call ABI specification for 'arch'
    -> LCF.HandleAllocator
    -> DMS.LookupFunctionHandle sym arch
-lookupFunction bak archVals discoveryMem addressToFnHandle abi hdlAlloc =
+lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
   DMS.LookupFunctionHandle $ \state _mem regs -> do
   LCBO.withSolverProcess bak (panic ["Online solving not enabled"]) $ \proc -> do
     let regsEntry = LCS.RegEntry regsRepr regs
@@ -190,13 +191,13 @@ lookupFunction bak archVals discoveryMem addressToFnHandle abi hdlAlloc =
 
     resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
     resolveFuncAddr funcAddr =
-      case DMM.resolveRegionOff discoveryMem 0 funcAddr of
+      case DMM.resolveRegionOff discoveryMem (fcRegion fnConf) funcAddr of
         Nothing -> panic ["Failed to resolve function address: " ++ show funcAddr]
         Just funcAddrOff -> pure funcAddrOff
 
     lookupFuncAddrOff :: DMM.MemSegmentOff w -> IO (LCF.FnHandle args ret)
     lookupFuncAddrOff funcAddrOff =
-      case Map.lookup funcAddrOff addressToFnHandle of
+      case Map.lookup funcAddrOff (fcAddressToFnHandle fnConf) of
         -- TODO: Rather than panicking, we should re-run code discovery
         -- to attempt to locate the function (see issue #13)
         Nothing -> panic ["Failed to find function in function handle mapping"]
@@ -494,6 +495,22 @@ initializeMemory bak halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals
                         validityCheck
                         globalMap)
 
+-- | Configuration parameters concerning functions and overrides
+data FunctionConfig w args ret arch sym p ext = FunctionConfig {
+    fcAddressToFnHandle :: Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
+  -- ^ Mapping from discovered function addresses to function handles
+  , fcFnBindings :: LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
+  -- ^ Function bindings to insert into the simulation context
+  , fcBuildSyscallABI :: ASy.BuildSyscallABI arch sym p
+  -- ^ Function to construct an ABI specification for system calls
+  , fcBuildFunctionABI :: AF.BuildFunctionABI arch sym p
+  -- ^ Function to construct an ABI specification for function calls
+  , fcFunctionOverrides :: [ AF.SomeFunctionOverride p sym ext ]
+  -- ^ A list of additional function overrides to register
+  , fcRegion :: DMM.RegionIndex
+  -- ^ The memory region index containing functions
+  }
+
 simulateFunction
   :: ( CMC.MonadThrow m
      , MonadIO m
@@ -522,24 +539,16 @@ simulateFunction
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
   -> DMM.Memory w
   -- ^ Memory from function discovery
-  -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
-  -- ^ Mapping from discovered function addresses to function handles
-  -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
-  -- ^ Function bindings to insert into the simulation context
-  -> ASy.BuildSyscallABI arch sym p
-  -- ^ Function to construct an ABI specification for system calls
-  -> AF.BuildFunctionABI arch sym p
-  -- ^ Function to construct an ABI specification for function calls
   -> Maybe FilePath
   -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
   -- will be empty
-  -> [ AF.SomeFunctionOverride p sym ext ]
-  -- ^ A list of additional function overrides to register.
+  -> FunctionConfig w args ret arch sym p ext
+  -- ^ Configuration parameters concerning functions and overrides
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem addressToFnHandle fnBindings (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI) mFsRoot functionOvs = do
+simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf = do
   let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
@@ -573,13 +582,15 @@ simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cf
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
+    let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
     let syscallABI = buildSyscallABI fs (imMemVar initialMem) (AVW.wmProperties wmConfig)
-    let functionABI = buildFunctionABI (imHeapEndGlob initialMem) (imMemVar initialMem) functionOvs Map.empty
-    let extImpl = DMS.macawExtensions archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals discoveryMem addressToFnHandle functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
+    let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
+    let functionABI = buildFunctionABI (imHeapEndGlob initialMem) (imMemVar initialMem) (fcFunctionOverrides fnConf) Map.empty
+    let extImpl = DMS.macawExtensions archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals discoveryMem fnConf functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
-    let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings fnBindings) extImpl DMS.MacawSimulatorState
+    let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings (fcFnBindings fnConf)) extImpl DMS.MacawSimulatorState
     let s0 = LCS.InitialState ctx globals1 LCS.defaultAbortHandler regsRepr simAction
 
     let wmCallback = secWMMCallback seConf
@@ -630,27 +641,24 @@ symbolicallyExecute
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
   -> DMM.Memory w
   -- ^ Memory from function discovery
-  -> Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
-  -- ^ Mapping from discovered function addresses to function handles
-  -> LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
-  -- ^ Function bindings to insert into the simulation context
-  -> ASy.BuildSyscallABI arch sym p
-  -- ^ Function to construct an ABI specification for system calls
-  -> AF.BuildFunctionABI arch sym p
-  -- ^ Function to construct an ABI specification for function calls
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
   -> Maybe FilePath
   -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
   -- will be empty
-  -> [ AF.SomeFunctionOverride p sym ext ]
-  -- ^ A list of additional function overrides to register.
+  -> FunctionConfig w args ret arch sym p ext
+  -- ^ Configuration parameters concerning functions and overrides
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI initGlobals mFsRoot functionOvs = do
+symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem initGlobals mFsRoot fnConf = do
   let mem = DMB.memoryImage loadedBinary
-  initialMem <- initializeMemory bak halloc archInfo mem initGlobals functionOvs
+  initialMem <- initializeMemory bak
+                                 halloc
+                                 archInfo
+                                 mem
+                                 initGlobals
+                                 (fcFunctionOverrides fnConf)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem addressToFnHandle fnBindings buildSyscallABI buildFunctionABI mFsRoot functionOvs
+  simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf
