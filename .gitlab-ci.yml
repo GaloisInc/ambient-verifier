@@ -9,7 +9,7 @@ default:
     - export LANG=en_US.UTF-8
     - export LC_ALL=en_US.UTF-8
     - mkdir -p $HOME/.ghcup/bin
-    - export PATH=$HOME/.ghcup/bin:$PATH
+    - export PATH=$PWD/bin:$HOME/.ghcup/bin:$PATH
     - wget https://downloads.haskell.org/~ghcup/0.1.17.3/x86_64-linux-ghcup-0.1.17.3 -O $HOME/.ghcup/bin/ghcup
     - chmod +x $HOME/.ghcup/bin/ghcup
     - ghcup install cabal
@@ -26,7 +26,8 @@ ambient-verifier:
       - dist-newstyle/
       - ~/.cabal/store
   script:
-    - RUNNER_OS=Linux YICES_VERSION="2.6.2" .gitlab-ci/solvers.sh install_yices
+    - RUNNER_OS=Linux SOLVER_PKG_VERSION="snapshot-20220131" BUILD_TARGET_OS="ubuntu-20.04" .gitlab-ci/solvers.sh install_system_deps
+    - yices --version
     - ghcup install ghc --platform x86_64-deb8-linux $GHCVER --verbose
     - cp cabal.project.dist cabal.project
     - cabal update
