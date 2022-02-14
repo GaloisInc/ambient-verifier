@@ -26,12 +26,12 @@ ambient-verifier:
       - dist-newstyle/
       - ~/.cabal/store
   script:
+    - RUNNER_OS=Linux YICES_VERSION="2.6.2" .gitlab-ci/solvers.sh install_yices
     - ghcup install ghc --platform x86_64-deb8-linux $GHCVER --verbose
     - cp cabal.project.dist cabal.project
     - cabal update
     - cabal configure -w ghc-$GHCVER --enable-tests pkg:ambient-verifier
     - cabal build pkg:ambient-verifier
-    - RUNNER_OS=Linux YICES_VERSION="2.6.2" .gitlab-ci/solvers.sh install_yices
     - cabal test pkg:ambient-verifier
   parallel:
     matrix:

@@ -1,6 +1,7 @@
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StandaloneDeriving #-}
 module Ambient.Diagnostic (
   Diagnostic(..)
@@ -27,6 +28,8 @@ import qualified Lang.Crucible.CFG.Reg as LCCR
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.Simulator.SimError as LCSS
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
+
+import qualified Ambient.Override.List.Types as AOLT
 
 data Diagnostic where
   -- | Report an event from the code discovery phase
@@ -60,6 +63,8 @@ data Diagnostic where
   AssertingGoalsForProperty :: T.Text -> Maybe T.Text -> Diagnostic
   -- | Executing a user override test
   ExecutingOverrideTest :: LCSC.ACFG ext -> FilePath -> Diagnostic
+  -- | Listing the overrides registered for a binary
+  ListingOverrides :: AOLT.OverrideLists arch -> Diagnostic
 
 ppSymbol :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> String
 ppSymbol (Just fnName) addr = show addr ++ " (" ++ BSC.unpack fnName ++ ")"
@@ -110,3 +115,31 @@ instance PP.Pretty Diagnostic where
         <> PP.pretty path
         <> PP.pretty "'"
         <> PP.line
+      ListingOverrides (AOLT.OverrideLists{ AOLT.syscallOverrides
+                                          , AOLT.functionOverrides
+                                          , AOLT.kernelFunctionOverrides
+                                          }) ->
+        PP.vcat
+          [ overridesHeader "Syscall overrides"
+            <> foldMap (\(name, num) ->
+                         PP.pretty "- " <> PP.pretty name <>
+                         PP.pretty " (syscall number " <> PP.pretty num <>
+                         PP.pretty ")" <> PP.line)
+                       syscallOverrides
+
+          , overridesHeader "Function overrides"
+            <> foldMap (\name ->
+                         PP.pretty "- " <> PP.pretty name <> PP.line)
+                       functionOverrides
+            <> foldMap (\(name, addr) ->
+                         PP.pretty "- " <> PP.pretty name <>
+                         PP.pretty " (kernel function at address " <> PP.pretty addr <>
+                         PP.pretty ")" <> PP.line)
+                       kernelFunctionOverrides
+          ]
+    where
+      overridesHeader title = PP.vcat
+        [ PP.pretty "============================"
+        , PP.pretty "== " <> PP.pretty title
+        , PP.pretty "============================"
+        ] <> PP.line

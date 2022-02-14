@@ -16,6 +16,7 @@ import qualified System.IO as IO
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Exception as AE
+import qualified Ambient.Override.List as AOL
 import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Verifier as AV
@@ -73,8 +74,6 @@ verify o = do
   AV.verify (logAction chan) pinst (O.timeoutDuration o)
 
   -- Tear down the logger by sending the token that causes it to exit cleanly
-  --
-  -- Note that the log printer will
   CC.writeChan chan Nothing
   CCA.wait logger
 
@@ -100,6 +99,38 @@ testOverrides o = do
 
   return ()
 
+-- | Like 'verify', except that this stops short of actually verifying the
+-- binary. Instead, it prints all of the overrides that are registered for the
+-- particular binary and exits.
+listOverrides :: O.VerifyOptions -> IO ()
+listOverrides o = do
+  binary <- BS.readFile (O.binaryPath o)
+  -- See Note [Argument Encoding]
+  let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
+
+  props <- mapM loadProperty (O.stateCharts o)
+
+  let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath o
+                                 , AV.piBinary = binary
+                                 , AV.piFsRoot = O.fsRoot o
+                                 , AV.piCommandLineArguments = args
+                                 , AV.piSolver = O.solver o
+                                 , AV.piFloatMode = O.floatMode o
+                                 , AV.piProperties = props
+                                 , AV.piProfileTo = O.profileTo o
+                                 , AV.piOverrideDir = O.overrideDir o
+                                 , AV.piSolverInteractionFile = O.solverInteractionFile o
+                                 }
+
+  chan <- CC.newChan
+  logger <- CCA.async (printLogs IO.stdout chan)
+
+  AOL.listOverrides (logAction chan) pinst
+
+  -- Tear down the logger by sending the token that causes it to exit cleanly
+  CC.writeChan chan Nothing
+  CCA.wait logger
+
 main :: IO ()
 main =
   X.catch
@@ -107,6 +138,7 @@ main =
       command <- OA.execParser opts
       case command of
         O.Verify verifyOpts -> verify verifyOpts
+        O.ListOverrides listOverridesOpts -> listOverrides listOverridesOpts
         O.TestOverrides testOverridesOpts -> testOverrides testOverridesOpts
     )
     (\(e :: AE.AmbientException) -> IO.hPutStrLn IO.stderr (show (PP.pretty e)))

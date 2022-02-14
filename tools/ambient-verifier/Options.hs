@@ -65,7 +65,10 @@ data TestOverridesOptions =
                        }
 
 -- | The options structure for the command line interface to the verifier
-data Command = Verify VerifyOptions | TestOverrides TestOverridesOptions
+data Command
+  = Verify VerifyOptions
+  | ListOverrides VerifyOptions
+  | TestOverrides TestOverridesOptions
 
 -- | Parse a string representation of an integer number of seconds into an
 -- AT.Timeout
@@ -112,7 +115,11 @@ overridesParser = OA.strOption (  OA.long "overrides"
 
 -- | A parser for the \"verify\" subcommand
 verifyParser :: OA.Parser Command
-verifyParser = Verify <$> (VerifyOptions
+verifyParser = Verify <$> verifyOptions
+
+-- | The options used for the @verify@ and @list-overrides@ subcommands.
+verifyOptions :: OA.Parser VerifyOptions
+verifyOptions = VerifyOptions
            <$> OA.strOption ( OA.long "binary"
                             <> OA.metavar "FILE"
                             <> OA.help "The path to the binary to verify"
@@ -140,8 +147,10 @@ verifyParser = Verify <$> (VerifyOptions
                                         <> OA.metavar "FILE"
                                         <> OA.help "Log solver interactions to FILE"
                                        ))
-           )
 
+-- | A parser for the \"list-overrides\" subcommand
+listOverridesParser :: OA.Parser Command
+listOverridesParser = ListOverrides <$> verifyOptions
 
 -- | A parser for the \"test-overrides\" subcommand
 testOverridesParser :: OA.Parser Command
@@ -163,6 +172,9 @@ parser = OA.subparser
   (  OA.command "verify"
                 (OA.info (verifyParser OA.<**> OA.helper)
                          (OA.progDesc "Verify that the given binary with inputs terminates cleanly"))
+  <> OA.command "list-overrides"
+                (OA.info (listOverridesParser OA.<**> OA.helper)
+                         (OA.progDesc "List the overrides that a binary can make use of"))
   <> OA.command "test-overrides"
                 (OA.info (testOverridesParser OA.<**> OA.helper)
                          (OA.progDesc "Run function override tests"))

@@ -56,6 +56,8 @@ library
                       Ambient.Memory.AArch32.Linux,
                       Ambient.Memory.X86_64.Linux,
                       Ambient.Override,
+                      Ambient.Override.List,
+                      Ambient.Override.List.Types,
                       Ambient.OverrideTester,
                       Ambient.Panic,
                       Ambient.Property.Definition,
