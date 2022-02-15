@@ -4,7 +4,7 @@
 #define ARRAY_SIZE 8
 
 // A function that performs a symbolic write that is constrained to be in
-// bounds.  Generates only successful goals.
+// bounds.
 static void symbolic_bounded(char* array) {
   size_t i;
   if (i <= ARRAY_SIZE) {

@@ -38,11 +38,10 @@ int main(void) {
   data d;
   d.trusted = 0;
 
-  // Off-by-one read overflows into d.trusted. This generates 3 successful goals
-  // and 1 failing goal, the latter of which is due to a failure to classify a
-  // tail call in glibc's __syscall_error function. Thankfully, this doesn't
-  // impact the verifier's ability to discover the Weird Machine in
-  // unsafe_process.
+  // Off-by-one read overflows into d.trusted. This generates 1 failing goal,
+  // the latter of which is due to a failure to classify a tail call in glibc's
+  // __syscall_error function. Thankfully, this doesn't impact the verifier's
+  // ability to discover the Weird Machine in unsafe_process.
   syscall(SYS_read, 0, d.buf, 5);
 
   process_data(&d);

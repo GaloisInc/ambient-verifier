@@ -49,6 +49,7 @@ import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.Analysis.Postdom as LCAP
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.CFG.Expr as LCE
 import qualified Lang.Crucible.CFG.Extension as LCCE
@@ -64,9 +65,11 @@ import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.Syntax.ExprParse as LCSE
 import qualified Lang.Crucible.Syntax.SExpr as LCSS
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.Expr as WE
 import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.ProgramLoc as WP
+import qualified What4.Protocol.Online as WPO
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Exception as AE
@@ -134,11 +137,14 @@ loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks = do
 -- | Run tests for crucible syntax function overrides.  This function reads all
 -- files matching @<dirPath>/function/*.cbl@ and symbolically executes any
 -- function with a name starting with @test_@.
-runOverrideTests :: forall ext s sym bak arch w
+runOverrideTests :: forall ext s sym bak arch w solver scope st fs
                   . ( ?memOpts :: LCLM.MemOptions
                     , ext ~ DMS.MacawExt arch
                     , LCCE.IsSyntaxExtension ext
                     , LCB.IsSymBackend sym bak
+                    , sym ~ WE.ExprBuilder scope st fs
+                    , bak ~ LCBO.OnlineBackend solver scope st fs
+                    , WPO.OnlineSolver solver
                     , w ~ DMC.ArchAddrWidth arch
                     , KnownNat w
                     , DMM.MemWidth w
@@ -196,7 +202,8 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
           DMS.withArchEval archVals sym $ \archEvalFn -> do
             let fnLookup = DMS.unsupportedFunctionCalls "Ambient override tests"
             let syscallLookup = DMS.unsupportedSyscalls "Ambient override tests"
-            let extImpl = AExt.ambientExtensions archEvalFn
+            let extImpl = AExt.ambientExtensions bak
+                                                 archEvalFn
                                                  (AVS.imMemVar initMem)
                                                  (AVS.imGlobalMap initMem)
                                                  fnLookup

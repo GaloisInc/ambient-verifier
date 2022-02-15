@@ -16,15 +16,14 @@ char array[ARRAY_SIZE] = {0};
 int main(void) {
   char val;
 
-  // In bounds read with a concrete index.  Generates 2 successful goals.
+  // In bounds read with a concrete index.  Generates 1 successful goal.
   val = array[0];
 
-  // Read off the end of the .bss section.  Generates 1 successful and 1
-  // failing goal.
+  // Read off the end of the .bss section.  Generates 1 failing goal.
   val += array[ARRAY_SIZE];
 
-  // Read from text section.  This is generally legal.  Generates 2 successful
-  // goals.
+  // Read from text section.  This is generally legal.  Generates 1 successful
+  // goal.
   val += array[TEXT_START_OFFSET];
 
   // Create but do not initialize a variable `i`.  The verifier will leave `i`
@@ -36,8 +35,8 @@ int main(void) {
   val += array[i];
 
   if (0 <= i && i < ARRAY_SIZE) {
-    // Read `array` with in bounds symbolic index.  Generates 2 successful
-    // goals.
+    // Read `array` with in bounds symbolic index.  Generates 1 successful
+    // goal.
     val += array[i];
   }
 
@@ -45,7 +44,7 @@ int main(void) {
     // Read `array` with potentially out of bounds symbolic index.  This range
     // covers from the .text section through the array.  While the text section
     // is readable, this range contains also unmapped memory segments and the
-    // verifier generates 3 successful goals and 1 failing goal.
+    // verifier generates 1 successful goal and 1 failing goal.
     val += array[i];
   }
 

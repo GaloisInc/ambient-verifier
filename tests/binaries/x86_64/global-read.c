@@ -1,8 +1,8 @@
 #include <unistd.h>
 
 /*
- * This test performs a series of reads to a global variable to generate both
- * succeeding and failing goals.
+ * This test performs a series of reads to a global variable. Out-of-bounds reads
+ * should generate failing goals.
  */
 
 // Size of global array to allocate in bytes.
@@ -36,8 +36,7 @@ int main(void) {
   val += array[i];
 
   if (0 <= i && i < ARRAY_SIZE) {
-    // Read `array` with in bounds symbolic index.  Generates 1 succeeding
-    // goal.
+    // Read `array` with in bounds symbolic index.
     val += array[i];
   }
 
@@ -45,7 +44,7 @@ int main(void) {
     // Read `array` with potentially out of bounds symbolic index.  This range
     // covers both the .text section and the .eh_frame section, both of which
     // are readable.  However, this range may contain unmapped memory segments
-    // in practice.  Currently the verifier generates 1 succeeding goal for
+    // in practice.  Currently the verifier generates no goals for
     // this case, but we should consider whether that's appropriate.
     val += array[i];
   }

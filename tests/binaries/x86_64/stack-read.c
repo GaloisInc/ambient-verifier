@@ -1,8 +1,9 @@
 #include <unistd.h>
 
 /*
- * This test performs a series of reads on the stack to generate both
- * succeeding and failing goals.
+ * This test performs a series of reads on the stack. Out-of-bounds reads
+ * should generate failing goals.
+
  */
 
 // Size of the stack allocated array in bytes
@@ -37,14 +38,13 @@ int main(void) {
   val += array[i];
 
   if (i < ARRAY_SIZE) {
-    // Read array with symbolic index constrained to be in bounds.  Generates
-    // 2 successful goals.
+    // Read array with symbolic index constrained to be in bounds.
     val += array[i];
   }
 
   if (i <= ARRAY_OUT_OF_BOUNDS) {
     // Read array with symbolic index that may be out of bounds for `array`,
-    // but is in bounds for the stack.  Generates 2 successful goals.
+    // but is in bounds for the stack.
     val += array[i];
   }
   return (int)val;

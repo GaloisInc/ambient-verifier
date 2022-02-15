@@ -68,6 +68,7 @@ library
                       Ambient.Syscall.X86_64.Linux,
                       Ambient.Timeout,
                       Ambient.Verifier,
+                      Ambient.Verifier.Concretize,
                       Ambient.Verifier.Prove,
                       Ambient.Verifier.SymbolicExecution,
                       Ambient.Verifier.WME,

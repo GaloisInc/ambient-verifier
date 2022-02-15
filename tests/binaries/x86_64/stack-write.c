@@ -1,8 +1,8 @@
 #include <unistd.h>
 
 /*
- * This test performs a series of writes on the stack to generate both
- * succeeding and failing goals.
+ * This test performs a series of writes on the stack. Out-of-bounds writes
+ * should generate failing goals.
  */
 
 // Size of the stack allocated array in bytes
@@ -37,14 +37,13 @@ int main(void) {
   array[i] = 4;
 
   if (i < ARRAY_SIZE) {
-    // Write array with symbolic index constrained to be in bounds.  Generates
-    // 2 successful goals.
+    // Write array with symbolic index constrained to be in bounds.
     array[i] = 5;
   }
 
   if (i <= ARRAY_OUT_OF_BOUNDS) {
     // Write array with symbolic index that may be out of bounds for `array`,
-    // but is in bounds for the stack.  Generates 2 successful goals.
+    // but is in bounds for the stack.
     array[i] = 6;
   }
   return 0;

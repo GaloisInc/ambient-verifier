@@ -10,7 +10,7 @@ int main(void) {
   pid_t pid = getppid();
 
   if (0 <= pid && pid < ARRAY_SIZE) {
-    // In bounds write.  Generates 2 passing goals.
+    // In bounds write.
     array[pid] = 1;
   }
 
