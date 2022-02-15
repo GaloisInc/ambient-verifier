@@ -9,6 +9,7 @@ module Ambient.Diagnostic (
 
 import qualified Control.Exception as X
 import           Control.Lens ( (^.) )
+import qualified Control.Lens as Lens
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map as Map
 import qualified Data.Text as T
@@ -18,6 +19,7 @@ import qualified Prettyprinter as PP
 import qualified What4.Expr as WE
 import qualified What4.Interface as WI
 import qualified What4.LabeledPred as WL
+import qualified What4.ProgramLoc as WP
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
@@ -46,11 +48,11 @@ data Diagnostic where
   -- The 'Int' is the verbosity level associated with the message
   SolverInteractionEvent :: Int -> String -> Diagnostic
   -- | Timeout while verifying a goal
-  GoalTimeout :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) msg -> Diagnostic
+  GoalTimeout :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) LCSS.SimError -> Diagnostic
   -- | An error was raised while verifying a goal
-  ErrorProvingGoal :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) msg -> X.SomeException -> Diagnostic
+  ErrorProvingGoal :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) LCSS.SimError -> X.SomeException -> Diagnostic
   -- | A goal was successfully proved
-  ProvedGoal :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) msg -> DTC.NominalDiffTime -> Diagnostic
+  ProvedGoal :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) LCSS.SimError -> DTC.NominalDiffTime -> Diagnostic
   -- | A goal was disproved with a counterexample
   --
   -- NOTE: We don't currently capture the counterexample; it would need to be
@@ -90,15 +92,18 @@ instance PP.Pretty Diagnostic where
             PP.pretty "Analyzing a block at address " <> PP.pretty baddr <> PP.line
       SolverInteractionEvent verb msg ->
         PP.pretty "Solver response " <> PP.parens (PP.pretty verb) <> PP.pretty ": " <> PP.pretty msg <> PP.line
-      GoalTimeout _sym _p ->
-        -- FIXME: Add some more detail here, but probably don't print the entire term
-        --
-        -- It would be nice to be able to provide context in the timeout message
-        PP.pretty "Timeout while solving goal" <> PP.line
-      ErrorProvingGoal _sym _p exn ->
-        PP.pretty "Error while proving goal: " <> PP.viaShow exn <> PP.line
-      ProvedGoal _sym _p elapsed ->
-        PP.pretty "Proved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
+      GoalTimeout _sym p ->
+        mconcat [ PP.pretty "Timeout while solving goal" <> PP.line
+                , PP.indent 2 (ppSimErrorLoc p) <> PP.line
+                ]
+      ErrorProvingGoal _sym p exn ->
+        mconcat [ PP.pretty "Error while proving goal: " <> PP.viaShow exn <> PP.line
+                , PP.indent 2 (ppSimErrorLoc p) <> PP.line
+                ]
+      ProvedGoal _sym p elapsed ->
+        mconcat [ PP.pretty "Proved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
+                , PP.indent 2 (ppSimErrorLoc p) <> PP.line
+                ]
       DisprovedGoal _sym p elapsed ->
         mconcat [ PP.pretty "Disproved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
                 , PP.indent 2 (PP.viaShow (p ^. WL.labeledPredMsg)) <> PP.line
@@ -143,3 +148,13 @@ instance PP.Pretty Diagnostic where
         , PP.pretty "== " <> PP.pretty title
         , PP.pretty "============================"
         ] <> PP.line
+
+      -- Print the location of a labeled SimError without printing the entire
+      -- SimErrorReason, as the latter is often quite large.
+      ppSimErrorLoc :: LCB.LabeledPred pred LCSS.SimError -> PP.Doc a
+      ppSimErrorLoc p = ppLoc (p ^. WL.labeledPredMsg . Lens.to LCSS.simErrorLoc)
+
+      ppLoc :: WP.ProgramLoc -> PP.Doc a
+      ppLoc loc = PP.pretty (WP.plSourceLoc loc) <>
+                  PP.pretty ": in the function" PP.<+>
+                  PP.squotes (PP.pretty (WP.plFunction loc))
