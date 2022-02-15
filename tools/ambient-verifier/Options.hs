@@ -43,6 +43,8 @@ data VerifyOptions =
                 -- 'Nothing', then no crucible syntax overrides will be registered.
                 , solverInteractionFile :: Maybe FilePath
                 -- ^ Optional location to write solver interactions log to
+                , functionCFGsFile :: Maybe FilePath
+                -- ^ Optional location to write function CFGs to
                 }
   deriving ( Show )
 
@@ -146,6 +148,10 @@ verifyOptions = VerifyOptions
            <*> OA.optional (OA.strOption ( OA.long "log-solver-interactions"
                                         <> OA.metavar "FILE"
                                         <> OA.help "Log solver interactions to FILE"
+                                       ))
+           <*> OA.optional (OA.strOption ( OA.long "log-function-cfgs"
+                                        <> OA.metavar "FILE"
+                                        <> OA.help "Log the control-flow graphs of functions that the verifier discovers to FILE"
                                        ))
 
 -- | A parser for the \"list-overrides\" subcommand

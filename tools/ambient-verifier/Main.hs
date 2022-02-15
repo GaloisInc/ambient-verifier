@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main ( main ) where
@@ -29,15 +30,29 @@ logAction :: CC.Chan (Maybe AD.Diagnostic) -> LJ.LogAction IO AD.Diagnostic
 logAction c = LJ.LogAction (CC.writeChan c . Just)
 
 -- | This log consumer prints log messages to the given handle
-printLogs :: IO.Handle -> CC.Chan (Maybe AD.Diagnostic) -> IO ()
-printLogs hdl chan = go
+printLogs ::
+  Maybe FilePath ->
+  -- ^ If @'Just' fp@, write function CFG–related logs to @fp@.
+  -- If 'Nothing', do not write function CFG–related logs at all.
+  IO.Handle ->
+  CC.Chan (Maybe AD.Diagnostic) ->
+  IO ()
+printLogs mbFunctionCFGsFile hdl chan = go
   where
     go = do
       mdiag <- CC.readChan chan
       case mdiag of
         Nothing -> return ()
         Just d -> do
-          PPT.hPutDoc hdl (PP.pretty d)
+          let ppd = PP.pretty d
+          case d of
+            AD.DiscoveryEvent{} ->
+              case mbFunctionCFGsFile of
+                Nothing -> pure ()
+                Just functionCFGsFile
+                  -> IO.withFile functionCFGsFile IO.WriteMode $ \functionCFGsHdl ->
+                       PPT.hPutDoc functionCFGsHdl ppd
+            _ -> PPT.hPutDoc hdl ppd
           go
 
 loadProperty :: FilePath -> IO (APD.Property APD.StateID)
@@ -69,7 +84,7 @@ verify o = do
                                  }
 
   chan <- CC.newChan
-  logger <- CCA.async (printLogs IO.stdout chan)
+  logger <- CCA.async (printLogs (O.functionCFGsFile o) IO.stdout chan)
 
   AV.verify (logAction chan) pinst (O.timeoutDuration o)
 
@@ -89,7 +104,7 @@ testOverrides o = do
                                , AO.tiAbi = O.testAbi o
                                }
   chan <- CC.newChan
-  logger <- CCA.async (printLogs IO.stdout chan)
+  logger <- CCA.async (printLogs Nothing IO.stdout chan)
 
   AO.testOverrides (logAction chan) tinst (O.testTimeoutDuration o)
 
@@ -123,7 +138,7 @@ listOverrides o = do
                                  }
 
   chan <- CC.newChan
-  logger <- CCA.async (printLogs IO.stdout chan)
+  logger <- CCA.async (printLogs (O.functionCFGsFile o) IO.stdout chan)
 
   AOL.listOverrides (logAction chan) pinst
 
