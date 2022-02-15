@@ -45,6 +45,7 @@ library
                       Ambient.Discovery,
                       Ambient.EventTrace,
                       Ambient.Exception,
+                      Ambient.Extensions,
                       Ambient.FunctionOverride,
                       Ambient.FunctionOverride.ArgumentMapping,
                       Ambient.FunctionOverride.Extension,

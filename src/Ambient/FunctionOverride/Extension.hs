@@ -70,6 +70,7 @@ import qualified What4.ProgramLoc as WP
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Exception as AE
+import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.ArgumentMapping as AFA
 import qualified Ambient.Memory as AM
@@ -195,12 +196,12 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
           DMS.withArchEval archVals sym $ \archEvalFn -> do
             let fnLookup = DMS.unsupportedFunctionCalls "Ambient override tests"
             let syscallLookup = DMS.unsupportedSyscalls "Ambient override tests"
-            let extImpl = DMS.macawExtensions archEvalFn
-                                              (AVS.imMemVar initMem)
-                                              (AVS.imGlobalMap initMem)
-                                              fnLookup
-                                              syscallLookup
-                                              (AVS.imValidityCheck initMem)
+            let extImpl = AExt.ambientExtensions archEvalFn
+                                                 (AVS.imMemVar initMem)
+                                                 (AVS.imGlobalMap initMem)
+                                                 fnLookup
+                                                 syscallLookup
+                                                 (AVS.imValidityCheck initMem)
             let ctx = LCS.initSimContext bak
                                          LCLI.llvmIntrinsicTypes
                                          halloc

@@ -67,6 +67,7 @@ import qualified What4.BaseTypes as WT
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Exception as AE
+import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
@@ -586,7 +587,7 @@ simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cf
     let syscallABI = buildSyscallABI fs (imMemVar initialMem) (AVW.wmProperties wmConfig)
     let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
     let functionABI = buildFunctionABI (imHeapEndGlob initialMem) (imMemVar initialMem) (fcFunctionOverrides fnConf) Map.empty
-    let extImpl = DMS.macawExtensions archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals discoveryMem fnConf functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
+    let extImpl = AExt.ambientExtensions archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals discoveryMem fnConf functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
