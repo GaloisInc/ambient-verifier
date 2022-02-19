@@ -41,7 +41,8 @@ common shared
 
 library
     import: shared
-    exposed-modules:  Ambient.Diagnostic,
+    exposed-modules:  Ambient.ABI,
+                      Ambient.Diagnostic,
                       Ambient.Discovery,
                       Ambient.EventTrace,
                       Ambient.Exception,
@@ -61,6 +62,7 @@ library
                       Ambient.Override.List.Types,
                       Ambient.OverrideTester,
                       Ambient.Panic,
+                      Ambient.PLTStubDetector,
                       Ambient.Property.Definition,
                       Ambient.Solver,
                       Ambient.Syscall,

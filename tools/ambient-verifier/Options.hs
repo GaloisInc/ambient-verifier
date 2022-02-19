@@ -9,7 +9,7 @@ import qualified Data.Text as T
 import qualified Options.Applicative as OA
 import           Text.Read (readMaybe)
 
-import qualified Ambient.OverrideTester as AO
+import qualified Ambient.ABI as AA
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 
@@ -53,7 +53,7 @@ data VerifyOptions =
 data TestOverridesOptions =
   TestOverridesOptions { testOverrideDir :: FilePath
                        -- ^ Path to the crucible syntax overrides directory
-                       , testAbi :: AO.ABI
+                       , testAbi :: AA.ABI
                        -- ^ ABI to use when running tests
                        , testSolver :: AS.Solver
                        -- ^ The SMT solver to use for path satisfiability

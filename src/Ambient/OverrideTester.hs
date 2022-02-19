@@ -2,9 +2,7 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Ambient.OverrideTester (
-    ABI(..)
-  , allABIs
-  , TestInstance(..)
+    TestInstance(..)
   , testOverrides
   ) where
 
@@ -19,6 +17,7 @@ import qualified Data.Macaw.X86 as DMX
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 
+import qualified Ambient.ABI as AA
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.FunctionOverride.AArch32.Linux as AFAL
 import qualified Ambient.FunctionOverride.Extension as AFE
@@ -26,14 +25,6 @@ import qualified Ambient.FunctionOverride.X86_64.Linux as AFXL
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier.Prove as AVP
-
--- | ABIs supported by the test runner
-data ABI = X86_64Linux | AArch32Linux
-  deriving (Read, Show, Eq, Enum, Bounded)
-
--- | A list of all supported ABIs
-allABIs :: [ABI]
-allABIs = [minBound .. maxBound]
 
 -- | A definition of the tests to be run
 data TestInstance =
@@ -44,7 +35,7 @@ data TestInstance =
                -- ^ The interpretation of floating point operations in SMT
                , tiOverrideDir :: FilePath
                -- ^ Path to the crucible syntax overrides directory
-               , tiAbi :: ABI
+               , tiAbi :: AA.ABI
                -- ^ ABI to use when loading crucible syntax functions
                }
 
@@ -63,7 +54,7 @@ testOverrides logAction tinst timeoutDuration = do
   AS.withOnlineSolver (tiSolver tinst) (tiFloatMode tinst) ng $ \sym -> do
     let ?memOpts = LCLM.defaultMemOptions
     case tiAbi tinst of
-      X86_64Linux ->
+      AA.X86_64Linux ->
         case DMS.archVals (Proxy @DMX.X86_64) Nothing of
           Just archVals -> do
             let parserHooks = AFE.machineCodeParserHooks (Proxy @DMX.X86_64)
@@ -77,7 +68,7 @@ testOverrides logAction tinst timeoutDuration = do
                                  hdlAlloc
                                  parserHooks
           Nothing -> error "Failed to build archVals for X86_64"
-      AArch32Linux ->
+      AA.AArch32Linux ->
         case DMS.archVals (Proxy @Macaw.AArch32.ARM) Nothing of
           Just archVals -> do
             let parserHooks = AFE.machineCodeParserHooks (Proxy @Macaw.AArch32.ARM)

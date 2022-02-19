@@ -14,6 +14,7 @@ import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
+import qualified Data.Map.Strict as Map
 import           Data.Parameterized.Some ( Some(..) )
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
@@ -25,6 +26,7 @@ import qualified Data.Macaw.BinaryLoader as DMB
 import           Data.Macaw.BinaryLoader.X86 ()
 import           Data.Macaw.BinaryLoader.AArch32 ()
 import qualified Data.Macaw.CFG as DMC
+import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Memory.LoadCommon as MML
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.X86 as DMX
@@ -36,8 +38,10 @@ import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified PE.Parser as PE
+import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 
+import qualified Ambient.ABI as AA
 import qualified Ambient.Exception as AE
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
@@ -46,6 +50,7 @@ import qualified Ambient.FunctionOverride.AArch32.Linux as AFAL
 import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.AArch32.Linux as AMAL
 import qualified Ambient.Memory.X86_64.Linux as AMXL
+import qualified Ambient.PLTStubDetector as AP
 import qualified Ambient.Syscall as AS
 import qualified Ambient.Syscall.AArch32.Linux as ASAL
 import qualified Ambient.Syscall.X86_64.Linux as ASXL
@@ -72,12 +77,13 @@ withBinary
   -> BS.ByteString
   -> LCF.HandleAllocator
   -> sym
-  -> ( forall arch binFmt mem p
+  -> ( forall arch binFmt mem p w
       . ( DMB.BinaryLoader arch binFmt
         , 16 <= DMC.ArchAddrWidth arch
         , DMS.SymArchConstraints arch
         , mem ~ DMS.LLVMMemory
         , p ~ DMS.MacawSimulatorState sym
+        , w ~ DMC.RegAddrWidth (DMC.ArchReg arch)
         )
      => DMA.ArchitectureInfo arch
      -> DMS.GenArchVals mem arch
@@ -85,6 +91,7 @@ withBinary
      -> AF.BuildFunctionABI arch sym p
      -> LCSC.ParserHooks (DMS.MacawExt arch)
      -> AM.InitArchSpecificGlobals arch
+     -> Map.Map (DMM.MemWord w) WF.FunctionName
      -> DMB.LoadedBinary arch binFmt
      -> m a)
   -> m a
@@ -120,6 +127,9 @@ withBinary name bytes hdlAlloc _sym k = do
                 (AFE.machineCodeParserHooks (Proxy @DMX.X86_64)
                                             AFXL.x86_64LinuxTypes)
                 (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
+                (AP.pltStubSymbols AA.X86_64Linux
+                                   (Proxy @DE.X86_64_RelocationType)
+                                   ehi)
                 lb
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_X86_64 DE.ELFCLASS64)
         (DE.EM_ARM, DE.ELFCLASS32) -> do
@@ -139,6 +149,9 @@ withBinary name bytes hdlAlloc _sym k = do
                 (AFE.machineCodeParserHooks (Proxy @Macaw.AArch32.ARM)
                                             AFAL.aarch32LinuxTypes)
                 (AMAL.aarch32LinuxInitGlobals tlsGlob)
+                (AP.pltStubSymbols AA.AArch32Linux
+                                   (Proxy @DE.ARM32_RelocationType)
+                                   ehi)
                 lb
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_ARM DE.ELFCLASS32)
         (machine, klass) -> CMC.throwM (AE.UnsupportedELFArchitecture name machine klass)

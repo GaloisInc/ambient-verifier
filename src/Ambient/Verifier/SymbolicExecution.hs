@@ -58,6 +58,7 @@ import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Expr as WE
 import qualified What4.Expr.GroundEval as WEG
+import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
 import qualified What4.Protocol.SMTWriter as WPS
@@ -161,23 +162,8 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
     let offset = LCLMP.llvmPointerOffset $ LCS.regValue
                                          $ DMS.lookupReg archVals regsEntry DMC.ip_reg
     funcAddr <- fromIntegral <$> resolveConcreteStackVal sym (Proxy @arch) proc offset
+    lookupHandle funcAddr state regs
 
-    case Map.lookup funcAddr (AF.functionKernelAddrMapping abi) of
-      -- If we have an override for an address at a fixed address in kernel
-      -- memory, construct a function handle for that override. Otherwise,
-      -- continue resolving the function address.
-      Just (AF.SomeFunctionOverride fnOverride) -> mkAndBindOverride state regs fnOverride
-      Nothing -> do
-        funcAddrOff <- resolveFuncAddr funcAddr
-        handle <- lookupFuncAddrOff funcAddrOff
-
-        -- If we have an override for a certain function name, construct a function
-        -- handle for that override. Otherwise, return the supplied function handle
-        -- unchanged.
-        case Map.lookup (LCF.handleName handle) (AF.functionNameMapping abi) of
-          Nothing -> pure (handle, state)
-          Just (AF.SomeFunctionOverride fnOverride) ->
-            mkAndBindOverride state regs fnOverride
   where
     sym = LCB.backendGetSym bak
 
@@ -189,6 +175,84 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
 
     regsRepr :: LCT.TypeRepr ret
     regsRepr = LCT.StructRepr crucRegTypes
+
+    -- Lookup a function handle from an address.  Performs the lookup in the
+    -- following order:
+    --
+    -- (1) Check for override for 'funcAddr' at a fixed address in kernel
+    --     memory.  If not found, proceed to (2).
+    -- (2) If 'funcAddr' points to a PLT stub, dispatch an override.  Otherwise
+    --     proceed to (3).
+    -- (3) Resolve the function name corresponding to 'funcAddr'.  If an
+    --     override is registered to that name, dispatch the override.
+    --     Otherwise proceed to (4).
+    -- (4) Return the function handle found during discovery for 'funcAddr'.
+    lookupHandle
+      :: forall rtp blocks r ctx
+       . DMME.MemWord w
+      -> LCS.CrucibleState p sym ext rtp blocks r ctx
+      -> Ctx.Assignment (LCS.RegValue' sym)
+                        (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+      -> IO ( LCF.FnHandle args ret
+            , LCS.SimState p sym ext
+                rtp
+                (LCSC.CrucibleLang blocks r)
+                ('Just ctx)
+            )
+    lookupHandle funcAddr state regs =
+      case Map.lookup funcAddr (AF.functionKernelAddrMapping abi) of
+        -- If we have an override for an address at a fixed address in kernel
+        -- memory, construct a function handle for that override. Otherwise,
+        -- continue resolving the function address.
+        Just (AF.SomeFunctionOverride fnOverride) -> mkAndBindOverride state regs fnOverride
+        Nothing ->
+          case Map.lookup funcAddr (fcPltStubs fnConf) of
+            -- If 'funcAddr' points to a PLT stub, dispatch an override.
+            -- Otherwise continue resolving the function address.
+            Just fnName -> overridePLTStubByName fnName state regs
+            Nothing -> do
+              funcAddrOff <- resolveFuncAddr funcAddr
+              handle <- lookupFuncAddrOff funcAddrOff
+              applyOverrideIfFound handle state regs
+
+    -- If we have an override for a certain function name, construct a function
+    -- handle for that override. Otherwise, return the supplied function handle
+    -- unchanged.
+    applyOverrideIfFound
+      :: forall rtp blocks r ctx
+       . LCF.FnHandle args ret
+      -> LCS.CrucibleState p sym ext rtp blocks r ctx
+      -> Ctx.Assignment (LCS.RegValue' sym)
+                        (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+      -> IO ( LCF.FnHandle args ret
+            , LCS.SimState p sym ext
+                rtp
+                (LCSC.CrucibleLang blocks r)
+                ('Just ctx)
+            )
+    applyOverrideIfFound handle state regs =
+      case Map.lookup (LCF.handleName handle) (AF.functionNameMapping abi) of
+        Nothing -> pure (handle, state)
+        Just (AF.SomeFunctionOverride fnOverride) ->
+          mkAndBindOverride state regs fnOverride
+
+    overridePLTStubByName
+      :: forall rtp blocks r ctx
+       . WF.FunctionName
+      -> LCS.CrucibleState p sym ext rtp blocks r ctx
+      -> Ctx.Assignment (LCS.RegValue' sym)
+                        (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+      -> IO ( LCF.FnHandle args ret
+            , LCS.SimState p sym ext
+                rtp
+                (LCSC.CrucibleLang blocks r)
+                ('Just ctx)
+            )
+    overridePLTStubByName fnName state regs =
+      case Map.lookup fnName (AF.functionNameMapping abi) of
+        Nothing -> CMC.throwM (AE.MissingPLTStubOverride fnName)
+        Just (AF.SomeFunctionOverride fnOverride) ->
+          mkAndBindOverride state regs fnOverride
 
     resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
     resolveFuncAddr funcAddr =
@@ -436,6 +500,12 @@ data InitialMemory sym w =
                -- it is only used for initializing the macaw extension
                 }
 
+globalMemoryHooks :: DMSM.GlobalMemoryHooks w
+globalMemoryHooks = DMSM.GlobalMemoryHooks {
+    -- For now, do nothing
+    DMSM.populateRelocation = \_ _ -> return []
+  }
+
 initializeMemory
   :: forall sym bak arch w p ext m
    . ( ?memOpts :: LCLM.MemOptions
@@ -461,7 +531,7 @@ initializeMemory bak halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals
   -- Initialize memory
   let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemory (Proxy @arch) bak endianness DMSM.ConcreteMutable mem
+  (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemoryWith globalMemoryHooks (Proxy @arch) bak endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
 
@@ -510,6 +580,8 @@ data FunctionConfig w args ret arch sym p ext = FunctionConfig {
   -- ^ A list of additional function overrides to register
   , fcRegion :: DMM.RegionIndex
   -- ^ The memory region index containing functions
+  , fcPltStubs :: Map.Map (DMME.MemWord w) WF.FunctionName
+  -- ^ Mapping from PLT stub addresses to function names
   }
 
 simulateFunction

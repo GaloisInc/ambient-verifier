@@ -66,7 +66,6 @@ import qualified Ambient.Verifier.SymbolicExecution as AVS
 import qualified Ambient.Verifier.WME as AVWme
 import qualified Ambient.Verifier.WMM as AVW
 
-
 -- | A definition of the initial state of a program to be verified
 --
 -- Currently, this just defines the /concrete/ initial state of the
@@ -331,7 +330,7 @@ verify logAction pinst timeoutDuration = do
 
     -- Load up the binary, which existentially introduces the architecture of the
     -- binary in the context of the continuation
-    AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals loadedBinary -> DMA.withArchConstraints archInfo $ do
+    AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals pltStubs loadedBinary -> DMA.withArchConstraints archInfo $ do
       discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
       -- See Note [Entry Point] for more details
       (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState "main"
@@ -377,6 +376,7 @@ verify logAction pinst timeoutDuration = do
         , AVS.fcBuildFunctionABI = functionABI
         , AVS.fcFunctionOverrides = functionOvs
         , AVS.fcRegion = fnRegion
+        , AVS.fcPltStubs = pltStubs
         }
       (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) buildGlobals (piFsRoot pinst) fnConf
 

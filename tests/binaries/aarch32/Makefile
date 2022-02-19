@@ -60,6 +60,9 @@ ptr-diff-null-ov.exe: ptr-diff-null-ov.c ambient_assert.o
 ptr-diff-null-ov-pie.exe: ptr-diff-null-ov.c ambient_assert.o
 	$(CC) -nostdlib -pie $^ -o $@
 
+plt-ov.exe: plt-ov.c
+	$(CC) -nostartfiles -pie $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

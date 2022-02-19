@@ -69,6 +69,12 @@ just-exit-pie.exe: just-exit.c
 function-call-pie.exe: function-call.c
 	$(CC) -nostartfiles -pie $^ -o $@
 
+plt-ov.exe: plt-ov.c
+	$(CC) -nostartfiles -pie $^ -o $@
+
+plt-no-pltgot.exe: plt-no-pltgot.c
+	$(CC) -nostartfiles -pie $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

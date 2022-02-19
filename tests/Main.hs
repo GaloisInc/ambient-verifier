@@ -21,6 +21,7 @@ import qualified Lang.Crucible.CFG.Reg as LCCR
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 
+import qualified Ambient.ABI as AA
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Property.Definition as APD
@@ -161,7 +162,7 @@ overrideTestsPassed chan = do
             _ -> go delta
 
 -- | Run tests present in crucible override files
-overrideTests :: AO.ABI -> TT.TestTree
+overrideTests :: AA.ABI -> TT.TestTree
 overrideTests abi = TTH.testCase ((show abi) ++ " override tests") $ do
   -- Create a test instance
   let tinst = AO.TestInstance { AO.tiSolver = AS.Yices
@@ -188,5 +189,5 @@ main = do
                    "VerifierTests"
                    (concat [ map toTest testExpectedOutputs
                            , map toFailingTest failingTestExpectedOutputs
-                           , map overrideTests AO.allABIs
+                           , map overrideTests AA.allABIs
                            ])
