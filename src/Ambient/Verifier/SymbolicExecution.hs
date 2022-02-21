@@ -152,7 +152,7 @@ lookupFunction :: forall sym bak arch p ext w scope solver st fs args ret mem
    -> AF.FunctionABI arch sym p
    -- ^ Function call ABI specification for 'arch'
    -> LCF.HandleAllocator
-   -> DMS.LookupFunctionHandle sym arch
+   -> DMS.LookupFunctionHandle p sym arch
 lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
   DMS.LookupFunctionHandle $ \state _mem regs -> do
   LCBO.withSolverProcess bak (panic ["Online solving not enabled"]) $ \proc -> do
@@ -352,7 +352,7 @@ lookupSyscall
   -> ASy.SyscallABI arch sym p
   -- ^ System call ABI specification for 'arch'
   -> LCF.HandleAllocator
-  -> DMS.LookupSyscallHandle sym arch
+  -> DMS.LookupSyscallHandle p sym arch
 lookupSyscall bak abi hdlAlloc =
   DMS.LookupSyscallHandle $ \(atps :: LCT.CtxRepr atps) (rtps :: LCT.CtxRepr rtps) state reg ->
   LCBO.withSolverProcess bak (AP.panic AP.SymbolicExecution "lookupSyscall"

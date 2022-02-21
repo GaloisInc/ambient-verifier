@@ -36,13 +36,13 @@ ambientExtensions ::
      , ?memOpts :: LCLM.MemOptions
      )
   => bak
-  -> DMS.MacawArchEvalFn sym LCLM.Mem arch
+  -> DMS.MacawArchEvalFn (DMS.MacawSimulatorState sym) sym LCLM.Mem arch
   -> LCS.GlobalVar LCLM.Mem
   -> DMS.GlobalMap sym LCLM.Mem (DMC.ArchAddrWidth arch)
-  -> DMS.LookupFunctionHandle sym arch
+  -> DMS.LookupFunctionHandle (DMS.MacawSimulatorState sym) sym arch
   -- ^ A function to translate virtual addresses into function handles
   -- dynamically during symbolic execution
-  -> DMS.LookupSyscallHandle sym arch
+  -> DMS.LookupSyscallHandle (DMS.MacawSimulatorState sym) sym arch
   -- ^ A function to examine the machine state to determine which system call
   -- should be invoked; returns the function handle to invoke
   -> DMS.MkGlobalPointerValidityAssertion sym (DMC.ArchAddrWidth arch)
@@ -63,13 +63,13 @@ execAmbientStmtExtension ::
      , ?memOpts :: LCLM.MemOptions
      )
   => bak
-  -> DMS.MacawArchEvalFn sym LCLM.Mem arch
+  -> DMS.MacawArchEvalFn (DMS.MacawSimulatorState sym) sym LCLM.Mem arch
   -> LCS.GlobalVar LCLM.Mem
   -> DMS.GlobalMap sym LCLM.Mem (DMC.ArchAddrWidth arch)
-  -> DMS.LookupFunctionHandle sym arch
+  -> DMS.LookupFunctionHandle (DMS.MacawSimulatorState sym) sym arch
   -- ^ A function to turn machine addresses into Crucible function
   -- handles (which can also perform lazy CFG creation)
-  -> DMS.LookupSyscallHandle sym arch
+  -> DMS.LookupSyscallHandle (DMS.MacawSimulatorState sym) sym arch
   -- ^ A function to examine the machine state to determine which system call
   -- should be invoked; returns the function handle to invoke
   -> DMS.MkGlobalPointerValidityAssertion sym (DMC.ArchAddrWidth arch)
