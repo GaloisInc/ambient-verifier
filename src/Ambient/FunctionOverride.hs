@@ -16,6 +16,7 @@
 module Ambient.FunctionOverride (
     FunctionOverride(..)
   , SomeFunctionOverride(..)
+  , FunctionOverrideHandle
   , FunctionABI(..)
   , BuildFunctionABI(..)
     -- * Overrides
@@ -35,6 +36,7 @@ import           Data.Parameterized.Some ( Some )
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
@@ -69,6 +71,12 @@ data FunctionOverride p sym args ext ret =
 
 data SomeFunctionOverride p sym ext =
   forall args ret . SomeFunctionOverride (FunctionOverride p sym args ext ret)
+
+-- | A 'LCF.FnHandle' for a function override.
+type FunctionOverrideHandle arch =
+  LCF.FnHandle
+    (LCT.EmptyCtx LCT.::> LCT.StructType (DMS.MacawCrucibleRegTypes arch))
+    (LCT.StructType (DMS.MacawCrucibleRegTypes arch))
 
 buildCallocOverride :: ( LCLM.HasLLVMAnn sym
                        , ?memOpts :: LCLM.MemOptions

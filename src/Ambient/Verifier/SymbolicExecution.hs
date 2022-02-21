@@ -15,7 +15,7 @@ module Ambient.Verifier.SymbolicExecution (
   , FunctionConfig(..)
   ) where
 
-import           Control.Lens ( (^.), set )
+import           Control.Lens ( Lens', (^.), set, over )
 import           Control.Monad ( foldM )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(..) )
@@ -25,6 +25,7 @@ import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.List as PL
 import qualified Data.Parameterized.Map as MapF
 import           Data.Parameterized.Some ( Some(..) )
+import qualified Data.Parameterized.TraversableFC as FC
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
 import           GHC.TypeNats ( KnownNat, type (<=) )
@@ -50,7 +51,6 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
-import qualified Lang.Crucible.Simulator.CallFrame as LCSC
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
 import qualified Lang.Crucible.SymIO as LCSy
@@ -162,7 +162,7 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
     let offset = LCLMP.llvmPointerOffset $ LCS.regValue
                                          $ DMS.lookupReg archVals regsEntry DMC.ip_reg
     funcAddr <- fromIntegral <$> resolveConcreteStackVal sym (Proxy @arch) proc offset
-    lookupHandle funcAddr state regs
+    lookupHandle funcAddr state
 
   where
     sym = LCB.backendGetSym bak
@@ -176,6 +176,57 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
     regsRepr :: LCT.TypeRepr ret
     regsRepr = LCT.StructRepr crucRegTypes
 
+    -- This function abstracts over a common pattern when dealing with lazily
+    -- registering overrides (Note [Lazily registering overrides] in A.Extensions):
+    --
+    -- (1) First, check to see if the function has had an override registered
+    --     previously by looking in the appropriate spot in the
+    --     AmbientSimulatorState. If so, just use that handle.
+    -- (2) If not, check to see if the user supplied an override for this
+    --     function by looking in the appropriate spot in the FunctionABI.
+    --     If so, register that override, allocate a new handle for it, and
+    --     return that handle.
+    -- (3) If not, perform some other action.
+    lazilyRegisterHandle ::
+         forall key rtp blocks r ctx
+       . Ord key
+      => LCS.CrucibleState p sym ext rtp blocks r ctx
+      -> key
+         -- ^ The type of function. This can be a MemWord (for kernel-specific
+         --   functions) or a FunctionName (for other kinds of functions).
+      -> Lens' (AExt.AmbientSimulatorState arch)
+               (Map.Map key (AF.FunctionOverrideHandle arch))
+         -- ^ A lens into the corresponding field of AmbientSimulatorState.
+         --   This is used both in step (1), for checking if the key is
+         --   present, and in step (2), for updating the state when
+         --   registering the override.
+      -> Map.Map key (AF.SomeFunctionOverride p sym ext)
+         -- ^ A Map (contained in the FunctionABI) that contains user-supplied
+         --   overrides.
+      -> IO ( LCF.FnHandle args ret
+            , LCS.CrucibleState p sym ext rtp blocks r ctx
+            )
+         -- The action to perform in step (3).
+      -> IO ( LCF.FnHandle args ret
+            , LCS.CrucibleState p sym ext rtp blocks r ctx
+            )
+         -- The function handle to use, as well as the updated state.
+    lazilyRegisterHandle state key ovHandlesL fnAbiMap noFnFoundInAbiMap = do
+      -- Step (1)
+      case Map.lookup key (state ^. LCS.stateContext . LCS.cruciblePersonality . ovHandlesL) of
+        Just handle -> pure (handle, state)
+        Nothing ->
+          -- Step (2)
+          case Map.lookup key fnAbiMap of
+            Just (AF.SomeFunctionOverride fnOverride) -> do
+              (handle, state') <- mkAndBindOverride state fnOverride
+              let state'' = over (LCS.stateContext . LCS.cruciblePersonality . ovHandlesL)
+                                 (Map.insert key handle)
+                                 state'
+              pure (handle, state'')
+            Nothing -> -- Step (3)
+                       noFnFoundInAbiMap
+
     -- Lookup a function handle from an address.  Performs the lookup in the
     -- following order:
     --
@@ -187,33 +238,30 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
     --     override is registered to that name, dispatch the override.
     --     Otherwise proceed to (4).
     -- (4) Return the function handle found during discovery for 'funcAddr'.
+    --
+    -- In each of steps (1)–(3), we check at the beginning to see if the
+    -- function's handle has been registered previously. If so, we just use
+    -- that. We only allocate a new function handle if it has not been
+    -- registered before.
+    -- See Note [Lazily registering overrides] in A.Extensions.
     lookupHandle
       :: forall rtp blocks r ctx
        . DMME.MemWord w
       -> LCS.CrucibleState p sym ext rtp blocks r ctx
-      -> Ctx.Assignment (LCS.RegValue' sym)
-                        (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
       -> IO ( LCF.FnHandle args ret
-            , LCS.SimState p sym ext
-                rtp
-                (LCSC.CrucibleLang blocks r)
-                ('Just ctx)
+            , LCS.CrucibleState p sym ext rtp blocks r ctx
             )
-    lookupHandle funcAddr state regs =
-      case Map.lookup funcAddr (AF.functionKernelAddrMapping abi) of
-        -- If we have an override for an address at a fixed address in kernel
-        -- memory, construct a function handle for that override. Otherwise,
-        -- continue resolving the function address.
-        Just (AF.SomeFunctionOverride fnOverride) -> mkAndBindOverride state regs fnOverride
-        Nothing ->
-          case Map.lookup funcAddr (fcPltStubs fnConf) of
-            -- If 'funcAddr' points to a PLT stub, dispatch an override.
-            -- Otherwise continue resolving the function address.
-            Just fnName -> overridePLTStubByName fnName state regs
-            Nothing -> do
-              funcAddrOff <- resolveFuncAddr funcAddr
-              handle <- lookupFuncAddrOff funcAddrOff
-              applyOverrideIfFound handle state regs
+    lookupHandle funcAddr state =
+      lazilyRegisterHandle state funcAddr AExt.functionKernelAddrOvHandles
+                           (AF.functionKernelAddrMapping abi) $
+        case Map.lookup funcAddr (fcPltStubs fnConf) of
+          -- If 'funcAddr' points to a PLT stub, dispatch an override.
+          -- Otherwise continue resolving the function address.
+          Just fnName -> overridePLTStubByName fnName state
+          Nothing -> do
+            funcAddrOff <- resolveFuncAddr funcAddr
+            handle <- lookupFuncAddrOff funcAddrOff
+            applyOverrideIfFound handle state
 
     -- If we have an override for a certain function name, construct a function
     -- handle for that override. Otherwise, return the supplied function handle
@@ -222,37 +270,25 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
       :: forall rtp blocks r ctx
        . LCF.FnHandle args ret
       -> LCS.CrucibleState p sym ext rtp blocks r ctx
-      -> Ctx.Assignment (LCS.RegValue' sym)
-                        (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
       -> IO ( LCF.FnHandle args ret
-            , LCS.SimState p sym ext
-                rtp
-                (LCSC.CrucibleLang blocks r)
-                ('Just ctx)
+            , LCS.CrucibleState p sym ext rtp blocks r ctx
             )
-    applyOverrideIfFound handle state regs =
-      case Map.lookup (LCF.handleName handle) (AF.functionNameMapping abi) of
-        Nothing -> pure (handle, state)
-        Just (AF.SomeFunctionOverride fnOverride) ->
-          mkAndBindOverride state regs fnOverride
+    applyOverrideIfFound handle state =
+      lazilyRegisterHandle state (LCF.handleName handle) AExt.functionOvHandles
+                           (AF.functionNameMapping abi) $
+        pure (handle, state)
 
     overridePLTStubByName
       :: forall rtp blocks r ctx
        . WF.FunctionName
       -> LCS.CrucibleState p sym ext rtp blocks r ctx
-      -> Ctx.Assignment (LCS.RegValue' sym)
-                        (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
       -> IO ( LCF.FnHandle args ret
-            , LCS.SimState p sym ext
-                rtp
-                (LCSC.CrucibleLang blocks r)
-                ('Just ctx)
+            , LCS.CrucibleState p sym ext rtp blocks r ctx
             )
-    overridePLTStubByName fnName state regs =
-      case Map.lookup fnName (AF.functionNameMapping abi) of
-        Nothing -> CMC.throwM (AE.MissingPLTStubOverride fnName)
-        Just (AF.SomeFunctionOverride fnOverride) ->
-          mkAndBindOverride state regs fnOverride
+    overridePLTStubByName fnName state =
+      lazilyRegisterHandle state fnName AExt.functionOvHandles
+                           (AF.functionNameMapping abi) $
+        CMC.throwM (AE.MissingPLTStubOverride fnName)
 
     resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
     resolveFuncAddr funcAddr =
@@ -270,28 +306,27 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
 
     mkAndBindOverride :: forall fnArgs fnRet rtp blocks r ctx
                        . LCS.CrucibleState p sym ext rtp blocks r ctx
-                      -> Ctx.Assignment (LCS.RegValue' sym)
-                                        (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
                       -> AF.FunctionOverride p sym fnArgs ext fnRet
                       -> IO ( LCF.FnHandle args ret
-                            , LCS.SimState p sym ext
-                                rtp
-                                (LCSC.CrucibleLang blocks r)
-                                ('Just ctx)
+                            , LCS.CrucibleState p sym ext rtp blocks r ctx
                             )
-    mkAndBindOverride state regs fnOverride = do
+    mkAndBindOverride state fnOverride = do
       -- Construct an override for the function
-      (args :: Ctx.Assignment (LCS.RegEntry sym) fnArgs) <- AF.functionIntegerArgumentRegisters abi bak (AF.functionArgTypes fnOverride) regs
-
       let retOV :: forall r'
                  . LCSO.OverrideSim p sym ext r' args ret
                                    (Ctx.Assignment (LCS.RegValue' sym)
                                                    (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
-          retOV = AF.functionIntegerReturnRegisters abi
-                                                    bak
-                                                    (AF.functionReturnType fnOverride)
-                                                    (AF.functionOverride fnOverride bak args)
-                                                    regs
+          retOV = do
+            argMap <- LCS.getOverrideArgs
+            let argReg = massageRegAssignment $ LCS.regMap argMap
+            args <- liftIO $
+              AF.functionIntegerArgumentRegisters abi bak
+                                                  (AF.functionArgTypes fnOverride)
+                                                  argReg
+            AF.functionIntegerReturnRegisters abi bak
+                                              (AF.functionReturnType fnOverride)
+                                              (AF.functionOverride fnOverride bak args)
+                                              argReg
 
       let ov :: LCSO.Override p sym ext args ret
           ov = LCSO.mkOverride' (AF.functionName fnOverride) regsRepr retOV
@@ -299,6 +334,13 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
       -- Build a function handle for the override and insert it into the
       -- state
       bindOverrideHandle state hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
+
+    -- Massage the RegEntry Assignment that getOverrideArgs provides into the
+    -- form that FunctionABI expects.
+    massageRegAssignment ::
+         Ctx.Assignment (LCS.RegEntry sym) (Ctx.EmptyCtx LCT.::> LCT.StructType ctx)
+      -> Ctx.Assignment (LCS.RegValue' sym) ctx
+    massageRegAssignment = LCS.unRV . Ctx.last . FC.fmapFC (LCS.RV . LCS.regValue)
 
     panic :: [String] -> a
     panic = AP.panic AP.SymbolicExecution "lookupFunction"
@@ -364,28 +406,91 @@ lookupSyscall bak abi hdlAlloc =
     let regVal = LCS.regValue syscallReg
     syscallNum <- resolveConcreteStackVal sym (Proxy @arch) proc regVal
 
-    -- Look for override associated with system call number
-    case Map.lookup syscallNum (ASy.syscallMapping abi) of
-      Nothing -> CMC.throwM $ AE.UnsupportedSyscallNumber syscallNum
-      Just (ASy.SomeSyscall (syscall :: ASy.Syscall p sym args ext ret)) -> do
-        -- Construct an override for the system call
-        (args :: Ctx.Assignment (LCS.RegEntry sym) args) <- ASy.syscallArgumentRegisters abi bak atps reg (ASy.syscallArgTypes syscall)
+    -- Look for override associated with system call number, registering it if
+    -- it has not already been so.
+    lazilyRegisterHandle state atps rtps syscallNum
+  where
+    -- This function abstracts over a common pattern when dealing with lazily
+    -- registering overrides (see Note [Lazily registering overrides] in
+    -- A.Extensions):
+    --
+    -- First, check to see if the syscall has had an override registered
+    -- previously by looking in the AmbientSimulatorState. (See
+    -- Note [Lazily registering overrides] in A.Extensions.) If so, just use
+    -- that handle. If not, apply a user-supplied override for this syscall.
+    lazilyRegisterHandle :: forall atps rtps rtp blocks r ctx
+                          . LCS.CrucibleState p sym ext rtp blocks r ctx
+                         -> LCT.CtxRepr atps
+                         -> LCT.CtxRepr rtps
+                         -> Integer
+                         -> IO ( LCF.FnHandle atps (LCT.StructType rtps)
+                               , LCS.CrucibleState p sym ext rtp blocks r ctx
+                               )
+    lazilyRegisterHandle state atps rtps syscallNum = do
+      let syscallNumRepr = ASy.SyscallNumRepr atps rtps syscallNum
+      case MapF.lookup syscallNumRepr (state ^. LCS.stateContext . LCS.cruciblePersonality . AExt.syscallOvHandles) of
+        Just (ASy.SyscallFnHandle handle) ->
+          pure (handle, state)
+        Nothing ->
+          applyOverride state syscallNumRepr
 
-        let retOV :: forall r
-                   . LCSO.OverrideSim p sym ext r atps (LCT.StructType rtps)
-                                      (Ctx.Assignment (LCS.RegValue' sym) rtps)
-            retOV = ASy.syscallReturnRegisters abi
-                                               (ASy.syscallReturnType syscall)
-                                               (ASy.syscallOverride syscall bak args)
-                                               atps reg rtps
+    -- Apply a user-supplied override for the syscall, throwing an exception if
+    -- an override cannot be found.
+    applyOverride :: forall atps rtps rtp blocks r ctx
+                   . LCS.CrucibleState p sym ext rtp blocks r ctx
+                  -> ASy.SyscallNumRepr '(atps, rtps)
+                  -> IO ( LCF.FnHandle atps (LCT.StructType rtps)
+                        , LCS.CrucibleState p sym ext rtp blocks r ctx
+                        )
+    applyOverride state syscallNumRepr@(ASy.SyscallNumRepr atps rtps syscallNum) =
+      case Map.lookup syscallNum (ASy.syscallMapping abi) of
+        Just (ASy.SomeSyscall syscall) -> do
+          (handle, state') <- mkAndBindOverride state atps rtps syscall
+          let state'' = over (LCS.stateContext . LCS.cruciblePersonality . AExt.syscallOvHandles)
+                             (MapF.insert syscallNumRepr (ASy.SyscallFnHandle handle))
+                             state'
+          pure (handle, state'')
+        Nothing -> CMC.throwM $ AE.UnsupportedSyscallNumber syscallNum
 
-        let ov :: LCSO.Override p sym ext atps (LCT.StructType rtps)
-            ov = LCSO.mkOverride' (ASy.syscallName syscall)
-                                  (LCT.StructRepr rtps) retOV
+    mkAndBindOverride :: forall atps rtps syscallArgs syscallRet rtp blocks r ctx
+                       . LCS.CrucibleState p sym ext rtp blocks r ctx
+                      -> LCT.CtxRepr atps
+                      -> LCT.CtxRepr rtps
+                      -> ASy.Syscall p sym syscallArgs ext syscallRet
+                      -> IO ( LCF.FnHandle atps (LCT.StructType rtps)
+                            , LCS.CrucibleState p sym ext rtp blocks r ctx
+                            )
+    mkAndBindOverride state atps rtps syscall = do
+      -- Construct an override for the system call
+      let retOV :: forall r'
+                 . LCSO.OverrideSim p sym ext r' atps (LCT.StructType rtps)
+                                    (Ctx.Assignment (LCS.RegValue' sym) rtps)
+          retOV = do
+            argMap <- LCSO.getOverrideArgs
+            let argReg = massageRegAssignment $ LCS.regMap argMap
+            args <- liftIO $
+              ASy.syscallArgumentRegisters abi bak atps argReg
+                                           (ASy.syscallArgTypes syscall)
+            ASy.syscallReturnRegisters abi (ASy.syscallReturnType syscall)
+                                           (ASy.syscallOverride syscall bak args)
+                                           atps argReg rtps
 
-        -- Build a function handle for the override and insert it into the
-        -- state
-        bindOverrideHandle state hdlAlloc atps rtps ov
+      let ov :: LCSO.Override p sym ext atps (LCT.StructType rtps)
+          ov = LCSO.mkOverride' (ASy.syscallName syscall)
+                                (LCT.StructRepr rtps) retOV
+
+      -- Build a function handle for the override and insert it into the
+      -- state
+      bindOverrideHandle state hdlAlloc atps rtps ov
+
+    -- Massage the RegEntry Assignment that getOverrideArgs provides into the
+    -- form that Syscall expects.
+    massageRegAssignment ::
+         Ctx.Assignment (LCS.RegEntry sym) ctx
+      -> LCS.RegEntry sym (LCT.StructType ctx)
+    massageRegAssignment assn =
+      LCS.RegEntry (LCT.StructRepr (FC.fmapFC LCS.regType assn))
+                   (FC.fmapFC (LCS.RV . LCS.regValue) assn)
 
 -- | Resolve a value that was spilled to the stack as concrete. This is used
 -- for both syscall numbers and function addresses, and it requires some fancy
@@ -570,7 +675,7 @@ initializeMemory bak halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals
 data FunctionConfig w args ret arch sym p ext = FunctionConfig {
     fcAddressToFnHandle :: Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
   -- ^ Mapping from discovered function addresses to function handles
-  , fcFnBindings :: LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState arch) sym (DMS.MacawExt arch))
+  , fcFnBindings :: LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch))
   -- ^ Function bindings to insert into the simulation context
   , fcBuildSyscallABI :: ASy.BuildSyscallABI arch sym p
   -- ^ Function to construct an ABI specification for system calls
@@ -618,7 +723,7 @@ simulateFunction
   -> FunctionConfig w args ret arch sym p ext
   -- ^ Configuration parameters concerning functions and overrides
   -> m ( LCS.GlobalVar LCLM.Mem
-       , LCS.ExecResult (AExt.AmbientSimulatorState arch) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
+       , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
 simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf = do
@@ -722,7 +827,7 @@ symbolicallyExecute
   -> FunctionConfig w args ret arch sym p ext
   -- ^ Configuration parameters concerning functions and overrides
   -> m ( LCS.GlobalVar LCLM.Mem
-       , LCS.ExecResult (AExt.AmbientSimulatorState arch) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
+       , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
 symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem initGlobals mFsRoot fnConf = do

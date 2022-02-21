@@ -9,9 +9,14 @@ module Ambient.Extensions
   ( ambientExtensions
   , AmbientSimulatorState(..)
   , emptyAmbientSimulatorState
+  , functionOvHandles
+  , functionKernelAddrOvHandles
+  , syscallOvHandles
   ) where
 
-import           Control.Lens ( (^.) )
+import           Control.Lens ( Lens', (^.), lens )
+import qualified Data.Map.Strict as Map
+import qualified Data.Parameterized.Map as MapF
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Memory as DMM
@@ -24,8 +29,11 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified What4.Expr as WE
+import qualified What4.FunctionName as WF
 import qualified What4.Protocol.Online as WPO
 
+import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.Syscall as ASy
 import qualified Ambient.Verifier.Concretize as AVC
 
 -- | Return @ambient-verifier@ extension evaluation functions.
@@ -130,8 +138,66 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st 
     _ -> LCSE.extensionExec (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred) s0 st
 
 -- | The state extension for Crucible holding verifier-specific state.
+-- See @Note [Lazily registering overrides].
 data AmbientSimulatorState arch = AmbientSimulatorState
+  { _functionOvHandles :: Map.Map WF.FunctionName (AF.FunctionOverrideHandle arch)
+  , _functionKernelAddrOvHandles :: Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) (AF.FunctionOverrideHandle arch)
+  , _syscallOvHandles :: MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle
+  }
 
 -- | An initial value for 'AmbientSimulatorState'.
 emptyAmbientSimulatorState :: AmbientSimulatorState arch
 emptyAmbientSimulatorState = AmbientSimulatorState
+  { _functionOvHandles = Map.empty
+  , _functionKernelAddrOvHandles = Map.empty
+  , _syscallOvHandles = MapF.empty
+  }
+
+functionOvHandles :: Lens' (AmbientSimulatorState arch)
+                           (Map.Map WF.FunctionName (AF.FunctionOverrideHandle arch))
+functionOvHandles = lens _functionOvHandles
+                         (\s v -> s { _functionOvHandles = v })
+
+functionKernelAddrOvHandles :: Lens' (AmbientSimulatorState arch)
+                                     (Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) (AF.FunctionOverrideHandle arch))
+functionKernelAddrOvHandles = lens _functionKernelAddrOvHandles
+                                   (\s v -> s { _functionKernelAddrOvHandles = v })
+
+syscallOvHandles :: Lens' (AmbientSimulatorState arch)
+                          (MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle)
+syscallOvHandles = lens _syscallOvHandles
+                        (\s v -> s { _syscallOvHandles = v })
+
+{-
+Note [Lazily registering overrides]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+During symbolic simulation, the verifier needs to register function handles for
+any overrides that have not yet been used by the simulator. This is done in a
+lazy fashion: before the verifier simulates a function, it will check to see
+if it has previously registered. If so, just use the previously registered
+function handle. If not, allocate a fresh handle for that function, register
+it, then proceed. This lazy behavior is helpful for two reasons:
+
+1. In general, the verifier may not have discovered all of the functions it
+   needs prior to starting simulation. As a result, at least some lazy
+   registration will be required to handle functions that aren't discovered
+   until subsequent runs of the code discoverer.
+
+2. As a practical matter, it is difficult to ascertain the types of syscall
+   function handles until simulation begins. Lazy registration avoids this
+   issue, as one can wait until one is in the context of LookupSyscallHandle,
+   where the types are within reach.
+
+We track registered overrides in AmbientSimulatorState, which is a custom
+personality data type the verifier tracks during simulation. The
+LookupFunctionHandle and LookupSyscallHandle interfaces pass through
+CrucibleState, so if we need to register a newly discovered override, it is a
+matter of updating the AmbientSimulatorState inside of the CrucibleState and
+returning the new state.
+
+Registered overrides for functions can be stored in a simple Map, as their
+types are easy to ascertain ahead of time. Registered overrides for syscalls,
+on the other hand, are stored in a MapF. Since their types are difficult to
+know ahead of time (point (2) above), existentially closing over their types
+avoids this problem.
+-}
