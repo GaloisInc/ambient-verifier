@@ -4,9 +4,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
--- | Defines verifier-specific extension evaluation functions.
+-- | Defines verifier-specific extensions for Macaw's simulation functionality.
 module Ambient.Extensions
   ( ambientExtensions
+  , AmbientSimulatorState(..)
+  , emptyAmbientSimulatorState
   ) where
 
 import           Control.Lens ( (^.) )
@@ -36,18 +38,18 @@ ambientExtensions ::
      , ?memOpts :: LCLM.MemOptions
      )
   => bak
-  -> DMS.MacawArchEvalFn (DMS.MacawSimulatorState sym) sym LCLM.Mem arch
+  -> DMS.MacawArchEvalFn (AmbientSimulatorState arch) sym LCLM.Mem arch
   -> LCS.GlobalVar LCLM.Mem
   -> DMS.GlobalMap sym LCLM.Mem (DMC.ArchAddrWidth arch)
-  -> DMS.LookupFunctionHandle (DMS.MacawSimulatorState sym) sym arch
+  -> DMS.LookupFunctionHandle (AmbientSimulatorState arch) sym arch
   -- ^ A function to translate virtual addresses into function handles
   -- dynamically during symbolic execution
-  -> DMS.LookupSyscallHandle (DMS.MacawSimulatorState sym) sym arch
+  -> DMS.LookupSyscallHandle (AmbientSimulatorState arch) sym arch
   -- ^ A function to examine the machine state to determine which system call
   -- should be invoked; returns the function handle to invoke
   -> DMS.MkGlobalPointerValidityAssertion sym (DMC.ArchAddrWidth arch)
   -- ^ A function to make memory validity predicates
-  -> LCSE.ExtensionImpl (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch)
+  -> LCSE.ExtensionImpl (AmbientSimulatorState arch) sym (DMS.MacawExt arch)
 ambientExtensions bak f mvar globs lookupH lookupSyscall toMemPred =
   (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred)
     { LCSE.extensionExec = execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred
@@ -63,18 +65,18 @@ execAmbientStmtExtension ::
      , ?memOpts :: LCLM.MemOptions
      )
   => bak
-  -> DMS.MacawArchEvalFn (DMS.MacawSimulatorState sym) sym LCLM.Mem arch
+  -> DMS.MacawArchEvalFn (AmbientSimulatorState arch) sym LCLM.Mem arch
   -> LCS.GlobalVar LCLM.Mem
   -> DMS.GlobalMap sym LCLM.Mem (DMC.ArchAddrWidth arch)
-  -> DMS.LookupFunctionHandle (DMS.MacawSimulatorState sym) sym arch
+  -> DMS.LookupFunctionHandle (AmbientSimulatorState arch) sym arch
   -- ^ A function to turn machine addresses into Crucible function
   -- handles (which can also perform lazy CFG creation)
-  -> DMS.LookupSyscallHandle (DMS.MacawSimulatorState sym) sym arch
+  -> DMS.LookupSyscallHandle (AmbientSimulatorState arch) sym arch
   -- ^ A function to examine the machine state to determine which system call
   -- should be invoked; returns the function handle to invoke
   -> DMS.MkGlobalPointerValidityAssertion sym (DMC.ArchAddrWidth arch)
   -- ^ A function to make memory validity predicates
-  -> DMSB.MacawEvalStmtFunc (DMS.MacawStmtExtension arch) (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch)
+  -> DMSB.MacawEvalStmtFunc (DMS.MacawStmtExtension arch) (AmbientSimulatorState arch) sym (DMS.MacawExt arch)
 execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st =
   let sym = LCB.backendGetSym bak in
   -- NB: Most of this code is copied directly from the 'execMacawStmtExtension'
@@ -126,3 +128,10 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st 
       mem1 <- DMSMO.doCondWriteMem bak mem addrWidth memRep (LCS.regValue cond) ptr2 (LCS.regValue v)
       pure ((), DMSMO.setMem st mvar mem1)
     _ -> LCSE.extensionExec (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred) s0 st
+
+-- | The state extension for Crucible holding verifier-specific state.
+data AmbientSimulatorState arch = AmbientSimulatorState
+
+-- | An initial value for 'AmbientSimulatorState'.
+emptyAmbientSimulatorState :: AmbientSimulatorState arch
+emptyAmbientSimulatorState = AmbientSimulatorState

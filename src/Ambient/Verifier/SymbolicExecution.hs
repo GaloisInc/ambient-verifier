@@ -135,7 +135,7 @@ lookupFunction :: forall sym bak arch p ext w scope solver st fs args ret mem
      , DMS.SymArchConstraints arch
      , sym ~ WE.ExprBuilder scope st fs
      , bak ~ LCBO.OnlineBackend solver scope st fs
-     , p ~ DMS.MacawSimulatorState sym
+     , p ~ AExt.AmbientSimulatorState arch
      , ext ~ DMS.MacawExt arch
      , w ~ DMC.ArchAddrWidth arch
      , args ~ (LCT.EmptyCtx LCT.::>
@@ -342,7 +342,7 @@ lookupSyscall
      , LCB.IsSymBackend sym bak
      , LCLM.HasLLVMAnn sym
      , DMS.SymArchConstraints arch
-     , p ~ DMS.MacawSimulatorState sym
+     , p ~ AExt.AmbientSimulatorState arch
      , ext ~ DMS.MacawExt arch
      , sym ~ WE.ExprBuilder scope st fs
      , bak ~ LCBO.OnlineBackend solver scope st fs
@@ -570,7 +570,7 @@ initializeMemory bak halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals
 data FunctionConfig w args ret arch sym p ext = FunctionConfig {
     fcAddressToFnHandle :: Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
   -- ^ Mapping from discovered function addresses to function handles
-  , fcFnBindings :: LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch))
+  , fcFnBindings :: LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState arch) sym (DMS.MacawExt arch))
   -- ^ Function bindings to insert into the simulation context
   , fcBuildSyscallABI :: ASy.BuildSyscallABI arch sym p
   -- ^ Function to construct an ABI specification for system calls
@@ -600,7 +600,7 @@ simulateFunction
      , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
      , ?memOpts :: LCLM.MemOptions
-     , p ~ DMS.MacawSimulatorState sym
+     , p ~ AExt.AmbientSimulatorState arch
      )
   => LJ.LogAction IO AD.Diagnostic
   -> bak
@@ -618,7 +618,7 @@ simulateFunction
   -> FunctionConfig w args ret arch sym p ext
   -- ^ Configuration parameters concerning functions and overrides
   -> m ( LCS.GlobalVar LCLM.Mem
-       , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
+       , LCS.ExecResult (AExt.AmbientSimulatorState arch) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
 simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf = do
@@ -663,7 +663,7 @@ simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cf
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
-    let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings (fcFnBindings fnConf)) extImpl DMS.MacawSimulatorState
+    let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings (fcFnBindings fnConf)) extImpl AExt.emptyAmbientSimulatorState
     let s0 = LCS.InitialState ctx globals1 LCS.defaultAbortHandler regsRepr simAction
 
     let wmCallback = secWMMCallback seConf
@@ -701,7 +701,7 @@ symbolicallyExecute
      , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
      , ?memOpts :: LCLM.MemOptions
-     , p ~ DMS.MacawSimulatorState sym
+     , p ~ AExt.AmbientSimulatorState arch
      )
   => LJ.LogAction IO AD.Diagnostic
   -> bak
@@ -722,7 +722,7 @@ symbolicallyExecute
   -> FunctionConfig w args ret arch sym p ext
   -- ^ Configuration parameters concerning functions and overrides
   -> m ( LCS.GlobalVar LCLM.Mem
-       , LCS.ExecResult (DMS.MacawSimulatorState sym) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
+       , LCS.ExecResult (AExt.AmbientSimulatorState arch) sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
 symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem initGlobals mFsRoot fnConf = do

@@ -54,6 +54,7 @@ import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Discovery as ADi
 import qualified Ambient.EventTrace as AEt
 import qualified Ambient.Exception as AE
+import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
@@ -171,7 +172,7 @@ buildBindings
                         (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
             (LCCC.StructType
                (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))))],
-        LCF.FnHandleMap (LCS.FnState (DMS.MacawSimulatorState sym) sym (DMS.MacawExt arch)))
+        LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState arch) sym (DMS.MacawExt arch)))
 buildBindings fns hdlAlloc pinst archVals entryAddr cfg0 = do
   case fns of
     [] -> return ([], LCF.emptyHandleMap)

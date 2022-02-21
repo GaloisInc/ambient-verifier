@@ -215,7 +215,7 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
                                          IO.stdout
                                          fns
                                          extImpl
-                                         DMS.MacawSimulatorState
+                                         AExt.emptyAmbientSimulatorState
             let simAction = LCS.runOverrideSim LCT.UnitRepr
                                                (LCS.regValue <$> LCS.callFnVal (LCS.HandleFnVal testHdl) LCS.emptyRegMap)
             globals1 <- AVS.insertFreshGlobals sym ovGlobals (AVS.imGlobals initMem)

@@ -43,6 +43,7 @@ import qualified What4.Interface as WI
 
 import qualified Ambient.ABI as AA
 import qualified Ambient.Exception as AE
+import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.X86_64.Linux as AFXL
@@ -82,7 +83,7 @@ withBinary
         , 16 <= DMC.ArchAddrWidth arch
         , DMS.SymArchConstraints arch
         , mem ~ DMS.LLVMMemory
-        , p ~ DMS.MacawSimulatorState sym
+        , p ~ AExt.AmbientSimulatorState arch
         , w ~ DMC.RegAddrWidth (DMC.ArchReg arch)
         )
      => DMA.ArchitectureInfo arch
