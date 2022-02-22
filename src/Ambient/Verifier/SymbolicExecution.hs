@@ -83,13 +83,6 @@ data SymbolicExecutionConfig arch sym =
                           , secSolver :: AS.Solver
                           }
 
--- | Convert from macaw endianness to the LLVM memory model endianness
-toCrucibleEndian :: DMME.Endianness -> LCLD.EndianForm
-toCrucibleEndian e =
-  case e of
-    DMME.LittleEndian -> LCLD.LittleEndian
-    DMME.BigEndian -> LCLD.BigEndian
-
 -- | The stack size in bytes
 stackSize :: Integer
 stackSize = 2 * 1024 * 1024
@@ -634,7 +627,7 @@ initializeMemory bak halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals
   let sym = LCB.backendGetSym bak
 
   -- Initialize memory
-  let endianness = toCrucibleEndian (DMA.archEndianness archInfo)
+  let endianness = DMSM.toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
   (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemoryWith globalMemoryHooks (Proxy @arch) bak endianness DMSM.ConcreteMutable mem
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
