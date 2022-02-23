@@ -136,6 +136,7 @@ test-suite ambient-tests
                  directory,
                  filemanip,
                  tasty,
+                 tasty-ant-xml,
                  tasty-expected-failure,
                  tasty-hunit,
                  yaml >= 0.11 && < 0.12

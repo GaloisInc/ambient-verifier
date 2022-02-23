@@ -14,6 +14,7 @@ import qualified System.Directory as SD
 import qualified System.FilePath as SF
 import qualified System.FilePath.Glob as SFG
 import qualified Test.Tasty as TT
+import qualified Test.Tasty.Runners.AntXML as TTRA
 import qualified Test.Tasty.ExpectedFailure as TTE
 import qualified Test.Tasty.HUnit as TTH
 
@@ -185,9 +186,11 @@ main = do
   testExpectedOutputs <- SFG.namesMatching "tests/binaries/*/*.expected"
   failingTestExpectedOutputs <- SFG.namesMatching
                                 "tests/binaries/*/*.expected-failing"
-  TT.defaultMain $ TT.testGroup
-                   "VerifierTests"
-                   (concat [ map toTest testExpectedOutputs
-                           , map toFailingTest failingTestExpectedOutputs
-                           , map overrideTests AA.allABIs
-                           ])
+  TT.defaultMainWithIngredients
+    (TTRA.antXMLRunner : TT.defaultIngredients) $
+    TT.testGroup
+      "VerifierTests"
+      (concat [ map toTest testExpectedOutputs
+              , map toFailingTest failingTestExpectedOutputs
+              , map overrideTests AA.allABIs
+              ])

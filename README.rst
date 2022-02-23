@@ -39,6 +39,14 @@ various subcommands can be found using ``--help``::
   cabal run exe:ambient-verifier -- verify --help
   cabal run exe:ambient-verifier -- test-overrides --help
 
+To run the verifier's test suite, run::
+
+  cabal run test:ambient-tests
+
+To record the results of a test suite run to a ``junit.xml`` file, run::
+
+  cabal run test:ambient-tests -- --xml=junit.xml
+
 User-specified Function Overrides
 =================================
 
