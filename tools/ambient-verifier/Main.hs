@@ -31,13 +31,15 @@ logAction c = LJ.LogAction (CC.writeChan c . Just)
 
 -- | This log consumer prints log messages to the given handle
 printLogs ::
-  Maybe FilePath ->
-  -- ^ If @'Just' fp@, write function CFG–related logs to @fp@.
+  Maybe IO.Handle ->
+  -- ^ If @'Just' hdl@, write function CFG–related logs to @hdl@.
   -- If 'Nothing', do not write function CFG–related logs at all.
   IO.Handle ->
+  -- ^ The file handle to write all logs, except for the special case in the
+  --   first argument.
   CC.Chan (Maybe AD.Diagnostic) ->
   IO ()
-printLogs mbFunctionCFGsFile hdl chan = go
+printLogs mbFunctionCFGsHdl hdl chan = go
   where
     go = do
       mdiag <- CC.readChan chan
@@ -47,11 +49,10 @@ printLogs mbFunctionCFGsFile hdl chan = go
           let ppd = PP.pretty d
           case d of
             AD.DiscoveryEvent{} ->
-              case mbFunctionCFGsFile of
+              case mbFunctionCFGsHdl of
                 Nothing -> pure ()
-                Just functionCFGsFile
-                  -> IO.withFile functionCFGsFile IO.WriteMode $ \functionCFGsHdl ->
-                       PPT.hPutDoc functionCFGsHdl ppd
+                Just functionCFGsHdl
+                  -> PPT.hPutDoc functionCFGsHdl ppd
             _ -> PPT.hPutDoc hdl ppd
           go
 
@@ -61,10 +62,17 @@ loadProperty fp = do
   val <- DY.decodeThrow bytes
   APD.parseProperty val
 
+-- | Like 'IO.withFile', but lifted to work over 'Maybe'.
+withMaybeFile :: Maybe FilePath -> IO.IOMode -> (Maybe IO.Handle -> IO r) -> IO r
+withMaybeFile mbFP mode action =
+  case mbFP of
+    Just fp -> IO.withFile fp mode (action . Just)
+    Nothing -> action Nothing
+
 -- | This is the real verification driver that takes the parsed out command line
 -- arguments and sets up the problem instance for the library core
 verify :: O.VerifyOptions -> IO ()
-verify o = do
+verify o = withMaybeFile (O.functionCFGsFile o) IO.WriteMode $ \mbFunCFGsHdl -> do
   binary <- BS.readFile (O.binaryPath o)
   -- See Note [Argument Encoding]
   let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
@@ -84,7 +92,7 @@ verify o = do
                                  }
 
   chan <- CC.newChan
-  logger <- CCA.async (printLogs (O.functionCFGsFile o) IO.stdout chan)
+  logger <- CCA.async (printLogs mbFunCFGsHdl IO.stdout chan)
 
   AV.verify (logAction chan) pinst (O.timeoutDuration o)
 
@@ -118,7 +126,7 @@ testOverrides o = do
 -- binary. Instead, it prints all of the overrides that are registered for the
 -- particular binary and exits.
 listOverrides :: O.VerifyOptions -> IO ()
-listOverrides o = do
+listOverrides o = withMaybeFile (O.functionCFGsFile o) IO.WriteMode $ \mbFunCFGsHdl -> do
   binary <- BS.readFile (O.binaryPath o)
   -- See Note [Argument Encoding]
   let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
@@ -138,7 +146,7 @@ listOverrides o = do
                                  }
 
   chan <- CC.newChan
-  logger <- CCA.async (printLogs (O.functionCFGsFile o) IO.stdout chan)
+  logger <- CCA.async (printLogs mbFunCFGsHdl IO.stdout chan)
 
   AOL.listOverrides (logAction chan) pinst
 
