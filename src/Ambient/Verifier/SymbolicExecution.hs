@@ -741,7 +741,7 @@ simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cf
     let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
     let syscallABI = buildSyscallABI fs (imMemVar initialMem) (AVW.wmProperties wmConfig)
     let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
-    let functionABI = buildFunctionABI (imHeapEndGlob initialMem) (imMemVar initialMem) (fcFunctionOverrides fnConf) Map.empty
+    let functionABI = buildFunctionABI fs (imHeapEndGlob initialMem) (imMemVar initialMem) (fcFunctionOverrides fnConf) Map.empty
     let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals discoveryMem fnConf functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to

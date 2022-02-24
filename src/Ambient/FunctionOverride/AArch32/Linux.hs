@@ -35,8 +35,10 @@ import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Types as LCT
 
+import qualified Ambient.Extensions as AE
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
+import qualified Ambient.FunctionOverride.Overrides as AFO
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 
@@ -128,9 +130,13 @@ callKUserGetTLSOverride _bak tlsGlob = do
 aarch32LinuxFunctionABI ::
      LCCC.GlobalVar (LCLM.LLVMPointerType 32)
      -- ^ Global variable for TLS
-  -> AF.BuildFunctionABI DMA.ARM sym p
-aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \_bumpEndVar _memVar ovs kernelOvs ->
+  -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState DMA.ARM)
+aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs _bumpEndVar memVar ovs kernelOvs ->
+  let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @32 in
+  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride memVar)
+                     , AF.SomeFunctionOverride (AFO.buildMemsetOverride memVar)
+                     ] in
   let customKernelOvs =
         -- The addresses are taken from
         -- https://github.com/torvalds/linux/blob/5bfc75d92efd494db37f5c4c173d3639d4772966/Documentation/arm/kernel_user_helpers.rst
@@ -141,7 +147,8 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \_bumpEndVar _memVar ovs
                  , AF.functionIntegerReturnRegisters = aarch32LinuxIntegerReturnRegisters
                  , AF.functionNameMapping =
                      Map.fromList [ (AF.functionName fo, sfo)
-                                  | sfo@(AF.SomeFunctionOverride fo) <- ovs
+                                  | sfo@(AF.SomeFunctionOverride fo) <-
+                                      memOverrides ++ AFO.networkOverrides fs memVar ++ ovs
                                   ]
                  , AF.functionKernelAddrMapping =
                      Map.union (Map.fromList customKernelOvs) kernelOvs

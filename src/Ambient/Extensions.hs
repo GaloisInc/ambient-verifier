@@ -12,6 +12,7 @@ module Ambient.Extensions
   , functionOvHandles
   , functionKernelAddrOvHandles
   , syscallOvHandles
+  , serverSocketFDs
   ) where
 
 import           Control.Lens ( Lens', (^.), lens )
@@ -138,11 +139,16 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st 
     _ -> LCSE.extensionExec (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred) s0 st
 
 -- | The state extension for Crucible holding verifier-specific state.
--- See @Note [Lazily registering overrides].
 data AmbientSimulatorState arch = AmbientSimulatorState
-  { _functionOvHandles :: Map.Map WF.FunctionName (AF.FunctionOverrideHandle arch)
+  { -- Maps from registered functions/syscalls to their
+    -- See @Note [Lazily registering overrides].
+    _functionOvHandles :: Map.Map WF.FunctionName (AF.FunctionOverrideHandle arch)
   , _functionKernelAddrOvHandles :: Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) (AF.FunctionOverrideHandle arch)
   , _syscallOvHandles :: MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle
+  , _serverSocketFDs :: Map.Map Integer AF.ServerSocketInfo
+    -- ^ A map from registered socket file descriptors to their corresponding
+    -- metadata. See @Note [The networking story]@ in
+    -- "Ambient.FunctionOverride.Overrides".
   }
 
 -- | An initial value for 'AmbientSimulatorState'.
@@ -151,6 +157,7 @@ emptyAmbientSimulatorState = AmbientSimulatorState
   { _functionOvHandles = Map.empty
   , _functionKernelAddrOvHandles = Map.empty
   , _syscallOvHandles = MapF.empty
+  , _serverSocketFDs = Map.empty
   }
 
 functionOvHandles :: Lens' (AmbientSimulatorState arch)
@@ -167,6 +174,11 @@ syscallOvHandles :: Lens' (AmbientSimulatorState arch)
                           (MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle)
 syscallOvHandles = lens _syscallOvHandles
                         (\s v -> s { _syscallOvHandles = v })
+
+serverSocketFDs :: Lens' (AmbientSimulatorState arch)
+                       (Map.Map Integer AF.ServerSocketInfo)
+serverSocketFDs = lens _serverSocketFDs
+                       (\s v -> s { _serverSocketFDs = v })
 
 {-
 Note [Lazily registering overrides]

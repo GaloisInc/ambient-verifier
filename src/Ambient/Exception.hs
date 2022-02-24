@@ -4,6 +4,7 @@
 module Ambient.Exception (
     AmbientException(..)
   , ConcretizationTarget(..)
+  , NetworkFunctionArgument(..)
   ) where
 
 import qualified Control.Exception as X
@@ -65,6 +66,9 @@ data AmbientException where
   Aarch32BinaryHasPltGot :: AmbientException
   -- | Encountered a PLT stub without an accompanying override
   MissingPLTStubOverride :: WF.FunctionName -> AmbientException
+  -- | The @socket@ function was invoked with an unsupported argument.
+  -- See @Note [The networking story]@ in "Ambient.FunctionOverride.Overrides".
+  UnsupportedSocketArgument :: NetworkFunctionArgument -> Integer -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -73,15 +77,38 @@ instance X.Exception AmbientException
 data ConcretizationTarget
   = FunctionAddress
   | SyscallNumber
+  | NetworkFunction
+      T.Text -- The function being invoked
+      NetworkFunctionArgument -- The argument to the function for which
+                              -- concretization was attempted
+  deriving Show
+
+-- | Which argument to a networking-related override did a solver try to
+-- resolve as concrete?
+data NetworkFunctionArgument
+  = FDArgument
+  | DomainArgument
+  | TypeArgument
+  | PortArgument
   deriving Show
 
 concretizationTargetDescription :: ConcretizationTarget -> PP.Doc a
 concretizationTargetDescription FunctionAddress = PP.pretty "function address"
 concretizationTargetDescription SyscallNumber   = PP.pretty "syscall number"
+concretizationTargetDescription (NetworkFunction _ arg) =
+  networkFunctionArgumentDescription arg
 
 concretizationTargetCall :: ConcretizationTarget -> PP.Doc a
 concretizationTargetCall FunctionAddress = PP.pretty "function call"
 concretizationTargetCall SyscallNumber   = PP.pretty "system call"
+concretizationTargetCall (NetworkFunction nm _) =
+  PP.pretty "a call to the " PP.<+> PP.squotes (PP.pretty nm) PP.<+> PP.pretty "function"
+
+networkFunctionArgumentDescription :: NetworkFunctionArgument -> PP.Doc a
+networkFunctionArgumentDescription FDArgument     = PP.pretty "file descriptor argument"
+networkFunctionArgumentDescription DomainArgument = PP.pretty "domain argument"
+networkFunctionArgumentDescription TypeArgument   = PP.pretty "type argument"
+networkFunctionArgumentDescription PortArgument   = PP.pretty "port argument"
 
 instance PP.Pretty AmbientException where
   pretty e =
@@ -138,3 +165,6 @@ instance PP.Pretty AmbientException where
         PP.pretty "aarch32 binaries containing shared library stubs in .plt.got sections are not currently supported."
       MissingPLTStubOverride fnName ->
         PP.pretty "Missing override for shared library function: " <> PP.pretty fnName
+      UnsupportedSocketArgument arg value ->
+        PP.pretty "Attempted to call the 'socket' function with an unsupported" PP.<+>
+        networkFunctionArgumentDescription arg <> PP.colon PP.<+> PP.viaShow value

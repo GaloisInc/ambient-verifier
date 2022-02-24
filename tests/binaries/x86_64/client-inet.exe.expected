@@ -1,0 +1,3 @@
+successful: 0
+failed: 0
+fsRoot: tests/filesystems/client-inet

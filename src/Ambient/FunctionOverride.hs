@@ -9,20 +9,26 @@ module Ambient.FunctionOverride (
   , FunctionOverrideHandle
   , FunctionABI(..)
   , BuildFunctionABI(..)
+  , ServerSocketInfo(..)
   ) where
 
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import           Data.Parameterized.Some ( Some )
+import           Data.Word ( Word16 )
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.Expr as WE
 import qualified What4.FunctionName as WF
+import qualified What4.Protocol.Online as WPO
 
 -------------------------------------------------------------------------------
 -- Function Call Overrides
@@ -40,8 +46,12 @@ data FunctionOverride p sym args ext ret =
                    , functionReturnType :: LCT.TypeRepr ret
                    -- ^ Return type of the function
                    , functionOverride
-                       :: forall bak
-                        . (LCB.IsSymBackend sym bak)
+                       :: forall bak solver scope st fs
+                        . ( LCB.IsSymBackend sym bak
+                          , sym ~ WE.ExprBuilder scope st fs
+                          , bak ~ LCBO.OnlineBackend solver scope st fs
+                          , WPO.OnlineSolver solver
+                          )
                        => bak
                        -> Ctx.Assignment (LCS.RegEntry sym) args
                        -- Arguments to function
@@ -118,7 +128,9 @@ data FunctionABI arch sym p =
 
 -- A function to construct a FunctionABI with memory access
 newtype BuildFunctionABI arch sym p = BuildFunctionABI (
-       LCS.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth arch))
+       LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
+    -- File system to use in overrides
+    -> LCS.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth arch))
     -> LCS.GlobalVar LCLM.Mem
     -- MemVar for the execution
     -> [ SomeFunctionOverride p sym (DMS.MacawExt arch) ]
@@ -129,3 +141,21 @@ newtype BuildFunctionABI arch sym p = BuildFunctionABI (
     -> FunctionABI arch sym p
   )
 
+-------------------------------------------------------------------------------
+-- SocketInfo
+-------------------------------------------------------------------------------
+
+-- | A collection of metadata about sockets that is useful for server programs
+-- (i.e., programs that call @accept()@). See @Note [The networking story]@ in
+-- "Ambient.FunctionOverride.Overrides".
+data ServerSocketInfo = ServerSocketInfo
+  { serverSocketFilePath :: FilePath
+    -- ^ The name of the path to the file representing this socket in the
+    -- symbolic filesystem.
+  , serverSocketPort :: Maybe Word16
+    -- ^ If this socket has had its name assigned via @bind()@, this is
+    -- @'Just' port_number@. If not, this is 'Nothing'.
+  , serverSocketNextConnection :: Word
+    -- ^ The number to use for the socket file allocated by the next call to
+    -- @accept()@.
+  } deriving Show

@@ -101,7 +101,6 @@ buildArgumentRegisterAssignment bak ptrW argTyps regEntries = go argTyps regEntr
 bvToPtr :: forall sym srcW ptrW
          . ( LCB.IsSymInterface sym
            , 1 <= srcW
-           , KnownNat srcW
            , 1 <= ptrW
            )
            => sym
@@ -109,10 +108,14 @@ bvToPtr :: forall sym srcW ptrW
            -> PN.NatRepr ptrW
            -> IO (LCS.RegValue sym (LCLM.LLVMPointerType ptrW))
 bvToPtr sym bv ptrW =
-  case PN.compareNat (WI.knownNat @srcW) ptrW of
+  case PN.compareNat srcW ptrW of
     PN.NatEQ -> LCLM.llvmPointer_bv sym bv
     PN.NatLT _w -> WI.bvZext sym ptrW bv >>= LCLM.llvmPointer_bv sym
     PN.NatGT _w -> WI.bvTrunc sym ptrW bv >>= LCLM.llvmPointer_bv sym
+  where
+    srcW :: PN.NatRepr srcW
+    srcW = case WI.exprType bv of
+             WI.BaseBVRepr w -> w
 
 -- | Convert an 'LCLM.LLVMPtr' to an 8-bit vector by dropping the upper bits.
 ptrToBv8 :: ( LCB.IsSymBackend sym bak )

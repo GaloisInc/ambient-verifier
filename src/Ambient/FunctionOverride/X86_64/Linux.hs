@@ -32,6 +32,7 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Interface as WI
 
+import qualified Ambient.Extensions as AE
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.FunctionOverride as AF
@@ -114,13 +115,16 @@ x86_64LinuxIntegerReturnRegisters bak ovTyp ovSim initRegs =
                             "x86_64LinuxIntegerReturnRegisters"
                             ["Failed to update rax register"]
 
-x86_64LinuxFunctionABI :: AF.BuildFunctionABI DMX.X86_64 sym p
-x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs kernelOvs ->
+x86_64LinuxFunctionABI :: AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState DMX.X86_64)
+x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs bumpEndVar memVar ovs kernelOvs ->
+  let ?recordLLVMAnnotation = \_ _ _ -> return () in
+  let ?ptrWidth = PN.knownNat @64 in
+  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride memVar)
+                     , AF.SomeFunctionOverride (AFO.buildMemsetOverride memVar)
+                     ] in
   -- Hacky overrides
   --
   -- TODO: Remove these (see #19)
-  let ?recordLLVMAnnotation = \_ _ _ -> return () in
-  let ?ptrWidth = PN.knownNat @64 in
   let hackyOverrides = [ AF.SomeFunctionOverride (AFO.buildHackyBumpMallocOverride bumpEndVar)
                        , AF.SomeFunctionOverride (AFO.buildHackyBumpCallocOverride bumpEndVar memVar)
                        ]
@@ -128,7 +132,9 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs kernelOvs 
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
                     , AF.functionNameMapping =
                       Map.fromList [ (AF.functionName fo, sfo)
-                                   | sfo@(AF.SomeFunctionOverride fo) <- hackyOverrides ++ ovs
+                                   | sfo@(AF.SomeFunctionOverride fo) <-
+                                       memOverrides ++ hackyOverrides ++
+                                       AFO.networkOverrides fs memVar ++ ovs
                                    ]
                     , AF.functionKernelAddrMapping = kernelOvs
                     }

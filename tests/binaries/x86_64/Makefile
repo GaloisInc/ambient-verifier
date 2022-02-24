@@ -75,6 +75,12 @@ plt-ov.exe: plt-ov.c
 plt-no-pltgot.exe: plt-no-pltgot.c
 	$(CC) -nostartfiles -pie $^ -o $@
 
+server-inet.exe: server-inet.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
+server-inet6.exe: server-inet6.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 
