@@ -2,7 +2,8 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE StandaloneDeriving #-}
 module Ambient.Exception (
-  AmbientException(..)
+    AmbientException(..)
+  , ConcretizationTarget(..)
   ) where
 
 import qualified Control.Exception as X
@@ -34,10 +35,10 @@ data AmbientException where
   MissingExpectedFunction :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> AmbientException
   -- | The requested solver and float mode representation is not supported
   UnsupportedSolverCombination :: String -> String -> AmbientException
-  -- | A symbolic syscall number could not be resolved as concrete
-  SymbolicSyscallNumber :: AmbientException
-  -- | The solver returned @UNKNOWN@ when trying to resolve a syscall number
-  SolverUnknownSyscallNumber :: AmbientException
+  -- | A symbolic value could not be resolved as concrete
+  ConcretizationFailedSymbolic :: ConcretizationTarget -> AmbientException
+  -- | The solver returned @UNKNOWN@ when trying to resolve a value as concrete
+  ConcretizationFailedUnknown :: ConcretizationTarget -> AmbientException
   -- | There is no model for this syscall number
   UnsupportedSyscallNumber :: Integer -> AmbientException
   -- | A symbolic function address could not be resolved as concrete
@@ -68,6 +69,20 @@ data AmbientException where
 deriving instance Show AmbientException
 instance X.Exception AmbientException
 
+-- | What sort of value did a solver try to resolve as concrete?
+data ConcretizationTarget
+  = FunctionAddress
+  | SyscallNumber
+  deriving Show
+
+concretizationTargetDescription :: ConcretizationTarget -> PP.Doc a
+concretizationTargetDescription FunctionAddress = PP.pretty "function address"
+concretizationTargetDescription SyscallNumber   = PP.pretty "syscall number"
+
+concretizationTargetCall :: ConcretizationTarget -> PP.Doc a
+concretizationTargetCall FunctionAddress = PP.pretty "function call"
+concretizationTargetCall SyscallNumber   = PP.pretty "system call"
+
 instance PP.Pretty AmbientException where
   pretty e =
     case e of
@@ -88,10 +103,12 @@ instance PP.Pretty AmbientException where
         PP.pretty "Function " <> PP.pretty (BSC.unpack fname) <> PP.pretty " was expected, but not found, at address " <> PP.pretty addr
       UnsupportedSolverCombination solver fm ->
         PP.pretty "The " <> PP.pretty solver <> PP.pretty " SMT solver does not support the " <> PP.pretty fm <> PP.pretty " floating point mode"
-      SymbolicSyscallNumber ->
-        PP.pretty "Attempted to make system call with non-concrete syscall number"
-      SolverUnknownSyscallNumber ->
-        PP.pretty "Solving syscall number yielded UNKNOWN"
+      ConcretizationFailedSymbolic target ->
+        PP.pretty "Attempted to make" PP.<+> concretizationTargetCall target PP.<+>
+        PP.pretty "with non-concrete" PP.<+> concretizationTargetDescription target
+      ConcretizationFailedUnknown target ->
+        PP.pretty "Solving" PP.<+> concretizationTargetDescription target PP.<+>
+        PP.pretty "yielded UNKNOWN"
       SymbolicFunctionAddress ->
         PP.pretty "Attempted to call function with non-concrete address"
       SolverUnknownFunctionAddress ->

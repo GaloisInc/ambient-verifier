@@ -151,7 +151,7 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
     -- 'addressToFnHandle'
     let offset = LCLMP.llvmPointerOffset $ LCS.regValue
                                          $ DMS.lookupReg archVals regsEntry DMC.ip_reg
-    funcAddr <- fromIntegral <$> resolveConcreteStackVal bak (Proxy @arch) offset
+    funcAddr <- fromIntegral <$> resolveConcreteStackVal bak (Proxy @arch) AE.FunctionAddress offset
     lookupHandle funcAddr state
 
   where
@@ -388,7 +388,7 @@ lookupSyscall bak abi hdlAlloc =
     -- Extract system call number from register state
     syscallReg <- liftIO $ ASy.syscallNumberRegister abi bak atps reg
     let regVal = LCS.regValue syscallReg
-    syscallNum <- resolveConcreteStackVal bak (Proxy @arch) regVal
+    syscallNum <- resolveConcreteStackVal bak (Proxy @arch) AE.SyscallNumber regVal
 
     -- Look for override associated with system call number, registering it if
     -- it has not already been so.
@@ -488,18 +488,19 @@ resolveConcreteStackVal ::
      )
   => LCBO.OnlineBackend solver scope st fs
   -> proxy arch
+  -> AE.ConcretizationTarget
   -> WI.SymBV sym (DMC.ArchAddrWidth arch)
   -> IO Integer
-resolveConcreteStackVal bak _ stackVal = do
+resolveConcreteStackVal bak _ target stackVal = do
   res <- AVC.resolveSymBVAs bak WT.knownNat stackVal
   case res of
     Left AVC.SolverUnknown ->
-      CMC.throwM AE.SolverUnknownSyscallNumber
+      CMC.throwM $ AE.ConcretizationFailedUnknown target
     Left AVC.UnsatInitialAssumptions ->
       AP.panic AP.SymbolicExecution "resolverConcreteStackVal"
         ["Initial assumptions are unsatisfiable"]
     Left AVC.MultipleModels ->
-      CMC.throwM AE.SymbolicSyscallNumber
+      CMC.throwM $ AE.ConcretizationFailedSymbolic target
     Right stackVal' ->
       pure $ BVS.asUnsigned stackVal'
 
