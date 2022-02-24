@@ -45,7 +45,10 @@ type SyscallRegsType = Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 32
 --
 -- All of the syscall functions get the same register struct with all of these
 -- registers in order.  We define this repr here so that we can easily test
--- equality
+-- equality. Moreover, testing equality on a single value like 'syscallABIRepr'
+-- prevents GHC's pattern-match coverage checker from taking an unreasonable
+-- amount of time to finish, which is not the case if you match on each
+-- register in its own call to 'PC.testEquality'.
 --
 -- Recall that the shape of these arguments are determined by the translation
 -- from macaw into crucible, which fixes the shape of arguments passed to system
