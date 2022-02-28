@@ -24,6 +24,7 @@ import qualified What4.Interface as WI
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Syscall as AS
+import qualified Ambient.Syscall.Overrides as ASO
 
 type SyscallRegsType = Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
                                     Ctx.::> LCLM.LLVMPointerType 64
@@ -148,13 +149,13 @@ x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
                 , AS.syscallNumberRegister = x86_64LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = x86_64LinuxSyscallReturnRegisters
                 , AS.syscallMapping = Map.fromList
-                    [ (0, AS.SomeSyscall (AS.buildReadOverride fs memVar))
-                    , (1, AS.SomeSyscall (AS.buildWriteOverride fs memVar))
-                    , (2, AS.SomeSyscall (AS.buildOpenOverride fs memVar))
-                    , (3, AS.SomeSyscall (AS.buildCloseOverride fs memVar))
-                    , (59, AS.SomeSyscall (AS.buildExecveOverride properties))
-                    , (60, AS.SomeSyscall AS.exitOverride)
-                    , (110, AS.SomeSyscall AS.getppidOverride)
+                    [ (0, AS.SomeSyscall (ASO.buildReadOverride fs memVar))
+                    , (1, AS.SomeSyscall (ASO.buildWriteOverride fs memVar))
+                    , (2, AS.SomeSyscall (ASO.buildOpenOverride fs memVar))
+                    , (3, AS.SomeSyscall (ASO.buildCloseOverride fs memVar))
+                    , (59, AS.SomeSyscall (ASO.buildExecveOverride properties))
+                    , (60, AS.SomeSyscall ASO.exitOverride)
+                    , (110, AS.SomeSyscall ASO.getppidOverride)
                     ]
                 }
 

@@ -36,6 +36,7 @@ import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
+import qualified Ambient.FunctionOverride.Overrides as AFO
 
 -- | Extract integer arguments from x86_64 registers.
 x86_64LinuxIntegerArgumentRegisters
@@ -120,8 +121,8 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \bumpEndVar memVar ovs kernelOvs 
   -- TODO: Remove these (see #19)
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @64 in
-  let hackyOverrides = [ AF.SomeFunctionOverride (AF.buildHackyBumpMallocOverride bumpEndVar)
-                       , AF.SomeFunctionOverride (AF.buildHackyBumpCallocOverride bumpEndVar memVar)
+  let hackyOverrides = [ AF.SomeFunctionOverride (AFO.buildHackyBumpMallocOverride bumpEndVar)
+                       , AF.SomeFunctionOverride (AFO.buildHackyBumpCallocOverride bumpEndVar memVar)
                        ]
   in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters

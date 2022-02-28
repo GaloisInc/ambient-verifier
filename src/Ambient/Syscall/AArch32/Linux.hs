@@ -31,6 +31,7 @@ import qualified Lang.Crucible.Types as LCT
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Syscall as AS
+import qualified Ambient.Syscall.Overrides as ASO
 
 type SyscallRegsType = Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 32
                                     Ctx.::> LCLM.LLVMPointerType 32
@@ -174,12 +175,12 @@ aarch32LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
                 , AS.syscallNumberRegister = aarch32LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = aarch32LinuxSyscallReturnRegisters
                 , AS.syscallMapping = Map.fromList
-                  [ (1, AS.SomeSyscall AS.exitOverride)
-                  , (3, AS.SomeSyscall (AS.buildReadOverride fs memVar))
-                  , (4, AS.SomeSyscall (AS.buildWriteOverride fs memVar))
-                  , (5, AS.SomeSyscall (AS.buildOpenOverride fs memVar))
-                  , (6, AS.SomeSyscall (AS.buildCloseOverride fs memVar))
-                  , (11, AS.SomeSyscall (AS.buildExecveOverride properties))
-                  , (64, AS.SomeSyscall AS.getppidOverride)
+                  [ (1, AS.SomeSyscall ASO.exitOverride)
+                  , (3, AS.SomeSyscall (ASO.buildReadOverride fs memVar))
+                  , (4, AS.SomeSyscall (ASO.buildWriteOverride fs memVar))
+                  , (5, AS.SomeSyscall (ASO.buildOpenOverride fs memVar))
+                  , (6, AS.SomeSyscall (ASO.buildCloseOverride fs memVar))
+                  , (11, AS.SomeSyscall (ASO.buildExecveOverride properties))
+                  , (64, AS.SomeSyscall ASO.getppidOverride)
                   ]
                 }
