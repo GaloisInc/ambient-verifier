@@ -6,12 +6,19 @@
 -- | Defines syscall overrides that are shared across different architectures.
 module Ambient.Syscall.Overrides
   ( buildExecveOverride
+  , callExecve
   , exitOverride
+  , callExit
   , getppidOverride
+  , callGetppid
   , buildReadOverride
+  , callRead
   , buildWriteOverride
+  , callWrite
   , buildOpenOverride
+  , callOpen
   , buildCloseOverride
+  , callClose
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )

@@ -8,10 +8,14 @@
 module Ambient.FunctionOverride.Overrides
   ( -- * crucible-llvm–based overrides
     buildMallocOverride
+  , callMalloc
   , buildCallocOverride
+  , callCalloc
     -- * Hacky overrides
   , buildHackyBumpMallocOverride
+  , hackyBumpMalloc
   , buildHackyBumpCallocOverride
+  , hackyBumpCalloc
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
