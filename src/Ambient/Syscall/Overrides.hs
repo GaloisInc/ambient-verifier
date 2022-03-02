@@ -194,12 +194,6 @@ buildReadOverride fs memVar = Syscall {
       \bak args -> Ctx.uncurryAssignment (callRead fs memVar bak) args
   }
 
--- | The memory options used to configure the memory model for system calls
---
--- We use the most lax memory options possible, as machine code breaks many of
--- the C-level rules.
-syscallMemOptions :: LCLM.MemOptions
-syscallMemOptions = LCLM.laxPointerMemOptions
 
 -- | Override for the write(2) system call
 callWrite :: ( LCLM.HasLLVMAnn sym
@@ -218,7 +212,7 @@ callWrite :: ( LCLM.HasLLVMAnn sym
           -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callWrite fs memVar bak fd buf count = do
   let sym = LCB.backendGetSym bak
-  let ?memOpts = syscallMemOptions
+  let ?memOpts = overrideMemOptions
   -- Drop upper 32 bits from fd to create a 32 bit file descriptor
   fdReg <- liftIO $ ptrToBv32 bak ?ptrWidth fd
 
@@ -268,7 +262,7 @@ callOpen :: ( LCLM.HasLLVMAnn sym
          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callOpen fs memVar bak pathname flags = do
   let sym = LCB.backendGetSym bak
-  let ?memOpts = syscallMemOptions
+  let ?memOpts = overrideMemOptions
   -- Drop upper 32 bits from flags to create a 32 bit flags int
   flagsInt <- liftIO $ ptrToBv32 bak ?ptrWidth flags
 
@@ -311,7 +305,7 @@ callClose :: ( LCLM.HasLLVMAnn sym
           -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callClose fs memVar bak fd = do
   let sym = LCB.backendGetSym bak
-  let ?memOpts = syscallMemOptions
+  let ?memOpts = overrideMemOptions
   -- Drop upper 32 bits from fd
   fdInt <- liftIO $ ptrToBv32 bak ?ptrWidth fd
 

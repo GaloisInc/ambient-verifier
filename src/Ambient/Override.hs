@@ -7,7 +7,9 @@
 module Ambient.Override
   ( buildArgumentRegisterAssignment
   , bvToPtr
+  , ptrToBv8
   , ptrToBv32
+  , overrideMemOptions
   ) where
 
 import qualified Data.Parameterized.Context as Ctx
@@ -112,19 +114,46 @@ bvToPtr sym bv ptrW =
     PN.NatLT _w -> WI.bvZext sym ptrW bv >>= LCLM.llvmPointer_bv sym
     PN.NatGT _w -> WI.bvTrunc sym ptrW bv >>= LCLM.llvmPointer_bv sym
 
--- | Convert a 64-bit LLVMPointer to a 32-bit vector by dropping the upper 32
--- bits
+-- | Convert an 'LCLM.LLVMPtr' to an 8-bit vector by dropping the upper bits.
+ptrToBv8 :: ( LCB.IsSymBackend sym bak )
+          => bak
+          -> PN.NatRepr w
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+          -> IO (LCS.RegEntry sym (LCT.BVType 8))
+ptrToBv8 = ptrToBv
+
+-- | Convert an 'LCLM.LLVMPtr' to a 32-bit vector by dropping the upper bits.
 ptrToBv32 :: ( LCB.IsSymBackend sym bak )
           => bak
           -> PN.NatRepr w
           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
           -> IO (LCS.RegEntry sym (LCT.BVType 32))
-ptrToBv32 bak nr ptr = do
+ptrToBv32 = ptrToBv
+
+-- | Convert an 'LCLM.LLVMPtr' to a bitvector by dropping the upper bits.
+ptrToBv :: forall sym bak ptrW destW
+         . ( LCB.IsSymBackend sym bak
+           , KnownNat destW
+           , 1 <= destW
+           )
+        => bak
+        -> PN.NatRepr ptrW
+        -> LCS.RegEntry sym (LCLM.LLVMPointerType ptrW)
+        -> IO (LCS.RegEntry sym (LCT.BVType destW))
+ptrToBv bak nr ptr = do
   let sym = LCB.backendGetSym bak
   bvW <- LCLM.projectLLVM_bv bak (LCS.regValue ptr)
-  case PN.compareNat nr (WI.knownNat @32) of
+  case PN.compareNat nr (WI.knownNat @destW) of
     PN.NatLT _ -> AP.panic AP.Override "ptrToBv32" ["Pointer too small to truncate to 32 bits: " ++ show nr]
     PN.NatEQ -> return $! LCS.RegEntry LCT.knownRepr bvW
     PN.NatGT _w -> do
-      lower <- WI.bvTrunc sym (WI.knownNat @32) bvW
+      lower <- WI.bvTrunc sym (WI.knownNat @destW) bvW
       return $! LCS.RegEntry LCT.knownRepr lower
+
+-- | The memory options used to configure the memory model for system call and
+-- function overrides.
+--
+-- We use the most lax memory options possible, as machine code breaks many of
+-- the C-level rules.
+overrideMemOptions :: LCLM.MemOptions
+overrideMemOptions = LCLM.laxPointerMemOptions

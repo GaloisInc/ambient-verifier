@@ -11,6 +11,10 @@ module Ambient.FunctionOverride.Overrides
   , callMalloc
   , buildCallocOverride
   , callCalloc
+  , buildMemcpyOverride
+  , callMemcpy
+  , buildMemsetOverride
+  , callMemset
     -- * Hacky overrides
   , buildHackyBumpMallocOverride
   , hackyBumpMalloc
@@ -26,9 +30,11 @@ import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Types as LCT
 import qualified What4.Interface as WI
 
 import           Ambient.FunctionOverride
+import           Ambient.Override
 
 -------------------------------------------------------------------------------
 -- crucible-llvm–based overrides
@@ -98,6 +104,81 @@ callMalloc bak mvar (LCS.regValue -> sz) =
   do let displayString = "<malloc function override>"
      szBV <- LCLM.projectLLVM_bv bak sz
      LCLM.doMalloc bak LCLM.HeapAlloc LCLM.Mutable displayString mem szBV LCLD.noAlignment
+
+buildMemcpyOverride :: ( LCLM.HasPtrWidth w
+                       , LCLM.HasLLVMAnn sym
+                       )
+                    => LCS.GlobalVar LCLM.Mem
+                    -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                                            Ctx.::> LCLM.LLVMPointerType w
+                                                            Ctx.::> LCLM.LLVMPointerType w) ext
+                                              LCT.UnitType
+buildMemcpyOverride mvar = FunctionOverride
+  { functionName = "memcpy"
+  , functionGlobals = []
+  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
+                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
+                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
+  , functionReturnType = LCT.UnitRepr
+  , functionOverride = \bak args -> Ctx.uncurryAssignment (callMemcpy bak mvar) args
+  }
+
+-- | Override for the @memcpy@ function. This behaves identically to the
+-- corresponding override in @crucible-llvm@.
+callMemcpy :: ( LCB.IsSymBackend sym bak
+              , LCLM.HasPtrWidth w
+              , LCLM.HasLLVMAnn sym
+              )
+           => bak
+           -> LCS.GlobalVar LCLM.Mem
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.OverrideSim p sym ext r args ret ()
+callMemcpy bak mvar (LCS.regValue -> dest) (LCS.regValue -> src) (LCS.regValue -> sz) =
+  LCS.modifyGlobal mvar $ \mem -> liftIO $
+  do szBV <- LCLM.projectLLVM_bv bak sz
+     let ?memOpts = overrideMemOptions
+     mem' <- LCLM.doMemcpy bak (LCLM.ptrWidth sz) mem True dest src szBV
+     pure ((), mem')
+
+buildMemsetOverride :: ( LCLM.HasPtrWidth w
+                       , LCLM.HasLLVMAnn sym
+                       )
+                    => LCS.GlobalVar LCLM.Mem
+                    -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                                            Ctx.::> LCLM.LLVMPointerType w
+                                                            Ctx.::> LCLM.LLVMPointerType w) ext
+                                              LCT.UnitType
+buildMemsetOverride mvar = FunctionOverride
+  { functionName = "memset"
+  , functionGlobals = []
+  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
+                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
+                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
+  , functionReturnType = LCT.UnitRepr
+  , functionOverride = \bak args -> Ctx.uncurryAssignment (callMemset bak mvar) args
+  }
+
+-- | Override for the @memset@ function. This behaves identically to the
+-- corresponding override in @crucible-llvm@.
+callMemset :: ( LCB.IsSymBackend sym bak
+              , LCLM.HasPtrWidth w
+              , LCLM.HasLLVMAnn sym
+              )
+           => bak
+           -> LCS.GlobalVar LCLM.Mem
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.OverrideSim p sym ext r args ret ()
+callMemset bak mvar (LCS.regValue -> dest) val (LCS.regValue -> sz) =
+  LCS.modifyGlobal mvar $ \mem -> liftIO $
+  do let w = LCLM.ptrWidth sz
+     valBV <- ptrToBv8 bak w val
+     szBV <- LCLM.projectLLVM_bv bak sz
+     mem' <- LCLM.doMemset bak w mem dest (LCS.regValue valBV) szBV
+     pure ((), mem')
 
 -------------------------------------------------------------------------------
 -- Hacky Overrides
