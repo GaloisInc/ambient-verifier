@@ -140,11 +140,15 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st 
 
 -- | The state extension for Crucible holding verifier-specific state.
 data AmbientSimulatorState arch = AmbientSimulatorState
-  { -- Maps from registered functions/syscalls to their
-    -- See @Note [Lazily registering overrides].
-    _functionOvHandles :: Map.Map WF.FunctionName (AF.FunctionOverrideHandle arch)
+  { _functionOvHandles :: Map.Map WF.FunctionName (AF.FunctionOverrideHandle arch)
+    -- ^ A map from registered function overrides to their handles.
+    -- See @Note [Lazily registering overrides]@.
   , _functionKernelAddrOvHandles :: Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) (AF.FunctionOverrideHandle arch)
+    -- ^ A map from registered kernel-specific function overrides to their handles.
+    -- See @Note [Lazily registering overrides]@.
   , _syscallOvHandles :: MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle
+    -- ^ A map from registered syscall overrides to their handles.
+    -- See @Note [Lazily registering overrides]@.
   , _serverSocketFDs :: Map.Map Integer AF.ServerSocketInfo
     -- ^ A map from registered socket file descriptors to their corresponding
     -- metadata. See @Note [The networking story]@ in

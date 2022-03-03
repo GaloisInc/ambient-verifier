@@ -311,12 +311,15 @@ There are a variety of limitations surrounding how this works to be aware of:
   files (see https://github.com/GaloisInc/crucible/issues/803), all of the
   files under the /network directory must be specified ahead of time in the
   initial symbolic filesystem.
+
+* The accept() override, unlike the function it models, completely ignores the
+  addr and addrlen arguments. To model accept() more faithfully, it should fill
+  in these arguments with information about the peer socket address. See #77.
 -}
 
 -- | All of the socket I/O–related overrides, packaged up for your
 -- convenience.
 networkOverrides :: ( LCLM.HasLLVMAnn sym
-                    , LCLM.HasLLVMAnn sym
                     , LCLM.HasPtrWidth w
                     , w ~ DMC.ArchAddrWidth arch
                     )
