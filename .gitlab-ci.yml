@@ -1,5 +1,23 @@
-default:
+variables:
+  DOCKER_TAG: "nightly"
+
+stages:
+  - build-and-test
+  - docker-push
+  - docker-cleanup
+
+# The default job that builds the verifier and runs the test suite. We run
+# these on shared GitLab CI runners.
+ambient-verifier:
+  tags:
+    - docker
+  stage: build-and-test
   image: ubuntu:20.04
+  cache:
+    key: ${CI_JOB_NAME}-${GHCVER}
+    paths:
+      - dist-newstyle/
+      - ~/.cabal/store
   before_script:
     - apt update
     - DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends tzdata
@@ -16,15 +34,6 @@ default:
     - git config --global url."https://github.com/".insteadOf "git@github.com:"
     - git config --global url."https://".insteadOf "git://"
     - git submodule update --init
-
-ambient-verifier:
-  tags:
-    - docker
-  cache:
-    key: ${CI_JOB_NAME}-${GHCVER}
-    paths:
-      - dist-newstyle/
-      - ~/.cabal/store
   script:
     - RUNNER_OS=Linux SOLVER_PKG_VERSION="snapshot-20220131" BUILD_TARGET_OS="ubuntu-20.04" .gitlab-ci/solvers.sh install_system_deps
     - yices --version
@@ -38,3 +47,44 @@ ambient-verifier:
     matrix:
       - GHCVER: [8.8.4, 8.10.7, 9.0.2]
         CABALVER: [1]
+
+# A job dedicated to building the Docker image to ensure that it works. This
+# requires a special CI runner so that it may have access to Docker. This is
+# ultimately in service of pushing the resulting image to Artifactory.
+artifactory-build:
+  tags:
+    - artifactory
+  stage: build-and-test
+  script:
+    - git config --global url."https://github.com/".insteadOf "git@github.com:"
+    - git config --global url."https://".insteadOf "git://"
+    - git submodule update --init
+    - docker login -u $CI_USERNAME -p $CI_PASSWORD $CI_REGISTRY
+    - docker pull $CI_REGISTRY_IMAGE:latest || true
+    - docker build --cache-from $CI_REGISTRY_IMAGE:latest --tag $CI_REGISTRY/$DOCKER_TAG .
+
+# If we are building on the master branch, this will push the built Docker
+# image to Artifactory. In other situations (e.g., MRs), this step will be
+# skipped.
+artifactory-push:
+  tags:
+    - artifactory
+  stage: docker-push
+  needs: [artifactory-build]
+  script:
+    - docker push $CI_REGISTRY/$DOCKER_TAG || true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+# Finally, perform some last-minute Docker-related cleanup.
+artifactory-cleanup:
+  tags:
+    - artifactory
+  stage: docker-cleanup
+  needs: [artifactory-build]
+  needs:
+    - job: artifactory-push
+      optional: true
+  script:
+    - docker rmi $CI_REGISTRY/$DOCKER_TAG || true
+    - docker logout $CI_REGISTRY
