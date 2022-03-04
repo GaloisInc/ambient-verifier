@@ -1,51 +1,41 @@
 FROM ubuntu:20.04
 ENV TZ=America/Los_Angeles
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-RUN apt update && apt install -y software-properties-common apt-transport-https ca-certificates wget
-RUN apt install -y curl zlibc zlib1g zlib1g-dev git zip \
-  libgmp3-dev build-essential libtinfo-dev autoconf automake gperf cmake locales \
-  python3-distutils python-setuptools antlr3 libantlr3c-dev libtool libtool-bin libboost-all-dev python3-pip \
-  libfftw3-dev && \
-  locale-gen en_US.UTF-8 && \
-  pip3 install toml
+RUN apt update && \
+    apt install -y \
+      build-essential \
+      curl \
+      libffi7 \
+      libffi-dev \
+      libgmp10 \
+      libgmp-dev \
+      libncurses5 \
+      libncurses-dev \
+      libtinfo5 \
+      locales \
+      openssh-client \
+      software-properties-common \
+      unzip \
+      zlib1g-dev && \
+    locale-gen en_US.UTF-8
 
 ENV LANG en_US.UTF-8
 ENV LANGUAGE en_US:en
 ENV LC_ALL en_US.UTF-8
 
-RUN mkdir -p /home/yices2/src; \
-    git clone https://github.com/SRI-CSL/yices2.git /home/yices2/src && \
-    (cd /home/yices2/src; \
-     git checkout Yices-2.6.4 && \
-     autoconf && \
-     ./configure && \
-     make -j4 && \
-     make install)
+RUN mkdir -p /home/solvers
+WORKDIR /home/solvers
+RUN curl -o solvers.zip -sL "https://github.com/GaloisInc/what4-solvers/releases/download/snapshot-20210917/ubuntu-18.04-bin.zip"
+RUN unzip solvers.zip && \
+    rm solvers.zip && \
+    chmod +x * && \
+    cp cvc4 /usr/local/bin/cvc4 && \
+    cp z3 /usr/local/bin/z3 && \
+    cp yices /usr/local/bin/yices && \
+    cp yices-smt2 /usr/local/bin/yices-smt2
 
-RUN mkdir -p /home/z3/src; \
-    git clone https://github.com/Z3Prover/z3.git /home/z3/src && \
-    cd /home/z3/src && \
-    git checkout z3-4.8.14 && \
-    mkdir -p /home/z3/bld && \
-    (cd /home/z3/bld; \
-     cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DUSE_OPENMP=ON /home/z3/src -DUSE_LIB_GMP=FALSE -DBUILD_LIBZ3_SHARED=OFF /home/z3/src && \
-     make -j4 && \
-     make install)
-
-RUN mkdir -p /home/cvc4/src; \
-    git clone https://github.com/CVC4/CVC4.git /home/cvc4/src && \
-    cd /home/cvc4/src && \
-    git checkout 1.8 && \
-    bash contrib/get-antlr-3.4 && \
-    bash contrib/get-cadical && \
-    bash contrib/get-kissat && \
-    (./configure.sh --cadical --kissat --static --static-binary && \
-     cd build && \
-     make -j4 && \
-     make install)
-
-RUN curl -L https://downloads.haskell.org/~ghcup/0.1.13/x86_64-linux-ghcup-0.1.13 -o /usr/bin/ghcup && chmod +x /usr/bin/ghcup
-RUN mkdir -p /root/.ghcup && ghcup --version && ghcup install cabal && ghcup install ghc 8.10.4 && ghcup set ghc 8.10.4
+RUN curl -L https://downloads.haskell.org/~ghcup/0.1.17.5/x86_64-linux-ghcup-0.1.17.5 -o /usr/bin/ghcup && chmod +x /usr/bin/ghcup
+RUN mkdir -p /root/.ghcup && ghcup --version && ghcup install cabal 3.6.2.0 && ghcup install ghc 8.10.7 && ghcup set ghc 8.10.7
 
 ######################################################################
 ENV PATH="/root/.ghcup/bin:${PATH}"
@@ -54,19 +44,26 @@ RUN mkdir -p /home/src
 COPY . /home/src
 WORKDIR /home/src
 RUN ln -sf cabal.project.dist cabal.project
-RUN cabal configure pkg:pate -w ghc-8.10.4 && \
-  cabal build pkg:ambient-verifier -j5
+RUN cabal configure -w ghc-8.10.7 --enable-tests && \
+    cabal build exe:ambient-verifier test:ambient-tests -j5
 
-RUN cp $(cabal exec -- which ambient-verifier) /usr/local/bin/ambient-verifier
+RUN cp $(cabal list-bin exe:ambient-verifier) /usr/local/bin/ambient-verifier && \
+    cp $(cabal list-bin test:ambient-tests) /usr/local/bin/ambient-tests
 
 FROM ubuntu:20.04
-RUN apt update && apt install -y zlibc zlib1g libgmp10 libantlr3c-3.4-0
+RUN apt update && \
+    apt install -y \
+      libgmp10 \
+      zlib1g \
+      zlibc
 COPY --from=0 /usr/local/bin/ambient-verifier \
+              /usr/local/bin/ambient-tests \
               /usr/local/bin/cvc4 \
               /usr/local/bin/z3 \
               /usr/local/bin/yices \
               /usr/local/bin/yices-smt2 \
               /usr/local/bin/
+COPY --from=0 /home/src/tests /tests
 EXPOSE 5000
 ENV ADDR=0.0.0.0
 ENTRYPOINT ["/usr/local/bin/ambient-verifier"]
