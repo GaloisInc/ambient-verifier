@@ -23,6 +23,7 @@ import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Verifier as AV
 
 import qualified Options as O
+import qualified Version as V
 
 -- | A simple logger that just sends diagnostics to a channel; an asynchronous
 -- thread will process these messages (different UIs can process them as needed)
@@ -166,10 +167,16 @@ main =
     )
     (\(e :: AE.AmbientException) -> IO.hPutStrLn IO.stderr (show (PP.pretty e)))
   where
-    opts = OA.info (O.parser OA.<**> OA.helper)
+    opts = OA.info (O.parser OA.<**> versionP OA.<**> OA.helper)
              ( OA.fullDesc
                <> OA.header "A verifier for programs containing weird machines"
              )
+
+    versionP = OA.infoOption V.shortVersionText
+                 (  OA.long "version"
+                 <> OA.short 'V'
+                 <> OA.help "Print version information"
+                 )
 
 {- Note [Argument Encoding]
 

@@ -111,7 +111,12 @@ library
 executable ambient-verifier
     import: shared
     main-is:          Main.hs
-    other-modules:    Options
+    other-modules:    GitRev
+                      Options
+                      Version
+
+                      Paths_ambient_verifier
+    autogen-modules:  Paths_ambient_verifier
 
     -- Modules included in this executable, other than Main.
     -- other-modules:
@@ -119,6 +124,7 @@ executable ambient-verifier
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:
+        gitrev,
         optparse-applicative,
         filemanip,
         ambient-verifier
