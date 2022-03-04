@@ -3,7 +3,6 @@ variables:
 
 stages:
   - build-and-test
-  - docker-push
   - docker-cleanup
 
 # The default job that builds the verifier and runs the test suite. We run
@@ -48,9 +47,10 @@ ambient-verifier:
       - GHCVER: [8.8.4, 8.10.7, 9.0.2]
         CABALVER: [1]
 
-# A job dedicated to building the Docker image to ensure that it works. This
-# requires a special CI runner so that it may have access to Docker. This is
-# ultimately in service of pushing the resulting image to Artifactory.
+# A job dedicated to building the Docker image and pushing it to Artifactory.
+# This job requires a special CI runner so that it may have access to the
+# `docker` command, which the shared GitLab runners do not have. This job is
+# only run on the `master` branch.
 artifactory-build:
   tags:
     - artifactory
@@ -62,29 +62,22 @@ artifactory-build:
     - docker login -u $CI_USERNAME -p $CI_PASSWORD $CI_REGISTRY
     - docker pull $CI_REGISTRY_IMAGE:latest || true
     - docker build --cache-from $CI_REGISTRY_IMAGE:latest --tag $CI_REGISTRY/$DOCKER_TAG .
-
-# If we are building on the master branch, this will push the built Docker
-# image to Artifactory. In other situations (e.g., MRs), this step will be
-# skipped.
-artifactory-push:
-  tags:
-    - artifactory
-  stage: docker-push
-  needs: [artifactory-build]
-  script:
     - docker push $CI_REGISTRY/$DOCKER_TAG || true
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
 
-# Finally, perform some last-minute Docker-related cleanup.
+# Perform some last-minute Docker-related cleanup. This is in a separate stage
+# because even if we cancel the artifactory-build stage, we still want to
+# perform cleanup afterwards.
 artifactory-cleanup:
   tags:
     - artifactory
   stage: docker-cleanup
-  needs: [artifactory-build]
   needs:
-    - job: artifactory-push
+    - job: artifactory-build
       optional: true
   script:
     - docker rmi $CI_REGISTRY/$DOCKER_TAG || true
     - docker logout $CI_REGISTRY
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
