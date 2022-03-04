@@ -47,6 +47,32 @@ To record the results of a test suite run to a ``junit.xml`` file, run::
 
   cabal run test:ambient-tests -- --xml=junit.xml
 
+Docker
+------
+
+There is also a nightly Docker image that gets built after each commit to the
+``master`` branch. To run the verifier through Docker, take a verifier command
+and replace the ``cabal run exe:ambient-verifier --`` bit with
+``docker run artifactory.galois.com:5017/nightly``::
+
+  docker run artifactory.galois.com:5017/nightly --help
+  docker run artifactory.galois.com:5017/nightly verify --help
+  docker run artifactory.galois.com:5017/nightly test-overrides --help
+
+The verifier's test suite can also be run through Docker, although it requires
+changing the entrypoint to use ``ambient-tests`` instead::
+
+  docker run --entrypoint ambient-tests artifactory.galois.com:5017/nightly
+
+To record the results of a test suite run to a ``junit.xml`` file, run::
+
+  docker run --entrypoint ambient-tests --volume $(pwd):/test-output artifactory.galois.com:5017/nightly --xml=/test-output/junit.xml
+
+The ``--volume $(pwd):/test-output`` mounts the current directory to
+``/test-output`` in the container so that when the test suite records the
+results to ``/test-output/junit.xml``, the ``junit.xml`` file is copied back
+to the current directory on your host machine.
+
 User-specified Function Overrides
 =================================
 
