@@ -6,6 +6,7 @@ module Options (
   ) where
 
 import qualified Data.Text as T
+import           Data.Word ( Word64 )
 import qualified Options.Applicative as OA
 import           Text.Read (readMaybe)
 
@@ -41,6 +42,13 @@ data VerifyOptions =
                 , overrideDir :: Maybe FilePath
                 -- ^ Path to the crucible syntax overrides directory.  If this is
                 -- 'Nothing', then no crucible syntax overrides will be registered.
+                , iterationBound :: Maybe Word64
+                -- ^ If @'Just' n@, bound all loops to at most @n@ iterations.
+                -- If 'Nothing', do not bound the number of loop iterations.
+                , recursionBound :: Maybe Word64
+                -- ^ If @'Just' n@, bound the number of recursive calls to at
+                -- most @n@ calls. If 'Nothing', do not bound the number of
+                -- recursive calls.
                 , solverInteractionFile :: Maybe FilePath
                 -- ^ Optional location to write solver interactions log to
                 , solverDebugMessagesFile :: Maybe FilePath
@@ -147,6 +155,16 @@ verifyOptions = VerifyOptions
                                       <> OA.help "A file to log symbolic execution profiles to periodically"
                                        ))
            <*> OA.optional overridesParser
+           <*> OA.optional (OA.option OA.auto
+                                      ( OA.long "iteration-bound"
+                                     <> OA.metavar "NUM"
+                                     <> OA.help "Bound all loops to at most this many iterations"
+                                      ))
+           <*> OA.optional (OA.option OA.auto
+                                      ( OA.long "recursion-bound"
+                                     <> OA.metavar "NUM"
+                                     <> OA.help "Bound the number of recursive calls to at most this many calls"
+                                      ))
            <*> OA.optional (OA.strOption ( OA.long "log-solver-interactions"
                                         <> OA.metavar "FILE"
                                         <> OA.help "Log solver interactions to FILE"

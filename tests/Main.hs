@@ -7,6 +7,7 @@ import qualified Control.Concurrent.Async as CCA
 import qualified Data.ByteString as BS
 import qualified Data.List as List
 import           Data.Maybe ( maybeToList )
+import           Data.Word ( Word64 )
 import qualified Data.Yaml as DY
 import           GHC.Generics ( Generic )
 import qualified Lumberjack as LJ
@@ -35,6 +36,8 @@ data ExpectedGoals =
                 , failed :: Int
                 , fsRoot :: Maybe FilePath
                 , overrideDir :: Maybe FilePath
+                , iterationBound :: Maybe Word64
+                , recursionBound :: Maybe Word64
                 }
   deriving (Eq, Ord, Read, Show, Generic)
 
@@ -45,6 +48,8 @@ emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , failed = 0
                                    , fsRoot = Nothing
                                    , overrideDir = Nothing
+                                   , iterationBound = Nothing
+                                   , recursionBound = Nothing
                                    }
 
 -- | A simple logger that just sends diagnostics to a channel; an asynchronous
@@ -108,6 +113,8 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piProperties = maybeToList mprop
                                  , AV.piProfileTo = Nothing
                                  , AV.piOverrideDir = overrideDir expectedResult
+                                 , AV.piIterationBound = iterationBound expectedResult
+                                 , AV.piRecursionBound = recursionBound expectedResult
                                  , AV.piSolverInteractionFile = Nothing
                                  }
 
@@ -123,6 +130,8 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   -- constants to just make the comparison work out.
   let res' = res { fsRoot = fsRoot expectedResult
                  , overrideDir = overrideDir expectedResult
+                 , iterationBound = iterationBound expectedResult
+                 , recursionBound = recursionBound expectedResult
                  }
   TTH.assertEqual "Expected Output" expectedResult res'
   where

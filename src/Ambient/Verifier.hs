@@ -20,11 +20,13 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
-import           Data.Maybe ( maybeToList )
+import           Data.Maybe ( catMaybes )
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Set as Set
 import qualified Data.Text as DT
+import qualified Data.Traversable as Trav
+import           Data.Word ( Word64 )
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
 
@@ -40,6 +42,8 @@ import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Simulator.BoundedExec as LCSBE
+import qualified Lang.Crucible.Simulator.BoundedRecursion as LCSBR
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.PathSatisfiability as LCSP
 import qualified Lang.Crucible.Simulator.Profiling as LCSProf
@@ -103,6 +107,13 @@ data ProgramInstance =
                   -- ^ Path to the crucible syntax overrides directory.  If
                   -- this is 'Nothing', then no crucible syntax overrides will
                   -- be registered.
+                  , piIterationBound :: Maybe Word64
+                  -- ^ If @'Just' n@, bound all loops to at most @n@ iterations.
+                  -- If 'Nothing', do not bound the number of loop iterations.
+                  , piRecursionBound :: Maybe Word64
+                  -- ^ If @'Just' n@, bound the number of recursive calls to at
+                  -- most @n@ calls. If 'Nothing', do not bound the number of
+                  -- recursive calls.
                   , piSolverInteractionFile :: Maybe FilePath
                   -- ^ Optional location to write solver interactions log to
                   }
@@ -355,12 +366,20 @@ verify logAction pinst timeoutDuration = do
                        _ -> CMC.throwM AE.MultipleFunctionRegions
 
       profFeature <- liftIO $ mapM setupProfiling (piProfileTo pinst)
-
+      iterationBoundFeature <-
+        Trav.for (piIterationBound pinst) $ \i ->
+          liftIO $ LCSBE.boundedExecFeature (\_ -> return (Just i)) True
+      recursionBoundFeature <-
+        Trav.for (piRecursionBound pinst) $ \i ->
+          liftIO $ LCSBR.boundedRecursionFeature (\_ -> return (Just i)) True
       -- We set up path satisfiability checking here so that we do not have to
       -- require the online backend constraints in the body of our symbolic
       -- execution code
       psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability bak)
-      let execFeatures = maybeToList (fmap fst profFeature) ++ [psf]
+      let execFeatures = psf : catMaybes [ fmap fst profFeature
+                                         , iterationBoundFeature
+                                         , recursionBoundFeature
+                                         ]
       let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
                                                , AVS.secWMMCallback = AVWme.wmExecutor archInfo loadedBinary hdlAlloc archVals execFeatures sym
                                                , AVS.secSolver = piSolver pinst

@@ -87,6 +87,12 @@ client-inet.exe: client-inet.c
 client-inet6.exe: client-inet6.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 
+infinite-loop.exe: infinite-loop.c
+	$(CC) -nostartfiles -static -no-pie $< -o $@
+
+infinite-recursion.exe: infinite-recursion.c
+	$(CC) -nostartfiles -static -no-pie $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 
