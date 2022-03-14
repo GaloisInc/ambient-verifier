@@ -37,7 +37,7 @@ streamLogData logAction =
              , WS.logReason = "Solving Goals"
              , WS.logHandle = Nothing
              , WS.logCallbackVerbose = \level msg -> do
-                 LJ.writeLog logAction (AD.SolverInteractionEvent level msg)
+                 LJ.writeLog logAction (AD.What4SolverDebugEvent level msg)
              }
 
 -- | A tag to report when a solver thread has been canceled via a timeout

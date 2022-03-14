@@ -30,17 +30,45 @@ import qualified Version as V
 logAction :: CC.Chan (Maybe AD.Diagnostic) -> LJ.LogAction IO AD.Diagnostic
 logAction c = LJ.LogAction (CC.writeChan c . Just)
 
+-- | A set of file 'IO.Handle's to use in 'printLogs'.
+data LogHandles = LogHandles
+  { mbSolverDebugMessagesHandle :: Maybe IO.Handle
+    -- ^ If @'Just' hdl@, write What4 solver debug messages to @hdl@.
+    -- If 'Nothing', do not write What4 solver debug messages at all.
+  , mbFunctionCFGsHandle :: Maybe IO.Handle
+    -- ^ If @'Just' hdl@, write function CFG–related logs to @hdl@.
+    -- If 'Nothing', do not write function CFG–related logs at all.
+  , defaultHandle :: IO.Handle
+    -- ^ The file handle to write all logs besides the ones noted above.
+  }
+
+-- | Open a set of 'LogHandles' suitable for use in @verify@ or
+-- @list-overrides@ and pass them to a continuation.
+withVerifyLogHandles :: O.VerifyOptions -> (LogHandles -> IO r) -> IO r
+withVerifyLogHandles o k =
+ withMaybeFile (O.solverDebugMessagesFile o) IO.WriteMode $ \mbSolverDebugMsgsHdl ->
+ withMaybeFile (O.functionCFGsFile o) IO.WriteMode $ \mbFunCFGsHdl ->
+ k $ LogHandles
+  { mbSolverDebugMessagesHandle = mbSolverDebugMsgsHdl
+  , mbFunctionCFGsHandle = mbFunCFGsHdl
+  , defaultHandle = IO.stdout
+  }
+
+-- | A set of 'LogHandles' suitable for use in @test-overrides@.
+testLogHandles :: LogHandles
+testLogHandles = LogHandles
+  { mbSolverDebugMessagesHandle = Nothing
+  , mbFunctionCFGsHandle = Nothing
+  , defaultHandle = IO.stdout
+  }
+
 -- | This log consumer prints log messages to the given handle
 printLogs ::
-  Maybe IO.Handle ->
-  -- ^ If @'Just' hdl@, write function CFG–related logs to @hdl@.
-  -- If 'Nothing', do not write function CFG–related logs at all.
-  IO.Handle ->
-  -- ^ The file handle to write all logs, except for the special case in the
-  --   first argument.
+  LogHandles ->
+  -- ^ The file handles to write logs to.
   CC.Chan (Maybe AD.Diagnostic) ->
   IO ()
-printLogs mbFunctionCFGsHdl hdl chan = go
+printLogs logHdls chan = go
   where
     go = do
       mdiag <- CC.readChan chan
@@ -49,12 +77,17 @@ printLogs mbFunctionCFGsHdl hdl chan = go
         Just d -> do
           let ppd = PP.pretty d
           case d of
+            AD.What4SolverDebugEvent{} ->
+              case mbSolverDebugMessagesHandle logHdls of
+                Nothing -> pure ()
+                Just solverDebugMsgsHdl
+                  -> PPT.hPutDoc solverDebugMsgsHdl ppd
             AD.DiscoveryEvent{} ->
-              case mbFunctionCFGsHdl of
+              case mbFunctionCFGsHandle logHdls of
                 Nothing -> pure ()
                 Just functionCFGsHdl
                   -> PPT.hPutDoc functionCFGsHdl ppd
-            _ -> PPT.hPutDoc hdl ppd
+            _ -> PPT.hPutDoc (defaultHandle logHdls) ppd
           go
 
 loadProperty :: FilePath -> IO (APD.Property APD.StateID)
@@ -73,7 +106,7 @@ withMaybeFile mbFP mode action =
 -- | This is the real verification driver that takes the parsed out command line
 -- arguments and sets up the problem instance for the library core
 verify :: O.VerifyOptions -> IO ()
-verify o = withMaybeFile (O.functionCFGsFile o) IO.WriteMode $ \mbFunCFGsHdl -> do
+verify o = withVerifyLogHandles o $ \logHdls -> do
   binary <- BS.readFile (O.binaryPath o)
   -- See Note [Argument Encoding]
   let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
@@ -93,7 +126,7 @@ verify o = withMaybeFile (O.functionCFGsFile o) IO.WriteMode $ \mbFunCFGsHdl -> 
                                  }
 
   chan <- CC.newChan
-  logger <- CCA.async (printLogs mbFunCFGsHdl IO.stdout chan)
+  logger <- CCA.async (printLogs logHdls chan)
 
   AV.verify (logAction chan) pinst (O.timeoutDuration o)
 
@@ -113,7 +146,7 @@ testOverrides o = do
                                , AO.tiAbi = O.testAbi o
                                }
   chan <- CC.newChan
-  logger <- CCA.async (printLogs Nothing IO.stdout chan)
+  logger <- CCA.async (printLogs testLogHandles chan)
 
   AO.testOverrides (logAction chan) tinst (O.testTimeoutDuration o)
 
@@ -127,7 +160,7 @@ testOverrides o = do
 -- binary. Instead, it prints all of the overrides that are registered for the
 -- particular binary and exits.
 listOverrides :: O.VerifyOptions -> IO ()
-listOverrides o = withMaybeFile (O.functionCFGsFile o) IO.WriteMode $ \mbFunCFGsHdl -> do
+listOverrides o = withVerifyLogHandles o $ \logHdls -> do
   binary <- BS.readFile (O.binaryPath o)
   -- See Note [Argument Encoding]
   let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
@@ -147,7 +180,7 @@ listOverrides o = withMaybeFile (O.functionCFGsFile o) IO.WriteMode $ \mbFunCFGs
                                  }
 
   chan <- CC.newChan
-  logger <- CCA.async (printLogs mbFunCFGsHdl IO.stdout chan)
+  logger <- CCA.async (printLogs logHdls chan)
 
   AOL.listOverrides (logAction chan) pinst
 

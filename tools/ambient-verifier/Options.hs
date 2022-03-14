@@ -43,6 +43,8 @@ data VerifyOptions =
                 -- 'Nothing', then no crucible syntax overrides will be registered.
                 , solverInteractionFile :: Maybe FilePath
                 -- ^ Optional location to write solver interactions log to
+                , solverDebugMessagesFile :: Maybe FilePath
+                -- ^ Optional location to write What4 solver debug messages to
                 , functionCFGsFile :: Maybe FilePath
                 -- ^ Optional location to write function CFGs to
                 }
@@ -148,6 +150,10 @@ verifyOptions = VerifyOptions
            <*> OA.optional (OA.strOption ( OA.long "log-solver-interactions"
                                         <> OA.metavar "FILE"
                                         <> OA.help "Log solver interactions to FILE"
+                                       ))
+           <*> OA.optional (OA.strOption ( OA.long "log-solver-debug-messages"
+                                        <> OA.metavar "FILE"
+                                        <> OA.help "Log What4 debug messages produced when communicating with solvers to FILE"
                                        ))
            <*> OA.optional (OA.strOption ( OA.long "log-function-cfgs"
                                         <> OA.metavar "FILE"

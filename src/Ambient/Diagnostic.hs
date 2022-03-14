@@ -43,10 +43,13 @@ data Diagnostic where
                     => DMD.AddrSymMap w
                     -> DMD.DiscoveryEvent arch
                     -> Diagnostic
-  -- | A solver interaction event generated during symbolic execution
+  -- | A debug message produced by What4 when interacting with a solver during
+  -- symbolic execution. This should not be confused with the actual output
+  -- from the solver itself, which is a separate thing that What4 logs
+  -- independently of its own debug messages.
   --
   -- The 'Int' is the verbosity level associated with the message
-  SolverInteractionEvent :: Int -> String -> Diagnostic
+  What4SolverDebugEvent :: Int -> String -> Diagnostic
   -- | Timeout while verifying a goal
   GoalTimeout :: (sym ~ WE.ExprBuilder t st fs) => sym -> LCB.LabeledPred (WE.Expr t WI.BaseBoolType) LCSS.SimError -> Diagnostic
   -- | An error was raised while verifying a goal
@@ -90,8 +93,10 @@ instance PP.Pretty Diagnostic where
                     ]
           DMD.ReportAnalyzeBlock _ baddr ->
             PP.pretty "Analyzing a block at address " <> PP.pretty baddr <> PP.line
-      SolverInteractionEvent verb msg ->
-        PP.pretty "Solver response " <> PP.parens (PP.pretty verb) <> PP.pretty ": " <> PP.pretty msg <> PP.line
+      What4SolverDebugEvent verb msg ->
+        PP.pretty "Solver debug event " <>
+        PP.parens (PP.pretty "verbosity" PP.<+> PP.pretty verb) <>
+        PP.colon PP.<+> PP.pretty msg <> PP.line
       GoalTimeout _sym p ->
         mconcat [ PP.pretty "Timeout while solving goal" <> PP.line
                 , PP.indent 2 (ppSimErrorLoc p) <> PP.line

@@ -115,7 +115,7 @@ smtLogger logAction =
   WS.defaultLogData { WS.logCallbackVerbose = doLog }
   where
     doLog verb msg =
-      LJ.writeLog logAction (AD.SolverInteractionEvent verb msg)
+      LJ.writeLog logAction (AD.What4SolverDebugEvent verb msg)
 
 -- | Look up a global that we really require to already be in the global state
 --
