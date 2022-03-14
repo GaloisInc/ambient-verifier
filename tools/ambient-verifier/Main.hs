@@ -103,27 +103,33 @@ withMaybeFile mbFP mode action =
     Just fp -> IO.withFile fp mode (action . Just)
     Nothing -> action Nothing
 
--- | This is the real verification driver that takes the parsed out command line
--- arguments and sets up the problem instance for the library core
-verify :: O.VerifyOptions -> IO ()
-verify o = withVerifyLogHandles o $ \logHdls -> do
+-- | Build a 'AV.ProgramInstance' from a set of 'O.VerifyOptions'.
+buildPinstFromVerifyOptions :: O.VerifyOptions -> IO (AV.ProgramInstance)
+buildPinstFromVerifyOptions o = do
   binary <- BS.readFile (O.binaryPath o)
   -- See Note [Argument Encoding]
   let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
 
   props <- mapM loadProperty (O.stateCharts o)
 
-  let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath o
-                                 , AV.piBinary = binary
-                                 , AV.piFsRoot = O.fsRoot o
-                                 , AV.piCommandLineArguments = args
-                                 , AV.piSolver = O.solver o
-                                 , AV.piFloatMode = O.floatMode o
-                                 , AV.piProperties = props
-                                 , AV.piProfileTo = O.profileTo o
-                                 , AV.piOverrideDir = O.overrideDir o
-                                 , AV.piSolverInteractionFile = O.solverInteractionFile o
-                                 }
+  pure $ AV.ProgramInstance
+           { AV.piPath = O.binaryPath o
+           , AV.piBinary = binary
+           , AV.piFsRoot = O.fsRoot o
+           , AV.piCommandLineArguments = args
+           , AV.piSolver = O.solver o
+           , AV.piFloatMode = O.floatMode o
+           , AV.piProperties = props
+           , AV.piProfileTo = O.profileTo o
+           , AV.piOverrideDir = O.overrideDir o
+           , AV.piSolverInteractionFile = O.solverInteractionFile o
+           }
+
+-- | This is the real verification driver that takes the parsed out command line
+-- arguments and sets up the problem instance for the library core
+verify :: O.VerifyOptions -> IO ()
+verify o = withVerifyLogHandles o $ \logHdls -> do
+  pinst <- buildPinstFromVerifyOptions o
 
   chan <- CC.newChan
   logger <- CCA.async (printLogs logHdls chan)
@@ -161,23 +167,7 @@ testOverrides o = do
 -- particular binary and exits.
 listOverrides :: O.VerifyOptions -> IO ()
 listOverrides o = withVerifyLogHandles o $ \logHdls -> do
-  binary <- BS.readFile (O.binaryPath o)
-  -- See Note [Argument Encoding]
-  let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
-
-  props <- mapM loadProperty (O.stateCharts o)
-
-  let pinst = AV.ProgramInstance { AV.piPath = O.binaryPath o
-                                 , AV.piBinary = binary
-                                 , AV.piFsRoot = O.fsRoot o
-                                 , AV.piCommandLineArguments = args
-                                 , AV.piSolver = O.solver o
-                                 , AV.piFloatMode = O.floatMode o
-                                 , AV.piProperties = props
-                                 , AV.piProfileTo = O.profileTo o
-                                 , AV.piOverrideDir = O.overrideDir o
-                                 , AV.piSolverInteractionFile = O.solverInteractionFile o
-                                 }
+  pinst <- buildPinstFromVerifyOptions o
 
   chan <- CC.newChan
   logger <- CCA.async (printLogs logHdls chan)
