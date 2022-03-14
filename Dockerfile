@@ -5,6 +5,7 @@ RUN apt update && \
     apt install -y \
       build-essential \
       curl \
+      git \
       libffi7 \
       libffi-dev \
       libgmp10 \
