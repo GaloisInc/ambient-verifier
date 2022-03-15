@@ -63,6 +63,18 @@ ptr-diff-null-ov-pie.exe: ptr-diff-null-ov.c ambient_assert.o
 plt-ov.exe: plt-ov.c
 	$(CC) -nostartfiles -pie $^ -o $@
 
+server-inet.exe: server-inet.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
+server-inet6.exe: server-inet6.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
+client-inet.exe: client-inet.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
+client-inet6.exe: client-inet6.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

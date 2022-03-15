@@ -81,6 +81,12 @@ server-inet.exe: server-inet.c
 server-inet6.exe: server-inet6.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 
+client-inet.exe: client-inet.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
+client-inet6.exe: client-inet6.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 
