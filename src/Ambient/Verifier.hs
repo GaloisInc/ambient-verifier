@@ -29,6 +29,8 @@ import qualified Data.Traversable as Trav
 import           Data.Word ( Word64 )
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
+import qualified System.Directory as Dir
+import qualified System.FilePath as FP
 
 import qualified Data.Macaw.Architecture.Info as DMA
 import qualified Data.Macaw.CFG as DMC
@@ -63,6 +65,7 @@ import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
 import qualified Ambient.Panic as AP
+import qualified Ambient.Profiler.EmbeddedData as APE
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
@@ -102,7 +105,7 @@ data ProgramInstance =
                   , piProperties :: [APD.Property APD.StateID]
                   -- ^ A property to verify that the program satisfies
                   , piProfileTo :: Maybe FilePath
-                  -- ^ The path of a file to profile to
+                  -- ^ Optional directory to write profiler-related files to
                   , piOverrideDir :: Maybe FilePath
                   -- ^ Path to the crucible syntax overrides directory.  If
                   -- this is 'Nothing', then no crucible syntax overrides will
@@ -301,16 +304,27 @@ assertPropertySatisfied logAction bak execResult (prop, globalTraceVar) = do
 setupProfiling
   :: FilePath
   -> IO (LCS.GenericExecutionFeature sym, CCA.Async ())
-setupProfiling path = do
+setupProfiling dir = do
+  F.for_ APE.profilerDataFiles $ \(fp, contents) ->
+    createDirectoriesAndWriteFile (dir FP.</> fp) contents
   tbl <- LCSProf.newProfilingTable
   let flt = LCSProf.profilingEventFilter
+  let reportPath = dir FP.</> "report_data.js"
   let doLog = do
-        LCSProf.writeProfileReport path "ambient-verifier-profile" "ambient-verifier" tbl
+        LCSProf.writeProfileReport reportPath "ambient-verifier-profile" "ambient-verifier" tbl
         CC.threadDelay 1000000
         doLog
   logger <- CCA.async doLog
   opt <- LCSProf.profilingFeature tbl flt Nothing -- (Just opts)
   return (opt, logger)
+
+-- | Like 'BS.writeFile', but also create parent directories if they are
+-- missing.
+createDirectoriesAndWriteFile :: FilePath -> BS.ByteString -> IO ()
+createDirectoriesAndWriteFile path bs = do
+  let dir = FP.takeDirectory path
+  Dir.createDirectoryIfMissing True dir
+  BS.writeFile path bs
 
 -- | Verify that the given 'ProgramInstance' terminates (with the given input)
 -- without raising an error

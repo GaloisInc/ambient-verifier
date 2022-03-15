@@ -38,7 +38,7 @@ data VerifyOptions =
                 , stateCharts :: [FilePath]
                 -- ^ File paths to a state charts encoding properties to verify
                 , profileTo :: Maybe FilePath
-                -- ^ A path to write periodic profiling reports to
+                -- ^ Optional directory to write profiler-related files to
                 , overrideDir :: Maybe FilePath
                 -- ^ Path to the crucible syntax overrides directory.  If this is
                 -- 'Nothing', then no crucible syntax overrides will be registered.
@@ -151,8 +151,11 @@ verifyOptions = VerifyOptions
                                     <> OA.help "A path to a state chart encoding a property to verify"
                                      ))
            <*> OA.optional (OA.strOption ( OA.long "profile-to"
-                                      <> OA.metavar "FILE"
-                                      <> OA.help "A file to log symbolic execution profiles to periodically"
+                                      <> OA.metavar "DIR"
+                                      <> OA.help (unlines
+                                           [ "Periodically log symbolic execution profiles to DIR."
+                                           , "Open 'DIR/profile.html' to view an HTML report of the profiles."
+                                           ])
                                        ))
            <*> OA.optional overridesParser
            <*> OA.optional (OA.option OA.auto

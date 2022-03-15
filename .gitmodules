@@ -43,3 +43,6 @@
 [submodule "submodules/llvm-pretty"]
 	path = submodules/llvm-pretty
 	url = git@github.com:elliottt/llvm-pretty.git
+[submodule "submodules/sympro-ui"]
+	path = submodules/sympro-ui
+	url = git@github.com:GaloisInc/sympro-ui
