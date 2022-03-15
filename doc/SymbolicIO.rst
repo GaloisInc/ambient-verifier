@@ -106,3 +106,38 @@ Beyond the challenges in implementing symbolic pwntools, there are some addition
 - *We likely need to track the current path condition in a way that can be easily exported to symbolic pwntools*: This should be possible, though the verifier is not currently set up to do so. We can probably get away with just allocating a fresh nonce at each symbolic branch and maintaining the "current" sequence on each branch.  Tracking merges may be more difficult; we will have to investigate if there are any hooks to allow us to observe merges.
 - *We will need a global database of externalized symbolic values*: This should actually be straightforward (though we might never get to garbage collect it, so may want to be careful).  Note that in the current design, we should not need to export any of the formula structure of symbolic values to symbolic pwntools, which is a good design goal to maintain.  Fully reifing all of the symbolic structure would be very expensive, and capturing all of the constraints necessary to interpret it may be impossible (as those mostly live in the SMT solver).
 - *Existing verifier assumptions may be optimistic*: There are a few assumptions in the implementations of the networking primitives in the verifier that will likely prevent them from being correct in the presence of symbolic branches around I/O.  These assumptions are mostly marked in the source, but they will need to be corrected.  Some of these will require some work in the core symbolic-io library.
+
+Potential Approaches
+====================
+
+This section documents a few concrete proposals that we could investigate for implementing the branching necessary in the symbolic pwntools library.
+
+Call with Current Continuation (call/cc)
+----------------------------------------
+
+In this formulation, we could implement ``call/cc`` using Python's bytecode rewriting API.  At a high level, this would introduce a new ``call/cc`` primitive that was able to capture the current continuation and invoke it multiple times.  We could implement the pwntools API on top of this primitive, enabling us to hide all of the necessary logic in the library.
+
+An example of using the bytecode parsing/rewriting interface is here https://github.com/snoack/python-goto, which uses it to implement ``goto`` in Python.
+
+Major challenges include:
+
+- Transforming local state into a data structure that can be passed to each continuation
+- Capturing global state safely seems challenging (e.g., figuring out what all of the relevant global state *is*)
+- It really needs to be a global transformation, because ``return`` has to be turned into a call to a continuation (that has to be passed in as an argument)
+
+Note that this is a really technically interesting approach, but may be fragile in the presence of Python changes. All of the complexity could be bundled up into a single module, but there is inherent risk.
+
+External Multiplexer
+--------------------
+
+Part of the complexity of the ``call/cc`` solution is the (pseudo-)requirement that it have exactly the same interface as a non-symbolic pwntools script.  Adding an external multiplexer to handle all output from the verifier (and to coordinate responses from symbolic pwntools) might simplify the problem substantially.  As a quick sketch of the approach:
+
+1. We would change the verifier output stream to have a single output channel, but where each write would be tagged with the logical channel being written to (e.g., stdout, stderr, or a socket with port information)
+2. The multiplexer would read the stream of verifier outputs and spawn a fresh instance of the symbolic pwntools script for each symbolic branch
+3. The implementation of symbolic pwntools would have to instrument all of its input and output methods to communicate with the multiplexer, including the ability to *block* until the multiplexer gives it the go-ahead to continue
+
+This approach adds a layer of indirection to manage branching and splitting. That layer means that the script proper can remain largely oblivious to the branching and splitting and merely block until the multiplexer provides it with input. It can produce outputs at its leisure, while the multiplexer can then send responses to the verifier. How much of the branching/merging logic can/should be exposed to the multiplexer is an open question.
+
+When the multiplexer observes that a symbolic branch has occurred, it would need to spawn another copy of the symbolic pwntools script and replay any inputs already received to that script.  It should be possible for the multiplexer to notice a symbolic branch based not only on the path condition (which could be ambiguous), but if it sees that the "same" byte offset has been emitted more than once.  It should not be necessary to replay outputs *up to the point where the divergence is detected*.
+
+Because the multiplexer will probably not be able to observe any merging in the verifier, merging responses from the multiplexer will likely need to be handled within the verifier (if applicable).
