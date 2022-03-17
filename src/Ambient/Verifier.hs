@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 -- | The main entry point of the AMBIENT binary verifier
@@ -20,11 +21,12 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
-import           Data.Maybe ( catMaybes )
+import           Data.Maybe ( catMaybes, fromMaybe )
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Set as Set
 import qualified Data.Text as DT
+import qualified Data.Text.Encoding as DTE
 import qualified Data.Traversable as Trav
 import           Data.Word ( Word64 )
 import           GHC.Stack ( HasCallStack )
@@ -104,6 +106,8 @@ data ProgramInstance =
                   -- ^ The interpretation of floating point operations in SMT
                   , piProperties :: [APD.Property APD.StateID]
                   -- ^ A property to verify that the program satisfies
+                  , piEntryPoint :: Maybe DT.Text
+                  -- ^ The name of the function at which to begin simulation
                   , piProfileTo :: Maybe FilePath
                   -- ^ Optional directory to write profiler-related files to
                   , piOverrideDir :: Maybe FilePath
@@ -145,11 +149,11 @@ getNamedFunction
      )
   => DMD.DiscoveryState arch
   -- ^ A computed discovery state
-  -> String
+  -> DT.Text
   -- ^ The name of the function to retrieve
   -> m (DMM.MemSegmentOff w, (Some (DMD.DiscoveryFunInfo arch)))
 getNamedFunction discoveryState fname = do
-  let entryPointName = BSC.pack fname
+  let entryPointName = DTE.encodeUtf8 fname
   let symbolNamesToAddrs = getSymbolNameToAddrMapping discoveryState
   case Map.lookup entryPointName symbolNamesToAddrs of
     Nothing -> CMC.throwM (AE.MissingExpectedSymbol entryPointName)
@@ -359,7 +363,8 @@ verify logAction pinst timeoutDuration = do
     AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals pltStubs loadedBinary -> DMA.withArchConstraints archInfo $ do
       discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
       -- See Note [Entry Point] for more details
-      (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState "main"
+      (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState $
+                                           fromMaybe "main" $ piEntryPoint pinst
       (LCCC.SomeCFG cfg0) <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) discoveredEntry
       (handles, bindings) <- buildBindings
           (Map.toList (discoveryState ^. DMD.funInfo))
@@ -432,7 +437,8 @@ verify logAction pinst timeoutDuration = do
 
 {- Note [Entry Point]
 
-Right now, we are starting verification from ~main~ instead of ~_start~. Macaw
+Right now, we are starting verification from ~main~ instead of ~_start~ (or
+whatever the ELF entrypoint function happens to be named). Macaw
 can have trouble analyzing from ~_start~, especially in stripped binaries,
 because the startup sequence passes function pointers indirectly to kick off
 main.

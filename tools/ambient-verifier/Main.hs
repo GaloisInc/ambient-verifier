@@ -120,6 +120,7 @@ buildPinstFromVerifyOptions o = do
            , AV.piSolver = O.solver o
            , AV.piFloatMode = O.floatMode o
            , AV.piProperties = props
+           , AV.piEntryPoint = O.entryPoint o
            , AV.piProfileTo = O.profileTo o
            , AV.piOverrideDir = O.overrideDir o
            , AV.piIterationBound = O.iterationBound o

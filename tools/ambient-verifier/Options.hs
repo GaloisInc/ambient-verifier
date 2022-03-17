@@ -37,6 +37,8 @@ data VerifyOptions =
                 -- ^ The solver timeout for each goal
                 , stateCharts :: [FilePath]
                 -- ^ File paths to a state charts encoding properties to verify
+                , entryPoint :: Maybe T.Text
+                -- ^ The name of the function at which to begin simulation
                 , profileTo :: Maybe FilePath
                 -- ^ Optional directory to write profiler-related files to
                 , overrideDir :: Maybe FilePath
@@ -150,6 +152,10 @@ verifyOptions = VerifyOptions
                                     <> OA.metavar "FILE"
                                     <> OA.help "A path to a state chart encoding a property to verify"
                                      ))
+           <*> OA.optional (OA.strOption ( OA.long "entry-point"
+                                        <> OA.metavar "STRING"
+                                        <> OA.help "The name of the function at which to begin simulation"
+                                         ))
            <*> OA.optional (OA.strOption ( OA.long "profile-to"
                                       <> OA.metavar "DIR"
                                       <> OA.help (unlines

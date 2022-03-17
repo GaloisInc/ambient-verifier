@@ -111,6 +111,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piFloatMode = AS.Real
                                  , AV.piCommandLineArguments = []
                                  , AV.piProperties = maybeToList mprop
+                                 , AV.piEntryPoint = Nothing
                                  , AV.piProfileTo = Nothing
                                  , AV.piOverrideDir = overrideDir expectedResult
                                  , AV.piIterationBound = iterationBound expectedResult
