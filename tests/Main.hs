@@ -25,6 +25,7 @@ import qualified Lang.Crucible.Syntax.Concrete as LCSC
 
 import qualified Ambient.ABI as AA
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.EntryPoint as AEp
 import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
@@ -39,6 +40,10 @@ data ExpectedGoals =
                 , iterationBound :: Maybe Word64
                 , recursionBound :: Maybe Word64
                 , sharedObjectsDir :: Maybe FilePath
+                , entryPointAddr :: Maybe Word64
+                  -- We may also wish to allow specifying entry point names
+                  -- in the future, but for the time being, let's keep it
+                  -- simple.
                 }
   deriving (Eq, Ord, Read, Show, Generic)
 
@@ -52,6 +57,7 @@ emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , iterationBound = Nothing
                                    , recursionBound = Nothing
                                    , sharedObjectsDir = Nothing
+                                   , entryPointAddr = Nothing
                                    }
 
 -- | A simple logger that just sends diagnostics to a channel; an asynchronous
@@ -103,6 +109,9 @@ toTest expectedOutputFile = TTH.testCase testName $ do
              True -> Just <$> loadProperty propPath
              False -> return Nothing
 
+  let entryPoint = maybe AEp.DefaultEntryPoint AEp.EntryPointAddr
+                         (entryPointAddr expectedResult)
+
   -- Create a problem instance; note that we are currently providing no
   -- arguments and no standard input.  The expected output file could include
   -- those things (or they could be drawn from other optional input files)
@@ -113,7 +122,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piFloatMode = AS.Real
                                  , AV.piCommandLineArguments = []
                                  , AV.piProperties = maybeToList mprop
-                                 , AV.piEntryPoint = Nothing
+                                 , AV.piEntryPoint = entryPoint
                                  , AV.piProfileTo = Nothing
                                  , AV.piOverrideDir = overrideDir expectedResult
                                  , AV.piIterationBound = iterationBound expectedResult
@@ -137,6 +146,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                  , iterationBound = iterationBound expectedResult
                  , recursionBound = recursionBound expectedResult
                  , sharedObjectsDir = sharedObjectsDir expectedResult
+                 , entryPointAddr = entryPointAddr expectedResult
                  }
   TTH.assertEqual "Expected Output" expectedResult res'
   where

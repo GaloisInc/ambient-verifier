@@ -4,6 +4,7 @@ all: $(patsubst %c,%exe,$(wildcard *.c))
 
 CC=gcc
 MUSL_CC=musl-gcc
+STRIP=strip
 
 # Syscall test needs the standard library available, so it builds with
 # -nostartfiles instead of -nostdlib
@@ -98,6 +99,10 @@ infinite-loop.exe: infinite-loop.c
 
 infinite-recursion.exe: infinite-recursion.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@
+
+stripped-static.exe: stripped.c
+	$(MUSL_CC) -static -no-pie $< -o $@
+	$(STRIP) $@
 
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@

@@ -22,7 +22,7 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Foldable as F
 import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
-import           Data.Maybe ( catMaybes, fromMaybe )
+import           Data.Maybe ( catMaybes )
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Set as Set
@@ -62,6 +62,7 @@ import qualified What4.Partial as WP
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Discovery as ADi
+import qualified Ambient.EntryPoint as AEp
 import qualified Ambient.EventTrace as AEt
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
@@ -109,8 +110,8 @@ data ProgramInstance =
                   -- ^ The interpretation of floating point operations in SMT
                   , piProperties :: [APD.Property APD.StateID]
                   -- ^ A property to verify that the program satisfies
-                  , piEntryPoint :: Maybe DT.Text
-                  -- ^ The name of the function at which to begin simulation
+                  , piEntryPoint :: AEp.EntryPoint Word64
+                  -- ^ Where to begin simulation
                   , piProfileTo :: Maybe FilePath
                   -- ^ Optional directory to write profiler-related files to
                   , piOverrideDir :: Maybe FilePath
@@ -141,30 +142,49 @@ getSymbolNameToAddrMapping discoveryState =
                | (addr, name) <- Map.toList (DMD.symbolNames discoveryState)
                ]
 
--- | Retrieve the named function (in its 'DMD.DiscoveryFunInfo' form) from the code
--- discovery information.  Returns a pair containing the address of the named
--- function, as well as the named function.
+-- | Retrieve the name of the entry point function (in its
+-- 'DMD.DiscoveryFunInfo' form) from the code discovery information. Returns a
+-- pair containing the entry point's address, as well as the named function.
 --
--- If the symbol is not present in the binary, or if discovery was unable to
--- find it, this function will throw exceptions.
-getNamedFunction
-  :: ( CMC.MonadThrow m
+-- If the supplied entry point is not present in the binary, or if discovery
+-- was unable to find it, this function will throw exceptions.
+getEntryPointInfo
+  :: forall m arch w.
+     ( CMC.MonadThrow m
      , DMM.MemWidth (DMC.ArchAddrWidth arch)
      , w ~ DMC.RegAddrWidth (DMC.ArchReg arch)
      )
   => DMD.DiscoveryState arch
   -- ^ A computed discovery state
-  -> DT.Text
-  -- ^ The name of the function to retrieve
+  -> AEp.EntryPoint (DMM.MemSegmentOff w)
+  -- ^ The entry point to look for in the discovery state
   -> m (DMM.MemSegmentOff w, (Some (DMD.DiscoveryFunInfo arch)))
-getNamedFunction discoveryState fname = do
-  let entryPointName = DTE.encodeUtf8 fname
-  let symbolNamesToAddrs = getSymbolNameToAddrMapping discoveryState
-  case Map.lookup entryPointName symbolNamesToAddrs of
-    Nothing -> CMC.throwM (AE.MissingExpectedSymbol entryPointName)
-    Just entryAddr
-      | Just dfi <- Map.lookup entryAddr (discoveryState ^. DMD.funInfo) -> return (entryAddr, dfi)
-      | otherwise -> CMC.throwM (AE.MissingExpectedFunction (Just entryPointName) entryAddr)
+getEntryPointInfo discoveryState entryPoint = do
+  entryAddr <-
+    case entryPoint of
+      AEp.DefaultEntryPoint   -> lookupEntryPointAddr defaultEntryPointName
+      AEp.EntryPointName n    -> lookupEntryPointAddr $ DTE.encodeUtf8 n
+      AEp.EntryPointAddr addr -> pure addr
+  case Map.lookup entryAddr (discoveryState ^. DMD.funInfo) of
+    Just dfi -> return (entryAddr, dfi)
+    Nothing  -> CMC.throwM (AE.MissingExpectedFunction mbEntryPointName entryAddr)
+  where
+    symbolNamesToAddrs = getSymbolNameToAddrMapping discoveryState
+
+    -- See Note [Entry Point] for why main() is the default entry point.
+    defaultEntryPointName = "main"
+
+    mbEntryPointName =
+      case entryPoint of
+        AEp.DefaultEntryPoint -> Just $ defaultEntryPointName
+        AEp.EntryPointName n  -> Just $ DTE.encodeUtf8 n
+        AEp.EntryPointAddr{}  -> Nothing
+
+    lookupEntryPointAddr :: BS.ByteString -> m (DMM.MemSegmentOff w)
+    lookupEntryPointAddr entryPointName =
+      case Map.lookup entryPointName symbolNamesToAddrs of
+        Nothing        -> CMC.throwM (AE.MissingExpectedSymbol entryPointName)
+        Just entryAddr -> pure entryAddr
 
 -- | Build function bindings from a list of discovered function.  Returns a
 -- pair containing:
@@ -420,15 +440,15 @@ verify logAction pinst timeoutDuration = do
     -- Load up the binary, which existentially introduces the architecture of the
     -- binary in the context of the continuation
     AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals pltStubs loadedBinary sharedObjects -> DMA.withArchConstraints archInfo $ do
+      entryPoint <- AEp.resolveEntryPointAddrOff loadedBinary $ piEntryPoint pinst
       discoveryState <- ADi.discoverFunctions logAction
                                               archInfo
+                                              (ADi.MainBinary (AEp.entryPointAddrMaybe entryPoint))
                                               loadedBinary
-      soDiscoveryState <- mapM (ADi.discoverFunctions logAction archInfo)
+      soDiscoveryState <- mapM (ADi.discoverFunctions logAction archInfo ADi.SharedLibrary)
                                sharedObjects
       let loadedBinaries = NEL.fromList (loadedBinary : sharedObjects)
-      -- See Note [Entry Point] for more details
-      (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState $
-                                           fromMaybe "main" $ piEntryPoint pinst
+      (entryAddr, Some discoveredEntry) <- getEntryPointInfo discoveryState entryPoint
       (LCCC.SomeCFG cfg0) <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) discoveredEntry
       (handles, bindings) <- buildBindings
           (Map.toList (discoveryState ^. DMD.funInfo))

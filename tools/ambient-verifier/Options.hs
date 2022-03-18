@@ -11,6 +11,7 @@ import qualified Options.Applicative as OA
 import           Text.Read (readMaybe)
 
 import qualified Ambient.ABI as AA
+import qualified Ambient.EntryPoint as AEp
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 
@@ -37,8 +38,8 @@ data VerifyOptions =
                 -- ^ The solver timeout for each goal
                 , stateCharts :: [FilePath]
                 -- ^ File paths to a state charts encoding properties to verify
-                , entryPoint :: Maybe T.Text
-                -- ^ The name of the function at which to begin simulation
+                , entryPoint :: AEp.EntryPoint Word64
+                -- ^ Where to begin simulation
                 , profileTo :: Maybe FilePath
                 -- ^ Optional directory to write profiler-related files to
                 , overrideDir :: Maybe FilePath
@@ -122,6 +123,27 @@ timeoutParser =  OA.option (OA.maybeReader timeoutReader)
                            <> OA.help "The solver timeout to use for each goal"
                            )
 
+-- | A parser for an 'AEp.EntryPoint', which may be supplied by way of the
+-- @--entry-point-name@ or @--entry-point-addr@ options.
+entryPointParser :: OA.Parser (AEp.EntryPoint Word64)
+entryPointParser =
+         AEp.EntryPointName <$>
+           (OA.strOption
+              ( OA.long "entry-point-name"
+             <> OA.metavar "STRING"
+             <> OA.help "The name of the function at which to begin simulation"
+              ))
+  OA.<|> AEp.EntryPointAddr <$>
+           (OA.option OA.auto
+               ( OA.long "entry-point-addr"
+              <> OA.metavar "ADDR"
+              <> OA.help (unlines
+                   [ "The address of the function at which to begin simulation."
+                   , "Addresses may be in hexadecimal, octal, or decimal."
+                   ])
+               ))
+  OA.<|> pure AEp.DefaultEntryPoint
+
 -- | A parser for the @--overrides@ option
 overridesParser :: OA.Parser FilePath
 overridesParser = OA.strOption (  OA.long "overrides"
@@ -154,10 +176,7 @@ verifyOptions = VerifyOptions
                                     <> OA.metavar "FILE"
                                     <> OA.help "A path to a state chart encoding a property to verify"
                                      ))
-           <*> OA.optional (OA.strOption ( OA.long "entry-point"
-                                        <> OA.metavar "STRING"
-                                        <> OA.help "The name of the function at which to begin simulation"
-                                         ))
+           <*> entryPointParser
            <*> OA.optional (OA.strOption ( OA.long "profile-to"
                                       <> OA.metavar "DIR"
                                       <> OA.help (unlines

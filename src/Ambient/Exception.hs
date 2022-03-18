@@ -78,6 +78,8 @@ data AmbientException where
   -- binary.  The first argument is the 'DE.ElfClass' for the shared object
   -- and the second argument is the 'DE.ElfClass' for the main binary.
   SoMismatchedElfClass :: DE.ElfClass w -> DE.ElfClass w' -> AmbientException
+  -- | The offset for the entry point function's address could not be resolved.
+  EntryPointAddrOffResolutionFailure :: DMM.MemWidth w => DMM.MemWord w -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -181,3 +183,5 @@ instance PP.Pretty AmbientException where
         PP.pretty "A shared object has a different ELF machine value than the main binary.  Shared object has machine " PP.<+> PP.viaShow soMachine <> PP.pretty " and main binary has machine " PP.<+> PP.viaShow mainMachine
       SoMismatchedElfClass soClass mainClass ->
         PP.pretty "A shared object has a different ELF class value than the main binary.  Shared object has class " PP.<+> PP.viaShow soClass <> PP.pretty " and main binary has class " PP.<+> PP.viaShow mainClass
+      EntryPointAddrOffResolutionFailure addr ->
+        PP.pretty "Could not resolve offset for entry point address" PP.<+> PP.pretty addr

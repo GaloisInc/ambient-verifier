@@ -4,6 +4,7 @@ all: $(patsubst %c,%exe,$(wildcard *.c))
 
 CC=arm-linux-gnueabi-gcc
 MUSL_CC=armv7m-linux-musleabi-gcc
+STRIP=arm-linux-gnueabi-strip
 
 # Syscall test needs the standard library available, so it builds with
 # -nostartfiles instead of -nostdlib
@@ -80,6 +81,10 @@ client-inet.exe: client-inet.c
 
 client-inet6.exe: client-inet6.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
+stripped-static.exe: stripped.c
+	$(MUSL_CC) -static -no-pie $< -o $@
+	$(STRIP) $@
 
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@

@@ -44,6 +44,7 @@ library
     exposed-modules:  Ambient.ABI,
                       Ambient.Diagnostic,
                       Ambient.Discovery,
+                      Ambient.EntryPoint,
                       Ambient.EventTrace,
                       Ambient.Exception,
                       Ambient.Extensions,
