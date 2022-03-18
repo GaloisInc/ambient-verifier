@@ -20,6 +20,7 @@ import           Control.Monad ( foldM )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(..) )
 import qualified Data.BitVector.Sized as BVS
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.List as PL
@@ -276,7 +277,10 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
     overridePLTStubByName fnName state =
       lazilyRegisterHandle state fnName AExt.functionOvHandles
                            (AF.functionNameMapping abi) $
-        CMC.throwM (AE.MissingPLTStubOverride fnName)
+        case Map.lookup fnName (fcSoSymbolToFnHandle fnConf) of
+          Nothing ->
+            CMC.throwM (AE.UnhandledPLTStub fnName)
+          Just handle -> pure (handle, state)
 
     resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
     resolveFuncAddr funcAddr =
@@ -590,31 +594,32 @@ globalMemoryHooks = DMSM.GlobalMemoryHooks {
   }
 
 initializeMemory
-  :: forall sym bak arch w p ext m
+  :: forall sym bak arch w p ext m t st fs
    . ( ?memOpts :: LCLM.MemOptions
      , MonadIO m
      , LCB.IsSymBackend sym bak
      , w ~ DMC.ArchAddrWidth arch
      , DMM.MemWidth w
      , KnownNat w
+     , sym ~ WE.ExprBuilder t st fs
      , 1 <= w
      , 16 <= w )
   => bak
   -> LCF.HandleAllocator
   -> DMA.ArchitectureInfo arch
-  -> DMM.Memory w
+  -> NEL.NonEmpty (DMM.Memory w)
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
   -> [ AF.SomeFunctionOverride p sym ext ]
   -- ^ A list of additional function overrides to register.
   -> m ( InitialMemory sym w )
-initializeMemory bak halloc archInfo mem (AM.InitArchSpecificGlobals initGlobals) functionOvs = do
+initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobals) functionOvs = do
   let sym = LCB.backendGetSym bak
 
   -- Initialize memory
   let endianness = DMSM.toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  (initMem, memPtrTbl) <- liftIO $ DMSM.newGlobalMemoryWith globalMemoryHooks (Proxy @arch) bak endianness DMSM.ConcreteMutable mem
+  (initMem, memPtrTbl) <- liftIO $ DMSM.newMergedGlobalMemoryWith globalMemoryHooks (Proxy @arch) bak endianness DMSM.ConcreteMutable mems
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
 
@@ -665,6 +670,8 @@ data FunctionConfig w args ret arch sym p ext = FunctionConfig {
   -- ^ The memory region index containing functions
   , fcPltStubs :: Map.Map (DMME.MemWord w) WF.FunctionName
   -- ^ Mapping from PLT stub addresses to function names
+  , fcSoSymbolToFnHandle :: Map.Map WF.FunctionName (LCF.FnHandle args ret)
+  -- ^ Mapping from symbols in shared objects to function handles
   }
 
 simulateFunction
@@ -792,7 +799,7 @@ symbolicallyExecute
   -> DMA.ArchitectureInfo arch
   -> DMS.GenArchVals DMS.LLVMMemory arch
   -> SymbolicExecutionConfig arch sym
-  -> DMB.LoadedBinary arch binFmt
+  -> NEL.NonEmpty (DMB.LoadedBinary arch binFmt)
   -> [LCS.GenericExecutionFeature sym]
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
   -> DMM.Memory w
@@ -808,12 +815,12 @@ symbolicallyExecute
        , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinary execFeatures cfg discoveryMem initGlobals mFsRoot fnConf = do
-  let mem = DMB.memoryImage loadedBinary
+symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinaries execFeatures cfg discoveryMem initGlobals mFsRoot fnConf = do
+  let mems = NEL.map DMB.memoryImage loadedBinaries
   initialMem <- initializeMemory bak
                                  halloc
                                  archInfo
-                                 mem
+                                 mems
                                  initGlobals
                                  (fcFunctionOverrides fnConf)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()

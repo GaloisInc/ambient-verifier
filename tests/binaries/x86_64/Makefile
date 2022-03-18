@@ -75,6 +75,12 @@ plt-ov.exe: plt-ov.c
 plt-no-pltgot.exe: plt-no-pltgot.c
 	$(CC) -nostartfiles -pie $^ -o $@
 
+libfib.so: fib.o libgetone.so
+	$(CC) -nostdlib -L./ -shared $< -lgetone -o $@
+
+so.exe: so.c libfib.so ambient_assert.o
+	$(CC) -nostdlib -L./ so.c ambient_assert.o -lfib -lgetone -o $@
+
 server-inet.exe: server-inet.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 
@@ -98,3 +104,6 @@ infinite-recursion.exe: infinite-recursion.c
 
 %.o: %.c %.h
 	$(CC) -nostdlib -c $<
+
+lib%.so: %.o
+	$(CC) -nostdlib -shared $^ -o $@

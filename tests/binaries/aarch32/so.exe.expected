@@ -1,0 +1,4 @@
+successful: 9
+failed: 0
+overrideDir: tests/overrides/
+sharedObjectsDir: tests/binaries/aarch32

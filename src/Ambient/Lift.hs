@@ -3,7 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
-module Ambient.Lift ( liftDiscoveredFunction ) where
+module Ambient.Lift ( discoveredFunName, liftDiscoveredFunction ) where
 
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString.Char8 as BSC

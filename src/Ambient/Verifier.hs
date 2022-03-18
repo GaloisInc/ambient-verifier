@@ -14,12 +14,13 @@ import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Control.Exception as X
 import           Control.Lens ( (^.) )
-import           Control.Monad ( void )
+import           Control.Monad ( foldM, void )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Foldable as F
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( catMaybes, fromMaybe )
 import qualified Data.Parameterized.Nonce as PN
@@ -55,6 +56,7 @@ import qualified Lang.Crucible.Simulator.SimError as LCSS
 import qualified Lang.Crucible.Simulator.SymSequence as LCSS
 import qualified What4.Config as WConf
 import qualified What4.Concrete as WC
+import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.Partial as WP
 
@@ -63,6 +65,7 @@ import qualified Ambient.Discovery as ADi
 import qualified Ambient.EventTrace as AEt
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
+import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
@@ -123,6 +126,8 @@ data ProgramInstance =
                   -- recursive calls.
                   , piSolverInteractionFile :: Maybe FilePath
                   -- ^ Optional location to write solver interactions log to
+                  , piSharedObjectDir :: Maybe FilePath
+                  -- ^ Optional directory containing shared objects to verify
                   }
 
 -- | Retrieve a mapping from symbol names to addresses from code discovery
@@ -199,20 +204,74 @@ buildBindings fns hdlAlloc pinst archVals entryAddr cfg0 = do
       (handle, binding) <- buildBinding fn bindings addr
       return ((addr, handle) : handles, binding)
   where
-    -- Given a Crucible CFG 'cfg' and a function handle map, returns a function
-    -- handle for 'cfg' and an updated handle map.
-    buildBindingFromCfg cfg handleMap = do
-      let handle = LCCC.cfgHandle cfg
-      let fnBindings = LCF.insertHandleMap handle (LCS.UseCFG cfg (LCAP.postdomInfo cfg)) handleMap
-      (handle, fnBindings)
     -- Given a discovered function 'fn', a function handle map, and the address
     -- of 'fn', returns a function handle for 'fn' and an updated handle map.
-    buildBinding (Some fn) handleMap addr = do
+    buildBinding fn handleMap addr = do
       if addr == entryAddr
       then return $ buildBindingFromCfg cfg0 handleMap
-      else do
-        LCCC.SomeCFG cfg <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) fn
-        return $ buildBindingFromCfg cfg handleMap
+      else bindFunction hdlAlloc pinst archVals fn handleMap
+
+-- | A function override handle paired with the name of the function being
+-- overridden.
+data NamedHandle arch = NamedHandle { _nhName :: WF.FunctionName
+                                    , _nhHandle :: AF.FunctionOverrideHandle arch
+                                    }
+
+-- | Build function bindings for a shared object.  Returns a pair containing:
+--  * A list of 'NamedHandle's
+--  * A function handle map in the 'LCF.FnHandleMap' form
+buildSoBindings
+  :: (MonadIO m,
+      DMM.MemWidth (DMC.RegAddrWidth (DMC.ArchReg arch)))
+  => LCF.HandleAllocator
+  -> ProgramInstance
+  -> DMS.GenArchVals mem arch
+  -> ([NamedHandle arch]
+     , LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState arch) sym (DMS.MacawExt arch)))
+  -- ^ Initial bindings to build on
+  -> DMD.DiscoveryState arch
+  -> m ( [NamedHandle arch]
+       , LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState arch) sym (DMS.MacawExt arch)) )
+buildSoBindings hdlAlloc pinst archVals initBindings discoveryState = do
+  let fns = Map.toList (discoveryState ^. DMD.funInfo)
+  foldM buildBinding initBindings fns
+  where
+    -- Given a discovered function 'fn', a function handle map, and the address
+    -- of 'fn', returns a function handle for 'fn' and an updated handle map.
+    buildBinding (namedHandles, handleMap) (_addr, Some fn) = do
+      (handle, handleMap') <- bindFunction hdlAlloc pinst archVals (Some fn) handleMap
+      let namedHandle = NamedHandle (ALi.discoveredFunName fn) handle
+      return (namedHandle : namedHandles, handleMap')
+
+-- | Build a function handle and update a handle map for a given function
+bindFunction
+  :: ( MonadIO m
+     , DMM.MemWidth (DMC.RegAddrWidth (DMC.ArchReg arch)) )
+  => LCF.HandleAllocator
+  -> ProgramInstance
+  -> DMS.GenArchVals mem arch
+  -> Some (DMD.DiscoveryFunInfo arch)
+  -> LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch))
+  -> m ( LCF.FnHandle
+           (LCCC.EmptyCtx
+            LCCC.::> LCCC.StructType
+                       (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
+           (LCCC.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
+       , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) )
+bindFunction hdlAlloc pinst archVals (Some fn) handleMap = do
+  LCCC.SomeCFG cfg <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) fn
+  return $ buildBindingFromCfg cfg handleMap
+
+-- | Given a Crucible CFG @cfg@ and a function handle map, returns a function
+-- handle for @cfg@ and an updated handle map.
+buildBindingFromCfg
+  :: LCCC.CFG ext b i r
+  -> LCF.FnHandleMap (LCS.FnState p sym ext)
+  -> (LCF.FnHandle i r, LCF.FnHandleMap (LCS.FnState p sym ext))
+buildBindingFromCfg cfg handleMap =
+  let handle = LCCC.cfgHandle cfg in
+  let fnBindings = LCF.insertHandleMap handle (LCS.UseCFG cfg (LCAP.postdomInfo cfg)) handleMap in
+  (handle, fnBindings)
 
 -- | Extract the final value from a global variable
 --
@@ -360,8 +419,13 @@ verify logAction pinst timeoutDuration = do
 
     -- Load up the binary, which existentially introduces the architecture of the
     -- binary in the context of the continuation
-    AL.withBinary (piPath pinst) (piBinary pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals pltStubs loadedBinary -> DMA.withArchConstraints archInfo $ do
-      discoveryState <- ADi.discoverFunctions logAction archInfo loadedBinary
+    AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals pltStubs loadedBinary sharedObjects -> DMA.withArchConstraints archInfo $ do
+      discoveryState <- ADi.discoverFunctions logAction
+                                              archInfo
+                                              loadedBinary
+      soDiscoveryState <- mapM (ADi.discoverFunctions logAction archInfo)
+                               sharedObjects
+      let loadedBinaries = NEL.fromList (loadedBinary : sharedObjects)
       -- See Note [Entry Point] for more details
       (entryAddr, Some discoveredEntry) <- getNamedFunction discoveryState $
                                            fromMaybe "main" $ piEntryPoint pinst
@@ -373,6 +437,10 @@ verify logAction pinst timeoutDuration = do
           archVals
           entryAddr
           cfg0
+
+      (soHandles, bindings') <- foldM (buildSoBindings hdlAlloc pinst archVals)
+                                      ([], bindings)
+                                      soDiscoveryState
 
       let fnRegions = Set.fromList [ DMM.segmentBase (DMM.segoffSegment s)
                                    | (s, _) <- handles ]
@@ -410,14 +478,15 @@ verify logAction pinst timeoutDuration = do
         Nothing -> return []
       let fnConf = AVS.FunctionConfig {
           AVS.fcAddressToFnHandle = Map.fromList handles
-        , AVS.fcFnBindings = bindings
+        , AVS.fcFnBindings = bindings'
         , AVS.fcBuildSyscallABI = syscallABI
         , AVS.fcBuildFunctionABI = functionABI
         , AVS.fcFunctionOverrides = functionOvs
         , AVS.fcRegion = fnRegion
         , AVS.fcPltStubs = pltStubs
+        , AVS.fcSoSymbolToFnHandle = Map.fromList [(name, handle) | (NamedHandle name handle) <- soHandles]
         }
-      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinary execFeatures cfg0 (DMD.memory discoveryState) buildGlobals (piFsRoot pinst) fnConf
+      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinaries execFeatures cfg0 (DMD.memory discoveryState) buildGlobals (piFsRoot pinst) fnConf
 
       liftIO $ mapM_ (assertPropertySatisfied logAction bak execResult) (AEt.properties (AVW.wmProperties wmConfig))
 

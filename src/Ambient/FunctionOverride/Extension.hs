@@ -27,6 +27,7 @@ import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import           Control.Monad.State.Class ( MonadState )
 import           Control.Monad.Writer.Class ( MonadWriter )
 import qualified Data.List as List
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
@@ -195,7 +196,7 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
           initMem <- AVS.initializeMemory bak
                                           halloc
                                           archInfo
-                                          mem
+                                          (NEL.fromList [mem])
                                           noopInitGlobals
                                           []
           let ?recordLLVMAnnotation = \_ _ _ -> return ()

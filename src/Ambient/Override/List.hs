@@ -7,6 +7,7 @@ module Ambient.Override.List
   ) where
 
 import           Control.Monad.IO.Class ( MonadIO(..) )
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map as Map
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
@@ -44,17 +45,17 @@ listOverrides logAction pinst = do
   Some ng <- liftIO PN.newIONonceGenerator
   AS.withOnlineSolver (AV.piSolver pinst) (AV.piFloatMode pinst) ng $ \bak ->
     let sym = LCB.backendGetSym bak in
-    AL.withBinary (AV.piPath pinst) (AV.piBinary pinst) hdlAlloc sym $
+    AL.withBinary (AV.piPath pinst) (AV.piBinary pinst) (AV.piSharedObjectDir pinst) hdlAlloc sym $
         \(archInfo :: DMAI.ArchitectureInfo arch) _archVals
         (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI)
-        parserHooks buildGlobals _pltStubs loadedBinary -> do
+        parserHooks buildGlobals _pltStubs loadedBinary sharedObjects -> do
       functionOvs <- case AV.piOverrideDir pinst of
         Just dir -> do
           liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
         Nothing -> return []
-      let mem = DMB.memoryImage loadedBinary
+      let mems = NEL.fromList (map DMB.memoryImage (loadedBinary : sharedObjects))
       let ?memOpts = LCLM.defaultMemOptions
-      initialMem <- AVS.initializeMemory bak hdlAlloc archInfo mem buildGlobals functionOvs
+      initialMem <- AVS.initializeMemory bak hdlAlloc archInfo mems buildGlobals functionOvs
       fileContents <- liftIO $
         case AV.piFsRoot pinst of
           Nothing -> return LCSy.emptyInitialFileSystemContents

@@ -22,6 +22,7 @@ import           GHC.TypeNats (KnownNat)
 import qualified Data.Macaw.BinaryLoader.AArch32 as DMBA ()
 import qualified Data.Macaw.BinaryLoader.X86 as DMBX ()
 import qualified Data.Macaw.Memory as DMM
+import qualified Data.Macaw.Memory.LoadCommon as MML
 import qualified What4.FunctionName as WF
 
 import qualified Ambient.ABI as AA
@@ -49,49 +50,51 @@ pltStubSymbols
      )
   => AA.ABI
   -> proxy reloc
-  -> DEP.ElfHeaderInfo w
+  -> [(DEP.ElfHeaderInfo w, MML.LoadOptions)]
   -> Map.Map (DMM.MemWord w) WF.FunctionName
-pltStubSymbols abi _ elfHeaderInfo = Map.fromList $ fromMaybe [] $ do
-  let (_, elf) = DE.getElf elfHeaderInfo
-  vam <- DEP.virtAddrMap elfBytes phdrs
-  rawDynSec <- listToMaybe (DE.findSectionByName (BSC.pack ".dynamic") elf)
-
-  let dynBytes = DE.elfSectionData rawDynSec
-  dynSec <- case DEP.dynamicEntries (DE.elfData elf) (DE.elfClass elf) dynBytes of
-    Left _dynErr -> Nothing
-    Right dynSec -> return dynSec
-
-  vreqm <- case DEP.dynVersionReqMap dynSec vam of
-    Left _dynErr -> Nothing
-    Right vm -> return vm
-
-  let pltAddrs = case extractPltAddrs dynSec vam vreqm elf of
-        Nothing -> []
-        Just addrs -> addrs
-
-  let pltGotAddrs = case extractPltGotAddrs dynSec vam vreqm elf of
-        Nothing -> []
-        Just addrs -> addrs
-
-  return (pltAddrs ++ pltGotAddrs)
+pltStubSymbols abi _ elfHeaderInfos = Map.fromList $ foldl' go [] elfHeaderInfos
   where
-    phdrs = DE.headerPhdrs elfHeaderInfo
-    elfBytes = DE.headerFileContents elfHeaderInfo
+    go acc (elfHeaderInfo, loadOptions) = fromMaybe acc $ do
+      let (_, elf) = DE.getElf elfHeaderInfo
+      let phdrs = DE.headerPhdrs elfHeaderInfo
+      let elfBytes = DE.headerFileContents elfHeaderInfo
+
+      vam <- DEP.virtAddrMap elfBytes phdrs
+      rawDynSec <- listToMaybe (DE.findSectionByName (BSC.pack ".dynamic") elf)
+
+      let dynBytes = DE.elfSectionData rawDynSec
+      dynSec <- case DEP.dynamicEntries (DE.elfData elf) (DE.elfClass elf) dynBytes of
+        Left _dynErr -> Nothing
+        Right dynSec -> return dynSec
+
+      vreqm <- case DEP.dynVersionReqMap dynSec vam of
+        Left _dynErr -> Nothing
+        Right vm -> return vm
+
+      let pltAddrs = case extractPltAddrs dynSec vam vreqm loadOptions elf of
+            Nothing -> []
+            Just addrs -> addrs
+
+      let pltGotAddrs = case extractPltGotAddrs dynSec vam vreqm loadOptions elf of
+            Nothing -> []
+            Just addrs -> addrs
+      return (pltAddrs ++ pltGotAddrs ++ acc)
 
     pltStubAddress dynSec vam vreqm getRelSymIdx accum rel
       | Right (symtabEntry, _versionedVal) <- DEP.dynSymEntry dynSec vam vreqm (getRelSymIdx rel) =
           DE.steName symtabEntry : accum
       | otherwise = accum
 
-    buildAssocList nameRelaMap baseAddr stubSize =
+    buildAssocList nameRelaMap baseAddr stubSize loadOptions =
+      let loadOffset = toInteger $ fromMaybe 0 (MML.loadOffset loadOptions) in
       [ ( DMM.memWord (fromIntegral addr)
         , WF.functionNameFromText (DTE.decodeUtf8 symName) )
       | (idx, symName) <- nameRelaMap
-      , let addr = baseAddr + idx * stubSize
+      , let addr = loadOffset + baseAddr + idx * stubSize
       ]
 
     -- Build assoc list from addresses of stubs in .plt to function names
-    extractPltAddrs dynSec vam vreqm elf = do
+    extractPltAddrs dynSec vam vreqm loadOptions elf = do
       SomeRel rels getRelSymIdx <- case DEP.dynPLTRel @reloc dynSec vam of
         Right (DEP.PLTRela relas) -> return (SomeRel relas DEP.relaSym)
         Right (DEP.PLTRel rels) -> return (SomeRel rels DEP.relSym)
@@ -106,10 +109,10 @@ pltStubSymbols abi _ elfHeaderInfo = Map.fromList $ fromMaybe [] $ do
       let (pltSize, pltStubSize) = case abi of
                                      AA.AArch32Linux -> (20, 12)
                                      AA.X86_64Linux -> (16, 16)
-      return $ buildAssocList nameRelaMap (pltSize + toInteger pltBase) pltStubSize
+      return $ buildAssocList nameRelaMap (pltSize + toInteger pltBase) pltStubSize loadOptions
 
     -- Build assoc list from addresses of stubs in .plt.got to function names
-    extractPltGotAddrs dynSec vam vreqm elf = do
+    extractPltGotAddrs dynSec vam vreqm loadOptions elf = do
       relsGot <- case DEP.dynRelaEntries @reloc dynSec vam of
         Right relas -> return relas
         Left _ -> Nothing
@@ -131,7 +134,7 @@ pltStubSymbols abi _ elfHeaderInfo = Map.fromList $ fromMaybe [] $ do
                 -- offset here and the rest of the code should work.
                 CMC.throwM AE.Aarch32BinaryHasPltGot
               AA.X86_64Linux -> return 8
-      return $ buildAssocList nameRelaMapGot (toInteger pltGotBase) pltGotStubSize
+      return $ buildAssocList nameRelaMapGot (toInteger pltGotBase) pltGotStubSize loadOptions
 
 {- Note [PLT Stub Names]
 

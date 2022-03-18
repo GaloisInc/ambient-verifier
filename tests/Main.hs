@@ -38,6 +38,7 @@ data ExpectedGoals =
                 , overrideDir :: Maybe FilePath
                 , iterationBound :: Maybe Word64
                 , recursionBound :: Maybe Word64
+                , sharedObjectsDir :: Maybe FilePath
                 }
   deriving (Eq, Ord, Read, Show, Generic)
 
@@ -50,6 +51,7 @@ emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , overrideDir = Nothing
                                    , iterationBound = Nothing
                                    , recursionBound = Nothing
+                                   , sharedObjectsDir = Nothing
                                    }
 
 -- | A simple logger that just sends diagnostics to a channel; an asynchronous
@@ -117,6 +119,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piIterationBound = iterationBound expectedResult
                                  , AV.piRecursionBound = recursionBound expectedResult
                                  , AV.piSolverInteractionFile = Nothing
+                                 , AV.piSharedObjectDir = sharedObjectsDir expectedResult
                                  }
 
   chan <- CC.newChan
@@ -133,6 +136,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                  , overrideDir = overrideDir expectedResult
                  , iterationBound = iterationBound expectedResult
                  , recursionBound = recursionBound expectedResult
+                 , sharedObjectsDir = sharedObjectsDir expectedResult
                  }
   TTH.assertEqual "Expected Output" expectedResult res'
   where

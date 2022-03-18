@@ -126,6 +126,7 @@ buildPinstFromVerifyOptions o = do
            , AV.piIterationBound = O.iterationBound o
            , AV.piRecursionBound = O.recursionBound o
            , AV.piSolverInteractionFile = O.solverInteractionFile o
+           , AV.piSharedObjectDir = O.sharedObjectDir o
            }
 
 -- | This is the real verification driver that takes the parsed out command line

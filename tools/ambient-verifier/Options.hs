@@ -57,6 +57,8 @@ data VerifyOptions =
                 -- ^ Optional location to write What4 solver debug messages to
                 , functionCFGsFile :: Maybe FilePath
                 -- ^ Optional location to write function CFGs to
+                , sharedObjectDir :: Maybe FilePath
+                -- ^ Directory containing shared objects to verify
                 }
   deriving ( Show )
 
@@ -186,6 +188,10 @@ verifyOptions = VerifyOptions
                                         <> OA.metavar "FILE"
                                         <> OA.help "Log the control-flow graphs of functions that the verifier discovers to FILE"
                                        ))
+           <*> OA.optional (OA.strOption ( OA.long "shared-objects"
+                                        <> OA.short 'L'
+                                        <> OA.metavar "DIRECTORY"
+                                        <> OA.help "Directory containing shared objects to verify"))
 
 -- | A parser for the \"list-overrides\" subcommand
 listOverridesParser :: OA.Parser Command

@@ -64,11 +64,20 @@ data AmbientException where
   MultipleFunctionRegions :: AmbientException
   -- | aarch32 binary contains an unsupported .plt.got section
   Aarch32BinaryHasPltGot :: AmbientException
-  -- | Encountered a PLT stub without an accompanying override
-  MissingPLTStubOverride :: WF.FunctionName -> AmbientException
+  -- | Encountered a PLT stub without an accompanying override or
+  -- implementation
+  UnhandledPLTStub :: WF.FunctionName -> AmbientException
   -- | The @socket@ function was invoked with an unsupported argument.
   -- See @Note [The networking story]@ in "Ambient.FunctionOverride.Overrides".
   UnsupportedSocketArgument :: NetworkFunctionArgument -> Integer -> AmbientException
+  -- | A provided shared object had a different ELF machine value than the main
+  -- binary.  The first argument is the 'DE.ElfMachine' for the shared object
+  -- and the second argument is the 'DE.ElfMachine' for the main binary.
+  SoMismatchedElfMachine :: DE.ElfMachine -> DE.ElfMachine -> AmbientException
+  -- | A provided shared object had a different ELF class value than the main
+  -- binary.  The first argument is the 'DE.ElfClass' for the shared object
+  -- and the second argument is the 'DE.ElfClass' for the main binary.
+  SoMismatchedElfClass :: DE.ElfClass w -> DE.ElfClass w' -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -163,8 +172,12 @@ instance PP.Pretty AmbientException where
         PP.pretty "Binaries containing functions in multiple memory regions are not currently supported."
       Aarch32BinaryHasPltGot ->
         PP.pretty "aarch32 binaries containing shared library stubs in .plt.got sections are not currently supported."
-      MissingPLTStubOverride fnName ->
-        PP.pretty "Missing override for shared library function: " <> PP.pretty fnName
+      UnhandledPLTStub fnName ->
+        PP.pretty "Missing implementation or override for shared library function: " <> PP.pretty fnName
       UnsupportedSocketArgument arg value ->
         PP.pretty "Attempted to call the 'socket' function with an unsupported" PP.<+>
         networkFunctionArgumentDescription arg <> PP.colon PP.<+> PP.viaShow value
+      SoMismatchedElfMachine soMachine mainMachine ->
+        PP.pretty "A shared object has a different ELF machine value than the main binary.  Shared object has machine " PP.<+> PP.viaShow soMachine <> PP.pretty " and main binary has machine " PP.<+> PP.viaShow mainMachine
+      SoMismatchedElfClass soClass mainClass ->
+        PP.pretty "A shared object has a different ELF class value than the main binary.  Shared object has class " PP.<+> PP.viaShow soClass <> PP.pretty " and main binary has class " PP.<+> PP.viaShow mainClass
