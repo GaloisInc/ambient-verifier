@@ -104,6 +104,10 @@ stripped-static.exe: stripped.c
 	$(MUSL_CC) -static -no-pie $< -o $@
 	$(STRIP) $@
 
+stripped-dynamic.exe: stripped.c
+	$(CC) -pie $< -o $@
+	$(STRIP) $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

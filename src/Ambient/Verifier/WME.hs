@@ -18,10 +18,10 @@ import           Numeric (showHex)
 
 import qualified Data.Macaw.Architecture.Info as DMAI
 import qualified Data.Macaw.BinaryLoader as DMB
+import qualified Data.Macaw.BinaryLoader.ELF as DMBE
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Symbolic as DMS
-import qualified Data.Macaw.Types as DMT
 import qualified Lang.Crucible.Analysis.Postdom as LCAP
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.CFG.Core as LCCC
@@ -107,9 +107,8 @@ buildCfgFromAddr :: forall arch binFmt w
 buildCfgFromAddr archInfo loadedBinary hdlAlloc addr symArchFns = do
   let mem = DMB.memoryImage loadedBinary
   let symMap = AD.symbolMap loadedBinary
-  let bvAddr :: forall ids. DMC.Value arch ids (DMT.BVType (DMC.RegAddrWidth (DMC.ArchReg arch)))
-      bvAddr = DMC.CValue (DMC.BVCValue (WI.knownNat @(DMC.ArchAddrWidth arch)) addr)
-  let mOff = DMC.valueAsSegmentOff mem bvAddr
+  let mOff = DMBE.resolveAbsoluteAddress (DMB.memoryImage loadedBinary)
+                                         (fromInteger addr)
   case mOff of
     Just off -> do
       let discoveryState = DMD.cfgFromAddrs archInfo mem symMap [off] []
