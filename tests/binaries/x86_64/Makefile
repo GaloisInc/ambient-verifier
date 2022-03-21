@@ -79,6 +79,9 @@ plt-no-pltgot.exe: plt-no-pltgot.c
 libfib.so: fib.o libgetone.so
 	$(CC) -nostdlib -L./ -shared $< -lgetone -o $@
 
+libgetone-stripped.so: libgetone.so
+	$(STRIP) $< -o $@
+
 so.exe: so.c libfib.so ambient_assert.o
 	$(CC) -nostdlib -L./ so.c ambient_assert.o -lfib -lgetone -o $@
 
@@ -106,6 +109,10 @@ stripped-static.exe: stripped.c
 
 stripped-dynamic.exe: stripped.c
 	$(CC) -pie $< -o $@
+	$(STRIP) $@
+
+stripped-so.exe: stripped-so.c libgetone-stripped.so
+	$(CC) -L./ stripped-so.c -lgetone-stripped -o $@
 	$(STRIP) $@
 
 %.exe: %.c

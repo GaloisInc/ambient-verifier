@@ -1,0 +1,16 @@
+statechart:
+  name: IHaveAchievedNothing
+  root state:
+    name: Root
+    initial: NormalExecution
+    states:
+      - name: NormalExecution
+        description: |
+          Execution before the Weird Machine starts
+        transitions:
+          - target: WMEntered
+            event: EnterWeirdMachine(0x1135)
+      - name: WMEntered
+        description: |
+          The Weird Machine has been entered
+        type: final
