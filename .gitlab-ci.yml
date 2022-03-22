@@ -16,7 +16,15 @@ ambient-verifier:
     key: ${CI_JOB_NAME}-${GHCVER}
     paths:
       - dist-newstyle/
-      - ~/.cabal/store
+      # Ideally, we'd just cache /root/.cabal/store, but GitLab CI only allows
+      # you to cache local items (according to a nugget of wisdom found in the
+      # comments of https://docs.gitlab.com/ee/ci/caching/#cache-python-dependencies).
+      # For this reason, we move the global /root/.cabal directory to the local
+      # project directory after building so that GitLab CI will properly cache
+      # it. Similarly, we move the local .cabal directory to /root/.cabal
+      # after retrieving the cache (but before building) so that cabal can find
+      # it properly.
+      - .cabal/store
   before_script:
     - apt update
     - DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends tzdata
@@ -44,10 +52,12 @@ ambient-verifier:
     - ghcup install ghc --platform x86_64-deb8-linux $GHCVER --verbose
     - ./submods-to-source-repos cabal.project.dist > cabal.project
     - cat cabal.project
+    - mv .cabal /root/.cabal || true
     - cabal update
     - cabal configure -w ghc-$GHCVER --enable-tests pkg:ambient-verifier
     - cabal build pkg:ambient-verifier
     - cabal test pkg:ambient-verifier
+    - mv /root/.cabal .cabal || true
   parallel:
     matrix:
       - GHCVER: [8.8.4, 8.10.7, 9.0.2]
