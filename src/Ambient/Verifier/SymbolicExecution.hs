@@ -19,7 +19,10 @@ import           Control.Lens ( Lens', (^.), set, over )
 import           Control.Monad ( foldM )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(..) )
+import qualified Control.Monad.State.Strict as CMS
 import qualified Data.BitVector.Sized as BVS
+import qualified Data.ByteString as BS
+import qualified Data.List as List
 import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
@@ -29,6 +32,8 @@ import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Parameterized.TraversableFC as FC
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
+import qualified Data.Traversable as Trav
+import qualified Data.Vector as DV
 import           GHC.TypeNats ( KnownNat, type (<=) )
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lumberjack as LJ
@@ -46,10 +51,12 @@ import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Extension as LCCE
 import qualified Lang.Crucible.FunctionHandle as LCF
+import qualified Lang.Crucible.LLVM.Bytes as LCLB
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.Intrinsics as LCLI
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
+import qualified Lang.Crucible.LLVM.MemType as LCLMT
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
@@ -654,6 +661,111 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
                         validityCheck
                         globalMap)
 
+-- | Populate the registers corresponding to @main(argc, argv)@'s arguments
+-- with the user-supplied command line arguments.
+--
+-- See @Note [Simulating main(argc, argv)]@ in @Options@.
+initMainArguments ::
+  ( LCB.IsSymBackend sym bak
+  , LCLM.HasLLVMAnn sym
+  , DMS.SymArchConstraints arch
+  , w ~ DMC.ArchAddrWidth arch
+  , LCLM.HasPtrWidth w
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  bak ->
+  LCLM.MemImpl sym ->
+  DMS.GenArchVals DMS.LLVMMemory arch ->
+  DMC.ArchReg arch (DMT.BVType w) ->
+  -- ^ The register for the first argument (@argc@)
+  DMC.ArchReg arch (DMT.BVType w) ->
+  -- ^ The register for the second argument (@argv@)
+  [BS.ByteString] ->
+  -- ^ The user-supplied command-line arguments
+  LCS.RegEntry sym (DMS.ArchRegStruct arch) ->
+  -- ^ The initial register state
+  IO ( LCS.RegEntry sym (DMS.ArchRegStruct arch)
+     , LCLM.MemImpl sym
+     )
+initMainArguments bak mem0 archVals r0 r1 argv regStruct0 = do
+  let sym = LCB.backendGetSym bak
+  let argc = List.genericLength argv
+  argcBV  <- WI.bvLit sym ?ptrWidth $ BVS.mkBV ?ptrWidth argc
+  argcPtr <- LCLM.llvmPointer_bv sym argcBV
+  let regStruct1 = DMS.updateReg archVals regStruct0 r0 argcPtr
+  (argvPtr, mem2) <- allocaArgv bak mem0 argv
+  let regStruct2 = DMS.updateReg archVals regStruct1 r1 argvPtr
+  pure (regStruct2, mem2)
+
+-- | Allocate an @argv@ array for use in a @main(argc, argv)@ entry point
+-- function. This marshals the list of ByteStrings to an array of C strings.
+-- As mandated by section 5.1.2.2.1 of the C standard, the last element of the
+-- array will be a null pointer.
+--
+-- See @Note [Simulating main(argc, argv)]@ in @Options@.
+allocaArgv ::
+  ( LCB.IsSymBackend sym bak
+  , LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  bak ->
+  LCLM.MemImpl sym ->
+  [BS.ByteString] ->
+  -- ^ The user-supplied command-line arguments
+  IO (LCLM.LLVMPtr sym w, LCLM.MemImpl sym)
+allocaArgv bak mem0 argv = do
+  let sym = LCB.backendGetSym bak
+  let sz = List.genericLength argv + 1 -- Note the (+ 1) here for the null pointer
+  let ptrWidthBytes = LCLB.bytesToInteger (LCLB.bitsToBytes (WI.intValue ?ptrWidth))
+  let szBytes = sz * ptrWidthBytes
+  szBytesBV <- WI.bvLit sym ?ptrWidth $ BVS.mkBV ?ptrWidth szBytes
+  let loc = "ambient-verifier allocation for argv"
+  (argvPtr, mem1) <- LCLM.doAlloca bak mem0 szBytesBV LCLD.noAlignment loc
+  let memTy = LCLMT.ArrayType (fromIntegral sz) $ LCLMT.PtrType $ LCLMT.MemType $ LCLMT.IntType 8
+  let tpr = LCT.VectorRepr $ LCLM.LLVMPointerRepr ?ptrWidth
+  sty <- LCLM.toStorableType memTy
+  (argvArr0, mem2) <- CMS.runStateT
+                        (traverse (\arg -> CMS.StateT $ \mem -> allocaCString bak mem arg) argv)
+                        mem1
+  nullPtr <- LCLM.mkNullPointer sym ?ptrWidth
+  let argvArr1 = argvArr0 ++ [nullPtr]
+  mem3 <- LCLM.doStore bak mem2 argvPtr tpr sty LCLD.noAlignment $ DV.fromList argvArr1
+  pure (argvPtr, mem3)
+
+-- | Allocate a 'BS.ByteString' on the stack as a C string. This adds a null
+-- terminator at the end of the string in the process.
+--
+-- See @Note [Simulating main(argc, argv)]@ in @Options@.
+allocaCString ::
+  forall sym bak w.
+  ( LCB.IsSymBackend sym bak
+  , LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  bak ->
+  LCLM.MemImpl sym ->
+  BS.ByteString ->
+  -- ^ The string to marshal. /Not/ null-terminated.
+  IO (LCLM.LLVMPtr sym w, LCLM.MemImpl sym)
+allocaCString bak mem0 str = do
+  let sym = LCB.backendGetSym bak
+  let sz = BS.length str + 1 -- Note the (+ 1) here for the null terminator
+  szBV <- WI.bvLit sym ?ptrWidth $ BVS.mkBV ?ptrWidth $ fromIntegral sz
+  let loc = "ambient-verifier allocation for an argv string"
+  (strPtr, mem1) <- LCLM.doAlloca bak mem0 szBV LCLD.noAlignment loc
+  let w8 = WI.knownNat @8
+  let memTy = LCLMT.ArrayType (fromIntegral sz) $ LCLMT.IntType 8
+  let tpr = LCT.VectorRepr $ LCLM.LLVMPointerRepr w8
+  sty <- LCLM.toStorableType memTy
+  let bytes = BS.unpack str ++ [0] -- Note the (++ [0]) here for the null terminator
+  cstr <- Trav.for bytes $ \byte -> do
+            byteBV <- WI.bvLit sym w8 $ BVS.mkBV w8 $ fromIntegral byte
+            LCLM.llvmPointer_bv sym byteBV
+  mem2 <- LCLM.doStore bak mem1 strPtr tpr sty LCLD.noAlignment $ DV.fromList cstr
+  pure (strPtr, mem2)
+
 -- | Configuration parameters concerning functions and overrides
 data FunctionConfig w args ret arch sym p ext = FunctionConfig {
     fcAddressToFnHandle :: Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
@@ -707,11 +819,13 @@ simulateFunction
   -- will be empty
   -> FunctionConfig w args ret arch sym p ext
   -- ^ Configuration parameters concerning functions and overrides
+  -> [BS.ByteString]
+  -- ^ The user-supplied command-line arguments
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf = do
+simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf cliArgs = do
   let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
@@ -726,8 +840,6 @@ simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cf
   let initialRegsEntry = LCS.RegEntry regsRepr initialRegs
   let regsWithStack = DMS.updateReg archVals initialRegsEntry DMC.sp_reg sp
 
-  let arguments = LCS.RegMap (Ctx.singleton regsWithStack)
-
   -- Initialize the file system
   fileContents <- liftIO $
     case mFsRoot of
@@ -739,22 +851,33 @@ simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cf
 
   (wmConfig, globals1) <- liftIO $ AVW.initWMConfig sym halloc globals0 (secProperties seConf)
 
+  let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
+  let syscallABI = buildSyscallABI fs (imMemVar initialMem) (AVW.wmProperties wmConfig)
+  let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
+  let functionABI = buildFunctionABI fs (imHeapEndGlob initialMem) (imMemVar initialMem) (fcFunctionOverrides fnConf) Map.empty
+
+  let mem0 = case LCSG.lookupGlobal (imMemVar initialMem) globals1 of
+               Just mem -> mem
+               Nothing  -> AP.panic AP.FunctionOverride "simulateFunction"
+                             [ "Failed to find global variable for memory: "
+                               ++ show (LCCC.globalName (imMemVar initialMem)) ]
+  let (mainReg0, mainReg1) = AF.functionMainArgumentRegisters functionABI
+  (regsWithMainArgs, mem1) <- liftIO $ initMainArguments bak mem0 archVals mainReg0 mainReg1 cliArgs regsWithStack
+  let globals2 = LCSG.insertGlobal (imMemVar initialMem) mem1 globals1
+  let arguments = LCS.RegMap (Ctx.singleton regsWithMainArgs)
+
   -- FIXME: We might want to add all known functions to the map here. As an
   -- alternative design, we might be able to lazily add functions as they are
   -- encountered in calls
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
-    let syscallABI = buildSyscallABI fs (imMemVar initialMem) (AVW.wmProperties wmConfig)
-    let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
-    let functionABI = buildFunctionABI fs (imHeapEndGlob initialMem) (imMemVar initialMem) (fcFunctionOverrides fnConf) Map.empty
     let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals discoveryMem fnConf functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
     let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings (fcFnBindings fnConf)) extImpl AExt.emptyAmbientSimulatorState
-    let s0 = LCS.InitialState ctx globals1 LCS.defaultAbortHandler regsRepr simAction
+    let s0 = LCS.InitialState ctx globals2 LCS.defaultAbortHandler regsRepr simAction
 
     let wmCallback = secWMMCallback seConf
     let wmSolver = secSolver seConf
@@ -811,11 +934,13 @@ symbolicallyExecute
   -- will be empty
   -> FunctionConfig w args ret arch sym p ext
   -- ^ Configuration parameters concerning functions and overrides
+  -> [BS.ByteString]
+  -- ^ The user-supplied command-line arguments
   -> m ( LCS.GlobalVar LCLM.Mem
        , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinaries execFeatures cfg discoveryMem initGlobals mFsRoot fnConf = do
+symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinaries execFeatures cfg discoveryMem initGlobals mFsRoot fnConf cliArgs = do
   let mems = NEL.map DMB.memoryImage loadedBinaries
   initialMem <- initializeMemory bak
                                  halloc
@@ -824,4 +949,4 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinaries
                                  initGlobals
                                  (fcFunctionOverrides fnConf)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf
+  simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf cliArgs

@@ -19,6 +19,7 @@ import           Data.Word ( Word16 )
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
+import qualified Data.Macaw.Types as DMT
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.FunctionHandle as LCF
@@ -92,6 +93,13 @@ data FunctionABI arch sym p =
       -- Argument register values
       -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
       -- Function argument values
+
+    -- The two registers used to store arguments in an
+    -- @int main(int argc, char *argv[])@ function.
+  , functionMainArgumentRegisters
+      :: ( DMC.ArchReg arch (DMT.BVType (DMC.ArchAddrWidth arch))
+         , DMC.ArchReg arch (DMT.BVType (DMC.ArchAddrWidth arch))
+         )
 
     -- Build an OverrideSim action with appropriate return register types from
     -- a given OverrideSim action

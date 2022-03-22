@@ -22,12 +22,22 @@ data VerifyOptions =
                 -- ^ The path to the binary to verify
                 , fsRoot :: Maybe FilePath
                 -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file
-                -- system will be empty
+                -- system will be empty.
+                --
+                -- See also @Note [Future Symbolic IO Improvements]@.
+                , commandLineArgv0 :: Maybe T.Text
+                -- ^ If @'Just' arg@, use @arg@ as the first element of @argv@
+                -- when simulating a @main(argc, argv)@ function.
+                -- If 'Nothing', use @binaryPath@ instead.
+                --
+                -- See @Note [Simulating main(argc, argv)]@.
                 , commandLineArguments :: [T.Text]
                 -- ^ A list of command line arguments to set up in the environment of
-                -- the program (this should include argv[0] as the command name)
+                -- the program. Note that this excludes the command name
+                -- (i.e., @argv[0]@), which is handled separately in
+                -- 'commandLineArgv0'.
                 --
-                -- See Note [Future Improvements]
+                -- See @Note [Simulating main(argc, argv)]@.
                 , solver :: AS.Solver
                 -- ^ The SMT solver to use for path satisfiability checking and
                 -- discharging verification conditions
@@ -166,9 +176,21 @@ verifyOptions = VerifyOptions
                                          <> OA.metavar "FILE"
                                          <> OA.help "The path to the symbolic filesystem for the process"
                                          ))
-           <*> OA.many (OA.strOption ( OA.long "argv"
+           <*> OA.optional (OA.strOption ( OA.long "argv0"
+                                        <> OA.metavar "STRING"
+                                        <> OA.help (unlines
+                                             [ "The first command line argument to pass to the process"
+                                             , "(i.e., argv[0]). If not specified, this will default to"
+                                             , "the --binary path."
+                                             ])
+                                         ))
+           <*> OA.many (OA.strOption ( OA.long "argument"
                                      <> OA.metavar "STRING"
-                                     <> OA.help "A command line argument to pass to the process"))
+                                     <> OA.help (unlines
+                                          [ "A command line argument to pass to the process. This can be"
+                                          , "supplied multiple times to pass multiple arguments."
+                                          ])
+                                    ))
            <*> solverParser
            <*> floatModeParser
            <*> timeoutParser
@@ -245,10 +267,11 @@ parser = OA.subparser
 
  )
 
-{- Note [Future Improvements]
-
-In the future, some of these options will need to be extended to be more
-expressive.
+{-
+Note [Future Symbolic IO Improvements]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In the future, some options related to symbolic IO will need to be extended to
+be more expressive.
 
 The contents of standard input will always be necessary (or at least
 supported). This will likely need to be generalized to support:
@@ -256,15 +279,62 @@ supported). This will likely need to be generalized to support:
 - environment variables
 - symbolic contents of each (currently, only concrete values are supported)
 
-The command line parameters are currently concrete. We may want them to be
-symbolic at some point. In particular, we might be interested in whether or not
-argv[0] is absolute or relative.  In that example, we could improve our
-diagnostics by just making argv[0] a mux on a fresh boolean variable that we
-record; if it is referenced in a counterexample, that would tell us that the
-condition is important for explaining a failure.
+Note [Simulating main(argc, argv)]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When simulating an entry point, we assume it has the same type signature as
+`int main()` or `int main(int argc, char *argv[])`. In the latter case, we need
+to pre-populate the registers corresponding to `argc` and `argv` to ensure that
+simulation works as expected. (We aren't strictly required to do so in the
+former case, but we do so anyway, as it does no harm and avoids us having to
+figure out which type of main() function we're in.)
 
-Note that command line parameters are currently text; if we need to support
-binary data in command line arguments, that should be done through a separate
-(alternative) file-based mechanism.
+After obtaining the arguments from the command line, we have to marshal them to
+the appropriate C values. This process is quite straightfoward for `argc`, but
+`argv` is a bit trickier. The user provides the values in `argv` as [Text], but
+in C, `argv` is represented as an array of C strings. To convert from the
+former to the latter, we need to do the following:
 
+* We need to convert each Text value to a ByteString, which corresponds closely
+  to C's representation of a string (i.e., an array of bytes). We must also
+  pick an encoding to use—see Note [Argument Encoding] in A.Encoding.
+* Next, we need to store each ByteString in memory as an array of `char`s. In
+  Crucible terms, a Vector of LLVMPtrs. To do so, we stack-allocate a pointer
+  with number of bytes equal to (the length of the ByteString) + 1. The (+ 1)
+  is needed because in addition to storing each byte in the ByteString, we must
+  also store a null terminator at the end to make it a legal C string. We
+  leverage the crucible-llvm memory model's doAlloca and doStore functions to
+  do the heavy lifting here—see `allocaCString` in
+  A.Verifier.SymbolicExecution for how they're used.
+* Finally, we need to store the overall @argv@ array in memory as an array of
+  C strings. Again, this looks like a Vector of LLVMPtrs in Crucible, but this
+  time the LLVMPtrs represent C pointers rather than C `char`s. We again
+  stack-allocate a pointer, this time with space equal to
+  (the pointer width) × (argc + 1). The (+ 1) is needed here because section
+  5.1.2.2.1 of the C standard requires argv[argc] to be a null pointer. So we
+  follow the rules and write each of the C string pointers from the previous
+  step to memory, followed by a trailing null pointer. See `allocaArgv` in
+  A.Verifier.SymbolicExecution` for how this is implemented.
+
+Once we've done all that, all that's left is to update the appropriate
+registers. Because these will be different on each OS/architecture
+configuration, we abstract out the values of these registers into the
+`functionMainArgumentRegisters` field of a `FunctionABI`.
+
+Be aware of the following limitations:
+
+* The command line parameters are currently concrete. We may want them to be
+  symbolic at some point. In particular, we might be interested in whether or not
+  argv[0] is absolute or relative.  In that example, we could improve our
+  diagnostics by just making argv[0] a mux on a fresh boolean variable that we
+  record; if it is referenced in a counterexample, that would tell us that the
+  condition is important for explaining a failure.
+
+* Command line parameters are currently text; if we need to support
+  binary data in command line arguments, that should be done through a separate
+  (alternative) file-based mechanism.
+
+* All of this machinery assumes that main()—or, a function with a type
+  signature like main()—is the entry point. This would not work at all if
+  _start() were the entry point, as that uses a completely different mechanism
+  for populating the arguments. See Note [Entry Point] in A.Verifier.
 -}

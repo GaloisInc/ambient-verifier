@@ -97,6 +97,9 @@ stripped-so.exe: stripped-so.c libgetone-stripped.so
 	$(CC) -L./ stripped-so.c -lgetone-stripped -o $@
 	$(STRIP) $@
 
+main-args.exe: main-args.c ambient_assert.o
+	$(CC) -no-pie $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

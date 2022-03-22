@@ -6,7 +6,8 @@ import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Data.ByteString as BS
 import qualified Data.List as List
-import           Data.Maybe ( maybeToList )
+import           Data.Maybe ( fromMaybe, maybeToList )
+import qualified Data.Text as DT
 import           Data.Word ( Word64 )
 import qualified Data.Yaml as DY
 import           GHC.Generics ( Generic )
@@ -25,6 +26,7 @@ import qualified Lang.Crucible.Syntax.Concrete as LCSC
 
 import qualified Ambient.ABI as AA
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Encoding as AEnc
 import qualified Ambient.EntryPoint as AEp
 import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Property.Definition as APD
@@ -44,6 +46,19 @@ data ExpectedGoals =
                   -- We may also wish to allow specifying entry point names
                   -- in the future, but for the time being, let's keep it
                   -- simple.
+                , argv0 :: Maybe DT.Text
+                , arguments :: Maybe [DT.Text]
+                  -- Here, Nothing denotes the empty list. We use Maybe as a
+                  -- convenience for working with the Generic-based default
+                  -- implementation of FromJSON for ExpectedGoals, which has
+                  -- a special case for Maybe fields that allows them to be
+                  -- omitted. Without the maybe, we'd have to manually specify
+                  -- @arguments: []@ in nearly every *.exe.expected file, which
+                  -- would be incredibly tedious.
+                  --
+                  -- If we ever opt to write ExpectedGoals' FromJSON instance
+                  -- by hand, as proposed in #90, we could change this field
+                  -- from type Maybe [Text] to just [Text] at that time.
                 }
   deriving (Eq, Ord, Read, Show, Generic)
 
@@ -58,6 +73,8 @@ emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , recursionBound = Nothing
                                    , sharedObjectsDir = Nothing
                                    , entryPointAddr = Nothing
+                                   , argv0 = Nothing
+                                   , arguments = Nothing
                                    }
 
 -- | A simple logger that just sends diagnostics to a channel; an asynchronous
@@ -112,6 +129,10 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   let entryPoint = maybe AEp.DefaultEntryPoint AEp.EntryPointAddr
                          (entryPointAddr expectedResult)
 
+  let args = AEnc.encodeCommandLineArguments binaryFilePath
+                                             (argv0 expectedResult)
+                                             (fromMaybe [] (arguments expectedResult))
+
   -- Create a problem instance; note that we are currently providing no
   -- arguments and no standard input.  The expected output file could include
   -- those things (or they could be drawn from other optional input files)
@@ -120,7 +141,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piFsRoot = fsRoot expectedResult
                                  , AV.piSolver = AS.Yices
                                  , AV.piFloatMode = AS.Real
-                                 , AV.piCommandLineArguments = []
+                                 , AV.piCommandLineArguments = args
                                  , AV.piProperties = maybeToList mprop
                                  , AV.piEntryPoint = entryPoint
                                  , AV.piProfileTo = Nothing

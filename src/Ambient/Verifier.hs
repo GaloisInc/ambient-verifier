@@ -506,7 +506,7 @@ verify logAction pinst timeoutDuration = do
         , AVS.fcPltStubs = pltStubs
         , AVS.fcSoSymbolToFnHandle = Map.fromList [(name, handle) | (NamedHandle name handle) <- soHandles]
         }
-      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinaries execFeatures cfg0 (DMD.memory discoveryState) buildGlobals (piFsRoot pinst) fnConf
+      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinaries execFeatures cfg0 (DMD.memory discoveryState) buildGlobals (piFsRoot pinst) fnConf (piCommandLineArguments pinst)
 
       liftIO $ mapM_ (assertPropertySatisfied logAction bak execResult) (AEt.properties (AVW.wmProperties wmConfig))
 

@@ -144,6 +144,10 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs _bumpEndVar memVar o
           (0xffff0fe0, AF.SomeFunctionOverride (buildKUserGetTLSOverride tlsGlob))
         ] in
   AF.FunctionABI { AF.functionIntegerArgumentRegisters = aarch32LinuxIntegerArgumentRegisters
+                 , AF.functionMainArgumentRegisters =
+                     ( ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
+                     , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
+                     )
                  , AF.functionIntegerReturnRegisters = aarch32LinuxIntegerReturnRegisters
                  , AF.functionNameMapping =
                      Map.fromList [ (AF.functionName fo, sfo)

@@ -129,6 +129,7 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs bumpEndVar memVar ovs kernelO
                        , AF.SomeFunctionOverride (AFO.buildHackyBumpCallocOverride bumpEndVar memVar)
                        ]
   in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
+                    , AF.functionMainArgumentRegisters = (DMXR.RDI, DMXR.RSI)
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
                     , AF.functionNameMapping =
                       Map.fromList [ (AF.functionName fo, sfo)

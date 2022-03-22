@@ -1,0 +1,10 @@
+successful: 24
+failed: 0
+overrideDir: tests/overrides/
+# NB: Explicitly set argv[0] here. While we could omit this and have argv[0]
+# default to the binary path, this would be unnecessarily fragile, as it would
+# require the test to be invoked with a very particular path.
+argv0: "test.exe"
+arguments:
+- "a"
+- "b"

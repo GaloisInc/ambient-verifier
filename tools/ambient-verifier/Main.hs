@@ -8,7 +8,6 @@ import qualified Control.Concurrent.Async as CCA
 import qualified Control.Exception as X
 import qualified Data.ByteString as BS
 import qualified Data.Yaml as DY
-import qualified Data.Text.Encoding as TE
 import qualified Lumberjack as LJ
 import qualified Options.Applicative as OA
 import qualified Prettyprinter as PP
@@ -16,6 +15,7 @@ import qualified Prettyprinter.Render.Text as PPT
 import qualified System.IO as IO
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Encoding as AEnc
 import qualified Ambient.Exception as AE
 import qualified Ambient.Override.List as AOL
 import qualified Ambient.OverrideTester as AO
@@ -107,8 +107,9 @@ withMaybeFile mbFP mode action =
 buildPinstFromVerifyOptions :: O.VerifyOptions -> IO (AV.ProgramInstance)
 buildPinstFromVerifyOptions o = do
   binary <- BS.readFile (O.binaryPath o)
-  -- See Note [Argument Encoding]
-  let args = fmap TE.encodeUtf8 (O.commandLineArguments o)
+  let args = AEnc.encodeCommandLineArguments (O.binaryPath o)
+                                             (O.commandLineArgv0 o)
+                                             (O.commandLineArguments o)
 
   props <- mapM loadProperty (O.stateCharts o)
 
@@ -186,7 +187,7 @@ main :: IO ()
 main =
   X.catch
     (do
-      command <- OA.execParser opts
+      command <- OA.customExecParser (OA.prefs prefsMod) opts
       case command of
         O.Verify verifyOpts -> verify verifyOpts
         O.ListOverrides listOverridesOpts -> listOverrides listOverridesOpts
@@ -194,6 +195,8 @@ main =
     )
     (\(e :: AE.AmbientException) -> IO.hPutStrLn IO.stderr (show (PP.pretty e)))
   where
+    prefsMod = OA.multiSuffix "..."
+
     opts = OA.info (O.parser OA.<**> versionP OA.<**> OA.helper)
              ( OA.fullDesc
                <> OA.header "A verifier for programs containing weird machines"
@@ -204,15 +207,3 @@ main =
                  <> OA.short 'V'
                  <> OA.help "Print version information"
                  )
-
-{- Note [Argument Encoding]
-
-This current method of specifying command line arguments supports accepts
-textual arguments on the command line.  If we need to support binary arguments, we will need to add
-an alternative command line interface for providing them in a file.
-
-Note that we are unconditionally encoding arguments from Text to UTF8. This
-works for Linux and MacOS, but will not work for Windows, which will expect
-UTF16LE (or perhaps UCS-2).
-
--}
