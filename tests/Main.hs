@@ -139,15 +139,13 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   res <- CCA.wait logger
 
   -- This is a bit odd since we are using the expected result structure to
-  -- specify both the initial state and expected state. We copy over some
-  -- constants to just make the comparison work out.
-  let res' = res { fsRoot = fsRoot expectedResult
-                 , overrideDir = overrideDir expectedResult
-                 , iterationBound = iterationBound expectedResult
-                 , recursionBound = recursionBound expectedResult
-                 , sharedObjectsDir = sharedObjectsDir expectedResult
-                 , entryPointAddr = entryPointAddr expectedResult
-                 }
+  -- specify both the initial state and expected state. To produce the actual
+  -- result, we copy over the goal numbers, which could differ from what is
+  -- expected. We leave alone the other fields, which are constants, to just
+  -- make the comparison work out.
+  let res' = expectedResult { successful = successful res
+                            , failed     = failed res
+                            }
   TTH.assertEqual "Expected Output" expectedResult res'
   where
     testName = SF.dropExtension expectedOutputFile
