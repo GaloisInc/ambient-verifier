@@ -1,25 +1,32 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeOperators #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 -- | The main entry point of the AMBIENT binary verifier
 module Ambient.Verifier (
     ProgramInstance(..)
+  , Metrics(..)
   , verify
   ) where
 
 import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Control.Exception as X
-import           Control.Lens ( (^.) )
+import           Control.Lens ( (^.), Identity )
 import           Control.Monad ( foldM, void )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
+import qualified Data.Aeson as DA
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Foldable as F
+import           Data.IORef ( readIORef )
 import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( catMaybes )
@@ -28,8 +35,10 @@ import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Set as Set
 import qualified Data.Text as DT
 import qualified Data.Text.Encoding as DTE
+import qualified Data.Time.Clock as DTC
 import qualified Data.Traversable as Trav
 import           Data.Word ( Word64 )
+import           GHC.Generics ( Generic )
 import           GHC.Stack ( HasCallStack )
 import qualified Lumberjack as LJ
 import qualified System.Directory as Dir
@@ -130,6 +139,29 @@ data ProgramInstance =
                   , piSharedObjectDir :: Maybe FilePath
                   -- ^ Optional directory containing shared objects to verify
                   }
+
+-- | A set of metrics from a verification run
+data Metrics =
+  Metrics { proofStats :: AVP.ProofStats
+         -- ^ Statistics from goal proofs
+          , crucibleMetrics :: LCSProf.Metrics Identity
+         -- ^ Metrics from the Crucible profiler
+          , runtimeSeconds :: DTC.NominalDiffTime
+         -- ^ Number of seconds the verifier took to run
+          , simulationStats :: AExt.AmbientSimulationStats
+         -- ^ Statistics from the simulation step
+          , numBytesLoaded :: Int
+         -- ^ Total number of bytes loaded (includes shared libraries)
+          , blocksVisited :: Int
+         -- ^ Total number of blocks visited during symbolic execution
+          , uniqueBlocksVisited :: Int }
+         -- ^ Number of unique blocks visited during symbolic execution
+  deriving (Generic)
+instance DA.ToJSON Metrics
+
+instance DA.ToJSON (LCSProf.Metrics Identity)
+deriving instance Generic WI.Statistics
+instance DA.ToJSON WI.Statistics
 
 -- | Retrieve a mapping from symbol names to addresses from code discovery
 -- information.
@@ -332,6 +364,15 @@ getFinalGlobal _sym mergeBranches global execResult =
         Just value -> value
         Nothing -> AP.panic AP.Verifier "getFinalGlobal" ["Could not find expected global"]
 
+-- | Extract the personality from an 'LCS.ExecResult'.  Throws an exception if
+-- the execution timed out.
+getPersonality :: LCS.ExecResult p sym ext r -> IO p
+getPersonality execResult =
+  case execResult of
+    LCS.FinishedResult ctx _ -> return $ ctx ^. LCS.cruciblePersonality
+    LCS.AbortedResult ctx _ -> return $ ctx ^. LCS.cruciblePersonality
+    LCS.TimeoutResult{} -> X.throwIO AE.ExecutionTimeout
+
 -- | Extract the trace and assert that the last state is an accept state (along all branches)
 --
 -- The verification condition is that the final state is at least one of the
@@ -422,8 +463,9 @@ verify
   -- ^ A description of the program (and its configuration) to verify
   -> AT.Timeout
   -- ^ The solver timeout for each goal
-  -> m ()
+  -> m Metrics
 verify logAction pinst timeoutDuration = do
+  t0 <- liftIO $ DTC.getCurrentTime
   hdlAlloc <- liftIO LCF.newHandleAllocator
   Some ng <- liftIO PN.newIONonceGenerator
   AS.withOnlineSolver (piSolver pinst) (piFloatMode pinst) ng $ \bak -> do
@@ -439,7 +481,7 @@ verify logAction pinst timeoutDuration = do
 
     -- Load up the binary, which existentially introduces the architecture of the
     -- binary in the context of the continuation
-    AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals pltStubs loadedBinary sharedObjects -> DMA.withArchConstraints archInfo $ do
+    AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals pltStubs numBytes loadedBinary sharedObjects -> DMA.withArchConstraints archInfo $ do
       entryPoint <- AEp.resolveEntryPointAddrOff loadedBinary $ piEntryPoint pinst
       discoveryState <- ADi.discoverFunctions logAction
                                               archInfo
@@ -483,10 +525,23 @@ verify logAction pinst timeoutDuration = do
       -- require the online backend constraints in the body of our symbolic
       -- execution code
       psf <- liftIO $ LCSP.pathSatisfiabilityFeature sym (LCBO.considerSatisfiability bak)
-      let execFeatures = psf : catMaybes [ fmap fst profFeature
-                                         , iterationBoundFeature
-                                         , recursionBoundFeature
-                                         ]
+
+      -- Set up a profiling instance for collection of stats within a 'Metrics'
+      -- instance.
+      profTab <- liftIO $ LCSProf.newProfilingTable
+      let profFilt = LCSProf.profilingEventFilter {
+          LCSProf.recordProfiling = True
+        , LCSProf.recordCoverage = True
+        }
+      metricsProfFeat <-
+        liftIO $ LCSProf.profilingFeature profTab profFilt Nothing
+
+      let execFeatures = psf
+                       : metricsProfFeat
+                       : catMaybes [ fmap fst profFeature
+                                   , iterationBoundFeature
+                                   , recursionBoundFeature
+                                   ]
       let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
                                                , AVS.secWMMCallback = AVWme.wmExecutor archInfo loadedBinary hdlAlloc archVals execFeatures sym
                                                , AVS.secSolver = piSolver pinst
@@ -519,9 +574,30 @@ verify logAction pinst timeoutDuration = do
       -- NOTE: We currently use the same solver for goal solving as we do for
       -- symbolic execution/path sat checking. This is not required, and we
       -- could easily support allowing the user to choose two different solvers.
-      AVP.proveObligations logAction bak (AS.offlineSolver (piSolver pinst)) timeoutDuration
+      metricProofStats <- AVP.proveObligations logAction bak (AS.offlineSolver (piSolver pinst)) timeoutDuration
+
+      crucMetrics <- liftIO $ LCSProf.readMetrics profTab
       _ <- liftIO $ mapM CCA.cancel (fmap snd profFeature)
-      return ()
+
+      -- Extract block metrics from Crucible profiler
+      profEvents <- liftIO $ readIORef (LCSProf.callGraphEvents profTab)
+      let blockEvents = [ LCSProf.cgEvent_blocks e
+                        | e <- F.toList profEvents
+                        , LCSProf.cgEvent_type e == LCSProf.BLOCK ]
+      let uniqueBlockEvents = Set.fromList blockEvents
+
+      aSymSt <- liftIO $ getPersonality execResult
+
+      t1 <- liftIO $ DTC.getCurrentTime
+      return Metrics
+        { proofStats = metricProofStats
+        , crucibleMetrics = crucMetrics
+        , runtimeSeconds = t1 `DTC.diffUTCTime` t0
+        , simulationStats = aSymSt ^. AExt.simulationStats
+        , numBytesLoaded = numBytes
+        , blocksVisited = length blockEvents
+        , uniqueBlocksVisited = Set.size uniqueBlockEvents
+        }
 
 
 {- Note [Entry Point]

@@ -109,6 +109,8 @@ withBinary
      -> LCSC.ParserHooks (DMS.MacawExt arch)
      -> AM.InitArchSpecificGlobals arch
      -> Map.Map (DMM.MemWord w) WF.FunctionName
+     -> Int
+     -- ^ Total number of bytes loaded (includes shared libraries).
      -> DMB.LoadedBinary arch binFmt
      -- ^ Binary loaded from 'bytes'
      -> [DMB.LoadedBinary arch binFmt]
@@ -126,6 +128,8 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
       let options = MML.defaultLoadOptions
       sharedObjectBytes <- liftIO $
         maybe (return []) readSharedObjects sharedObjectDir
+      let totalBytes = BS.length bytes
+                     + sum [BS.length x | (_, x) <- sharedObjectBytes]
       case (hdrMachine, hdrClass) of
         (DE.EM_X86_64, DE.ELFCLASS64) -> do
           fsbaseGlob <- liftIO $
@@ -155,6 +159,7 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
                 (AP.pltStubSymbols AA.X86_64Linux
                                    (Proxy @DE.X86_64_RelocationType)
                                    headers)
+                totalBytes
                 lb
                 sos
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_X86_64 DE.ELFCLASS64)
@@ -178,6 +183,7 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
                 (AP.pltStubSymbols AA.AArch32Linux
                                    (Proxy @DE.ARM32_RelocationType)
                                    headers)
+                totalBytes
                 lb
                 sos
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_ARM DE.ELFCLASS32)

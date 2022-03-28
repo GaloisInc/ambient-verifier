@@ -70,6 +70,8 @@ data VerifyOptions =
                 -- ^ Optional location to write function CFGs to
                 , sharedObjectDir :: Maybe FilePath
                 -- ^ Directory containing shared objects to verify
+                , metricsFile :: Maybe FilePath
+                -- ^ File to write metrics to
                 }
   deriving ( Show )
 
@@ -233,6 +235,9 @@ verifyOptions = VerifyOptions
                                         <> OA.short 'L'
                                         <> OA.metavar "DIRECTORY"
                                         <> OA.help "Directory containing shared objects to verify"))
+           <*> OA.optional (OA.strOption ( OA.long "metrics"
+                                        <> OA.metavar "FILE"
+                                        <> OA.help "File to write metrics to"))
 
 -- | A parser for the \"list-overrides\" subcommand
 listOverridesParser :: OA.Parser Command

@@ -33,6 +33,7 @@ import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier as AV
+import qualified Ambient.Verifier.Prove as AVP
 
 data ExpectedGoals =
   ExpectedGoals { successful :: Int
@@ -154,7 +155,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
 
   chan <- CC.newChan
   logger <- CCA.async (analyzeSolvedGoals chan)
-  AV.verify (logAction chan) pinst AT.defaultTimeout
+  metrics <- AV.verify (logAction chan) pinst AT.defaultTimeout
 
   CC.writeChan chan Nothing
   res <- CCA.wait logger
@@ -168,6 +169,20 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                             , failed     = failed res
                             }
   TTH.assertEqual "Expected Output" expectedResult res'
+
+  -- Check that goal values in metrics match the expected number of goals
+  let proofStats = AV.proofStats metrics
+  TTH.assertEqual "Total expected number of goals"
+                  (successful expectedResult + failed expectedResult)
+                  (AVP.psGoals proofStats)
+  TTH.assertEqual "Expected successful goals"
+                  (successful expectedResult)
+                  (AVP.psSuccessfulGoals proofStats)
+  TTH.assertEqual "Expected failed goals"
+                  (failed expectedResult)
+                  (AVP.psFailedGoals proofStats)
+  TTH.assertEqual "Expected timeouts" 0 (AVP.psTimeouts proofStats)
+  TTH.assertEqual "Expected errors" 0 (AVP.psErrors proofStats)
   where
     testName = SF.dropExtension expectedOutputFile
     binaryFilePath = testName

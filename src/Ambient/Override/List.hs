@@ -48,7 +48,7 @@ listOverrides logAction pinst = do
     AL.withBinary (AV.piPath pinst) (AV.piBinary pinst) (AV.piSharedObjectDir pinst) hdlAlloc sym $
         \(archInfo :: DMAI.ArchitectureInfo arch) _archVals
         (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI)
-        parserHooks buildGlobals _pltStubs loadedBinary sharedObjects -> do
+        parserHooks buildGlobals _pltStubs _numBytes loadedBinary sharedObjects -> do
       functionOvs <- case AV.piOverrideDir pinst of
         Just dir -> do
           liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks

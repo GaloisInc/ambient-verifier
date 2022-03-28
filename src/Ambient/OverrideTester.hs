@@ -82,8 +82,8 @@ testOverrides logAction tinst timeoutDuration = do
                                  hdlAlloc
                                  parserHooks
           Nothing -> error "Failed to build archVals for AArch32"
-    AVP.proveObligations logAction
-                         sym
-                         (AS.offlineSolver (tiSolver tinst))
-                         timeoutDuration
+    _ <- AVP.proveObligations logAction
+                              sym
+                              (AS.offlineSolver (tiSolver tinst))
+                              timeoutDuration
     return ()

@@ -15,6 +15,7 @@ module Ambient.Verifier.Concretize
   , resolveSingletonSymbolicAs
   , ResolutionFailure(..)
   , resolveSingletonPointer
+  , ResolveSymBVEffect(..)
   , resolveSymBV
   , resolveSymBVAs
   , resolveSymNat
@@ -37,6 +38,7 @@ import qualified What4.Protocol.Online as WPO
 import qualified What4.Protocol.SMTWriter as WPS
 import qualified What4.SatResult as WSat
 import qualified What4.Utils.BVDomain as WUB
+import qualified What4.Utils.BVDomain.Arith as WUBA
 import qualified What4.Utils.ResolveBounds.BV as WURB
 
 import qualified Ambient.Panic as AP
@@ -164,6 +166,9 @@ resolveSymNat bak symNat = do
   resolvedSymInt <- resolveSingletonSymbolic concreteInteger bak symInt
   WI.integerToNat sym resolvedSymInt
 
+-- | The effect that 'resolveSymBV' had on the passed-in bitvector
+data ResolveSymBVEffect = Concretized | RefinedBounds | UnchangedBounds
+
 -- | Resolve a 'WI.SymBV' to concrete, if possible. If the 'WI.SymBV' is truly
 -- symbolic, this will try to constrain the lower and uppper bounds as much as
 -- possible.
@@ -180,13 +185,15 @@ resolveSymBV ::
   -- ^ The bitvector width
   -> WI.SymBV sym w
   -- ^ The symbolic bitvector to concretize
-  -> IO (WI.SymBV sym w)
+  -> IO (WI.SymBV sym w, ResolveSymBVEffect)
 resolveSymBV bak w symBV =
   LCBO.withSolverProcess bak (onlinePanic "resolveSymBV") $ \sp -> do
     let sym = LCB.backendGetSym bak
     resBV <- WURB.resolveSymBV sym WURB.ExponentialSearch w sp symBV
     case resBV of
-      WURB.BVConcrete bv -> WI.bvLit sym w bv
+      WURB.BVConcrete bv -> do
+        bv' <- WI.bvLit sym w bv
+        pure (bv', Concretized)
       WURB.BVSymbolic d  -> do
         -- NB: Use annotateTerm here to ensure that subsequent What4
         -- simplifications do not rearrange the underlying expression, which
@@ -197,7 +204,26 @@ resolveSymBV bak w symBV =
         -- model.
         (_, symBV') <- WI.annotateTerm sym $
                        WI.unsafeSetAbstractValue (WUB.BVDArith d) symBV
-        pure symBV'
+        pure (symBV', domainToEffect d)
+  where
+    -- Given a Domain from refinement, determine whether domain was refined or
+    -- left unchanged
+    domainToEffect :: WUBA.Domain w -> ResolveSymBVEffect
+    domainToEffect d =
+      case WI.unsignedBVBounds symBV of
+        Nothing ->
+          case d of
+            WUBA.BVDAny _ ->
+              -- Bounds were unknown before and after they cover all possible
+              -- values.
+              UnchangedBounds
+            WUBA.BVDInterval mask _ _ | WUBA.ubounds d == (0, mask) ->
+              -- Bounds were unknown before and after they cover all possible
+              -- values.
+              UnchangedBounds
+            WUBA.BVDInterval {} -> RefinedBounds
+        Just oldBounds | WUBA.ubounds d == oldBounds -> UnchangedBounds
+        Just _ -> RefinedBounds
 
 -- | Resolve a 'WI.SymBV' to concrete, if possible. If it is concrete, return
 -- it with 'Right'. Otherwise, return an explanation of why concretization
@@ -233,8 +259,8 @@ resolveSingletonPointer
   -- ^ The symbolic backend
   -> LCLM.LLVMPtr sym w
   -- ^ The symbolic term to concretize
-  -> IO (LCLM.LLVMPtr sym w)
+  -> IO (LCLM.LLVMPtr sym w, ResolveSymBVEffect)
 resolveSingletonPointer bak (LCLM.LLVMPointer base off) = do
   base' <- resolveSymNat bak base
-  off' <- resolveSymBV bak (WI.bvWidth off) off
-  return (LCLM.LLVMPointer base' off')
+  (off', effect) <- resolveSymBV bak (WI.bvWidth off) off
+  return ((LCLM.LLVMPointer base' off'), effect)

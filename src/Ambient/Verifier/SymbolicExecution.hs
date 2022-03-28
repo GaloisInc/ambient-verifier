@@ -210,7 +210,7 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
     lazilyRegisterHandle state key ovHandlesL fnAbiMap noFnFoundInAbiMap = do
       -- Step (1)
       case Map.lookup key (state ^. LCS.stateContext . LCS.cruciblePersonality . ovHandlesL) of
-        Just handle -> pure (handle, state)
+        Just handle -> pure (handle, incrementOvsApplied state)
         Nothing ->
           -- Step (2)
           case Map.lookup key fnAbiMap of
@@ -219,9 +219,14 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
               let state'' = over (LCS.stateContext . LCS.cruciblePersonality . ovHandlesL)
                                  (Map.insert key handle)
                                  state'
-              pure (handle, state'')
+              pure (handle, incrementOvsApplied state'')
             Nothing -> -- Step (3)
                        noFnFoundInAbiMap
+
+    -- Increment the count of overrides applied in a crucible state
+    incrementOvsApplied :: LCS.CrucibleState p sym ext rtp blocks r ctx
+                        -> LCS.CrucibleState p sym ext rtp blocks r ctx
+    incrementOvsApplied = AExt.incrementSimStat AExt.lensNumOvsApplied
 
     -- Lookup a function handle from an address.  Performs the lookup in the
     -- following order:
