@@ -192,6 +192,7 @@ purposes. To support this, we do the following:
   the TLS state and initialize it with a fresh symbolic value. See
   Ambient.Memory.AArch32.Linux.initTLSMemory. This is essentially the same
   approach that is used on the x86_64 side to handle fsbase and gsbase.
+  (See Note [x86_64 and TLS] in A.Memory.X86_64.Linux.)
 
 * The Linux kernel provides __kuser_get_tls at a fixed address in the user
   space of all running AArch32 binaries (see aarch32LinuxFunctionABI for the

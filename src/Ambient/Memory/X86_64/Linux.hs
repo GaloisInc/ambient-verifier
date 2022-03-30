@@ -19,6 +19,7 @@ import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.CFG.Common as LCCC
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.MemType as LCLMT
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
@@ -36,7 +37,8 @@ segmentSize = 4 * 1024
 segmentBaseOffset :: Integer
 segmentBaseOffset = segmentSize `div` 2
 
--- | Create an initialize a new memory segment
+-- | Create an initialize a new memory segment.
+-- See @Note [x86_64 and TLS]@.
 initSegmentMemory :: ( LCB.IsSymBackend sym bak
                      , LCLM.HasLLVMAnn sym
                      , ?memOpts :: LCLM.MemOptions
@@ -65,18 +67,19 @@ initSegmentMemory bak mem0 symbol = do
                             arrayStorage
                             segmentSizeBV
 
-  -- GCC generally appears to place TLS variables at negative offsets from
-  -- FSBASE (for an example of this, see the generated 'fsbase.exe' test binary
-  -- in 'tests/binaries').  However, online code examples (such as
-  -- https://unix.stackexchange.com/questions/453749/what-sets-fs0x28-stack-canary)
-  -- also show GCC occasionally placing values at positive offsets from FSBASE.
-  -- To support both cases, we put the segment base pointer in the middle of
-  -- the allocation.
+  -- See Note [x86_64 and TLS], point (1)
   segmentBaseOffsetBv <- WI.bvLit sym
                                   WI.knownRepr
                                   (BVS.mkBV WI.knownRepr segmentBaseOffset)
   basePtr <- LCLM.ptrAdd sym WI.knownRepr segmentPtr segmentBaseOffsetBv
-  return (basePtr, mem2)
+
+  -- See Note [x86_64 and TLS], point (2)
+  let memTy = LCLMT.PtrType LCLMT.VoidType
+  let tpr = LCLM.LLVMPointerRepr ?ptrWidth
+  sty <- LCLM.toStorableType memTy
+  mem3 <- LCLM.doStore bak mem2 basePtr tpr sty LCLD.noAlignment basePtr
+
+  return (basePtr, mem3)
 
 -- | This function takes global variables for the FSBASE and GSBASE pointers
 -- and returns an 'InitArchSpecificGlobals' that initializes those globals
@@ -134,3 +137,43 @@ x86_64LinuxStmtExtensionOverride fsbaseGlobal gsbaseGlobal =
             return Nothing
       _ -> -- Use default implementation for all other statement types
         return Nothing
+
+{-
+Note [x86_64 and TLS]
+~~~~~~~~~~~~~~~~~~~~~
+x86 puts thread-local state (TLS) in the FS and GS segment registers. To model
+this, we calloc a small allocation for each segment, and whenever macaw attempts
+to read from FSBASE or GSBASE, it converts it into a read from the appropriate
+allocation.
+
+We have to do some work to make these pointers look like what C runtimes (e.g.,
+glibc and musl) expect:
+
+1. GCC generally appears to place TLS variables at negative offsets from
+   FSBASE (for an example of this, see the generated 'fsbase.exe' test binary
+   in 'tests/binaries/x86_64').  However, online code examples (such as
+   https://unix.stackexchange.com/questions/453749/what-sets-fs0x28-stack-canary)
+   also show GCC occasionally placing values at positive offsets from FSBASE.
+   To support both cases, we put the segment base pointer in the middle of
+   the allocation.
+
+2. Functions that set `errno` will typically deference FSBASE and store a value
+   into some offset from the dereferenced value. For examples of this, see
+   the assembly for the `errno-glibc.exe` and `errno-musl.exe` binaries in
+   `tests/binaries/x86_64`, which include `mov %fs:0x0,...` instructions.
+
+   This happens because C runtimes usually store the `errno` (along with other
+   TLS-related values) in a struct where the first field is a pointer to
+   itself. For example, see how pthread_t is defined in musl:
+   https://github.com/ifduyue/musl/blob/6d8a515796270eb6cec8a278cb353a078a10f09a/src/internal/pthread_impl.h#L19-L21
+   If the comments in that code are to be believed, this convention is part of
+   the ABI, so other C runtimes like glibc also follow this convention. (Some
+   local experimentation with glibc binaries confirms this to be the case.)
+
+   To accommodate this pattern, whenever we calloc a base pointer in the
+   verifier, we also store the pointer into the `self` pointer field of the
+   ABI-mandated struct, which happens to be the first field. That way,
+   instructions like `mov %fs:0x0,...` will successfully dereference the
+   pointer, and offsets from the derefenced value will return symbolic bytes,
+   as expected.
+-}

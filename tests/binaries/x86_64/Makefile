@@ -115,6 +115,12 @@ stripped-so.exe: stripped-so.c libgetone-stripped.so
 	$(CC) -L./ stripped-so.c -lgetone-stripped -o $@
 	$(STRIP) $@
 
+errno-glibc.exe: errno.c
+	$(CC) -nostartfiles -static -no-pie $< -o $@
+
+errno-musl.exe: errno.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
 main-args.exe: main-args.c ambient_assert.o
 	$(CC) $^ -o $@
 
