@@ -697,12 +697,13 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
                                  | AF.SomeFunctionOverride ov <- functionOvs ]
   globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
 
-  return (InitialMemory memVar
-                        globals2
-                        stackBasePtr
-                        heapEndGlob
-                        validityCheck
-                        globalMap)
+  return (InitialMemory { imMemVar = memVar
+                        , imGlobals = globals2
+                        , imStackBasePtr = stackBasePtr
+                        , imHeapEndGlob = heapEndGlob
+                        , imValidityCheck = validityCheck
+                        , imGlobalMap = globalMap
+                        })
 
 -- | Populate the registers corresponding to @main(argc, argv)@'s arguments
 -- with the user-supplied command line arguments.
