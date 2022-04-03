@@ -80,6 +80,12 @@ stripped-so/libgetone-stripped.so: getone.c
 so/so.exe: so/so.c so/libfib.so ambient_assert.o
 	$(CC) -nostdlib -Lso/ -I./ so/so.c ambient_assert.o -lfib -lgetone -o $@
 
+so-static-function/libgetone-static-function.so: so-static-function/getone-static-function.c
+	$(CC) -nostdlib -shared $< -o $@
+
+so-static-function/so-static-function.exe: so-static-function/so-static-function.c so-static-function/libgetone-static-function.so ambient_assert.o
+	$(CC) -nostdlib -Lso-static-function/ -I./ so-static-function/so-static-function.c ambient_assert.o -lgetone-static-function -o $@
+
 server-inet.exe: server-inet.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 

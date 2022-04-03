@@ -113,6 +113,7 @@ library
                       what4,
                       indexed-traversable,
                       utf8-string,
+                      nonempty-vector,
                       vector,
                       multiset
 

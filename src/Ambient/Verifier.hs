@@ -225,8 +225,11 @@ getEntryPointInfo discoveryState entryPoint = do
 --    * A function handle for 'addr'
 --  * Function handle map in the 'LCF.FnHandleMap' form
 buildBindings
-  :: (MonadIO m,
-      DMM.MemWidth (DMC.RegAddrWidth (DMC.ArchReg arch)))
+  :: forall sym m arch w mem blocks p
+   . ( MonadIO m
+     , w ~ DMC.ArchAddrWidth arch
+     , DMM.MemWidth w
+     )
   => [(DMM.MemSegmentOff w, Some (DMD.DiscoveryFunInfo arch))]
   -- ^ List containing pairs of addresses and corresponding discovered
   -- functions
@@ -240,77 +243,83 @@ buildBindings
               (LCCC.EmptyCtx LCCC.::> DMS.ArchRegStruct arch)
               (DMS.ArchRegStruct arch)
   -- ^ CFG for entry point
-  -> m ([(DMM.MemSegmentOff w,
-          LCF.FnHandle
-            (LCCC.EmptyCtx
-             LCCC.::> LCCC.StructType
-                        (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
-            (LCCC.StructType
-               (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))))],
-        LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)))
+  -> m ( [NamedHandle arch]
+       , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) )
 buildBindings fns hdlAlloc pinst archVals entryAddr cfg0 = do
   case fns of
     [] -> return ([], LCF.emptyHandleMap)
-    (addr, fn):fns' -> do
-      (handles, bindings) <- buildBindings fns' hdlAlloc pinst archVals entryAddr cfg0
+    (addr, Some fn):fns' -> do
+      (namedHandles, bindings) <- buildBindings fns' hdlAlloc pinst archVals entryAddr cfg0
       (handle, binding) <- buildBinding fn bindings addr
-      return ((addr, handle) : handles, binding)
+      let namedHandle = NamedHandle { nhName = ALi.discoveredFunName fn
+                                    , nhAddrOff = addr
+                                    , nhHandle = handle
+                                    }
+      return (namedHandle : namedHandles, binding)
   where
     -- Given a discovered function 'fn', a function handle map, and the address
     -- of 'fn', returns a function handle for 'fn' and an updated handle map.
+    buildBinding ::
+      forall ids.
+      DMD.DiscoveryFunInfo arch ids ->
+      LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) ->
+      DMM.MemSegmentOff w ->
+      m ( AF.FunctionOverrideHandle arch
+        , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) )
     buildBinding fn handleMap addr = do
       if addr == entryAddr
       then return $ buildBindingFromCfg cfg0 handleMap
       else bindFunction hdlAlloc pinst archVals fn handleMap
 
--- | A function override handle paired with the name of the function being
--- overridden.
-data NamedHandle arch = NamedHandle { _nhName :: WF.FunctionName
-                                    , _nhHandle :: AF.FunctionOverrideHandle arch
-                                    }
+-- | A function override handle bundled with the name of the function being
+-- overridden and the address where the function is defined.
+data NamedHandle arch = NamedHandle
+  { nhName :: WF.FunctionName
+  , nhAddrOff :: DMM.MemSegmentOff (DMC.ArchAddrWidth arch)
+  , nhHandle :: AF.FunctionOverrideHandle arch
+  }
 
 -- | Build function bindings for a shared object.  Returns a pair containing:
 --  * A list of 'NamedHandle's
 --  * A function handle map in the 'LCF.FnHandleMap' form
 buildSoBindings
-  :: (MonadIO m,
-      DMM.MemWidth (DMC.RegAddrWidth (DMC.ArchReg arch)))
+  :: ( MonadIO m
+     , DMM.MemWidth (DMC.ArchAddrWidth arch) )
   => LCF.HandleAllocator
   -> ProgramInstance
   -> DMS.GenArchVals mem arch
   -> ([NamedHandle arch]
-     , LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)))
+     , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)))
   -- ^ Initial bindings to build on
   -> DMD.DiscoveryState arch
   -> m ( [NamedHandle arch]
-       , LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)) )
+       , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) )
 buildSoBindings hdlAlloc pinst archVals initBindings discoveryState = do
   let fns = Map.toList (discoveryState ^. DMD.funInfo)
   foldM buildBinding initBindings fns
   where
     -- Given a discovered function 'fn', a function handle map, and the address
     -- of 'fn', returns a function handle for 'fn' and an updated handle map.
-    buildBinding (namedHandles, handleMap) (_addr, Some fn) = do
-      (handle, handleMap') <- bindFunction hdlAlloc pinst archVals (Some fn) handleMap
-      let namedHandle = NamedHandle (ALi.discoveredFunName fn) handle
+    buildBinding (namedHandles, handleMap) (addr, Some fn) = do
+      (handle, handleMap') <- bindFunction hdlAlloc pinst archVals fn handleMap
+      let namedHandle = NamedHandle { nhName = ALi.discoveredFunName fn
+                                    , nhAddrOff = addr
+                                    , nhHandle = handle
+                                    }
       return (namedHandle : namedHandles, handleMap')
 
 -- | Build a function handle and update a handle map for a given function
 bindFunction
   :: ( MonadIO m
-     , DMM.MemWidth (DMC.RegAddrWidth (DMC.ArchReg arch)) )
+     , DMM.MemWidth (DMC.ArchAddrWidth arch) )
   => LCF.HandleAllocator
   -> ProgramInstance
   -> DMS.GenArchVals mem arch
-  -> Some (DMD.DiscoveryFunInfo arch)
+  -> DMD.DiscoveryFunInfo arch ids
   -> LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch))
-  -> m ( LCF.FnHandle
-           (LCCC.EmptyCtx
-            LCCC.::> LCCC.StructType
-                       (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
-           (LCCC.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
+  -> m ( AF.FunctionOverrideHandle arch
        , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) )
-bindFunction hdlAlloc pinst archVals (Some fn) handleMap = do
+bindFunction hdlAlloc pinst archVals fn handleMap = do
   LCCC.SomeCFG cfg <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) fn
   return $ buildBindingFromCfg cfg handleMap
 
@@ -503,16 +512,14 @@ verify logAction pinst timeoutDuration = do
       (soHandles, bindings') <- foldM (buildSoBindings hdlAlloc pinst archVals)
                                       ([], bindings)
                                       soDiscoveryState
-
-      let fnRegions = Set.fromList [ DMM.segmentBase (DMM.segoffSegment s)
-                                   | (s, _) <- handles ]
-      fnRegion <- case Set.size fnRegions of
-                       0 -> -- Should not be possible
-                         AP.panic AP.Verifier
-                                  "verify"
-                                  ["Failed to identify any functions"]
-                       1 -> return $ Set.elemAt 0 fnRegions
-                       _ -> CMC.throwM AE.MultipleFunctionRegions
+      let allHandlesMap = Map.fromList [ (addr, handle)
+                                       | NamedHandle { nhAddrOff = addr
+                                                     , nhHandle = handle
+                                                     } <- handles ++ soHandles ]
+      let soHandlesMap = Map.fromList [ (name, handle)
+                                      | NamedHandle { nhName = name
+                                                    , nhHandle = handle
+                                                    } <- soHandles ]
 
       profFeature <- liftIO $ mapM setupProfiling (piProfileTo pinst)
       iterationBoundFeature <-
@@ -552,16 +559,15 @@ verify logAction pinst timeoutDuration = do
           liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
         Nothing -> return []
       let fnConf = AVS.FunctionConfig {
-          AVS.fcAddressToFnHandle = Map.fromList handles
+          AVS.fcAddressToFnHandle = allHandlesMap
         , AVS.fcFnBindings = bindings'
         , AVS.fcBuildSyscallABI = syscallABI
         , AVS.fcBuildFunctionABI = functionABI
         , AVS.fcFunctionOverrides = functionOvs
-        , AVS.fcRegion = fnRegion
         , AVS.fcPltStubs = pltStubs
-        , AVS.fcSoSymbolToFnHandle = Map.fromList [(name, handle) | (NamedHandle name handle) <- soHandles]
+        , AVS.fcSoSymbolToFnHandle = soHandlesMap
         }
-      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinaries execFeatures cfg0 (DMD.memory discoveryState) buildGlobals (piFsRoot pinst) fnConf (piCommandLineArguments pinst)
+      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinaries execFeatures cfg0 buildGlobals (piFsRoot pinst) fnConf (piCommandLineArguments pinst)
 
       liftIO $ mapM_ (assertPropertySatisfied logAction bak execResult) (AEt.properties (AVW.wmProperties wmConfig))
 

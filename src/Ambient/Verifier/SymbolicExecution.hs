@@ -36,6 +36,7 @@ import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
 import qualified Data.Traversable as Trav
 import qualified Data.Vector as DV
+import qualified Data.Vector.NonEmpty as NEV
 import           GHC.TypeNats ( KnownNat, type (<=) )
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lumberjack as LJ
@@ -43,6 +44,7 @@ import qualified System.IO as IO
 
 import qualified Data.Macaw.Architecture.Info as DMA
 import qualified Data.Macaw.BinaryLoader as DMB
+import qualified Data.Macaw.BinaryLoader.ELF as DMBE
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Memory.ElfLoader as DMME
@@ -77,6 +79,7 @@ import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.Loader.LoadOptions as ALL
 import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
 import qualified Ambient.Property.Definition as APD
@@ -179,15 +182,15 @@ lookupFunction :: forall sym bak arch p ext w scope solver st fs args ret mem
      )
    => bak
    -> DMS.GenArchVals mem arch
-   -> DMM.Memory w
-   -- ^ Memory from function discovery
+   -> NEV.NonEmptyVector (DMM.Memory w)
+   -- ^ The memory for each loaded binary
    -> FunctionConfig w args ret arch sym p ext
    -- ^ Configuration parameters concerning functions and overrides
    -> AF.FunctionABI arch sym p
    -- ^ Function call ABI specification for 'arch'
    -> LCF.HandleAllocator
    -> DMS.LookupFunctionHandle p sym arch
-lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
+lookupFunction bak archVals binaryMems fnConf abi hdlAlloc =
   DMS.LookupFunctionHandle $ \state _mem regs -> do
     -- Extract instruction pointer value and look the address up in
     -- 'addressToFnHandle'
@@ -327,8 +330,13 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
           Just handle -> pure (handle, state)
 
     resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
-    resolveFuncAddr funcAddr =
-      case DMM.resolveRegionOff discoveryMem (fcRegion fnConf) funcAddr of
+    resolveFuncAddr funcAddr = do
+      -- To determine which Memory to use, we need to compute the index for
+      -- the appropriate binary. See Note [Address offsets for shared libraries]
+      -- in A.Loader.LoadOffset.
+      let loadOffset = ALL.addressToIndex funcAddr
+      let mem = binaryMems NEV.! fromInteger loadOffset
+      case DMBE.resolveAbsoluteAddress mem funcAddr of
         Nothing -> panic ["Failed to resolve function address: " ++ show funcAddr]
         Just funcAddrOff -> pure funcAddrOff
 
@@ -621,7 +629,13 @@ insertFreshGlobals sym globs initialState = foldM go initialState globs
 
 -- | Initial memory state for symbolic execution
 data InitialMemory sym w =
-  InitialMemory { imMemVar :: LCS.GlobalVar LCLM.Mem
+  InitialMemory { imBinaryMems :: NEV.NonEmptyVector (DMM.Memory w)
+               -- ^ A vector of the 'DMM.Memory' for each loaded binary, where
+               -- the memory at index 0 is the main binary, index 1 is the
+               -- first shared library, index 2 is the second shared library,
+               -- and so on. See Note [Address offsets for shared libraries]
+               -- in A.Loader.LoadOffset.
+                , imMemVar :: LCS.GlobalVar LCLM.Mem
                -- ^ MemVar to use in simulation
                 , imGlobals :: LCSG.SymGlobalState sym
                -- ^ Initial global variables
@@ -697,7 +711,8 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
                                  | AF.SomeFunctionOverride ov <- functionOvs ]
   globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
 
-  return (InitialMemory { imMemVar = memVar
+  return (InitialMemory { imBinaryMems = NEV.fromNonEmpty mems
+                        , imMemVar = memVar
                         , imGlobals = globals2
                         , imStackBasePtr = stackBasePtr
                         , imHeapEndGlob = heapEndGlob
@@ -822,8 +837,6 @@ data FunctionConfig w args ret arch sym p ext = FunctionConfig {
   -- ^ Function to construct an ABI specification for function calls
   , fcFunctionOverrides :: [ AF.SomeFunctionOverride p sym ext ]
   -- ^ A list of additional function overrides to register
-  , fcRegion :: DMM.RegionIndex
-  -- ^ The memory region index containing functions
   , fcPltStubs :: Map.Map (DMME.MemWord w) WF.FunctionName
   -- ^ Mapping from PLT stub addresses to function names
   , fcSoSymbolToFnHandle :: Map.Map WF.FunctionName (LCF.FnHandle args ret)
@@ -856,8 +869,6 @@ simulateFunction
   -> SymbolicExecutionConfig arch sym
   -> InitialMemory sym w
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
-  -> DMM.Memory w
-  -- ^ Memory from function discovery
   -> Maybe FilePath
   -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
   -- will be empty
@@ -869,7 +880,7 @@ simulateFunction
        , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf cliArgs = do
+simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg mFsRoot fnConf cliArgs = do
   let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
@@ -916,7 +927,7 @@ simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cf
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals discoveryMem fnConf functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
+    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals (imBinaryMems initialMem) fnConf functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
@@ -969,8 +980,6 @@ symbolicallyExecute
   -> NEL.NonEmpty (DMB.LoadedBinary arch binFmt)
   -> [LCS.GenericExecutionFeature sym]
   -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
-  -> DMM.Memory w
-  -- ^ Memory from function discovery
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
   -> Maybe FilePath
@@ -984,7 +993,7 @@ symbolicallyExecute
        , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinaries execFeatures cfg discoveryMem initGlobals mFsRoot fnConf cliArgs = do
+symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinaries execFeatures cfg initGlobals mFsRoot fnConf cliArgs = do
   let mems = NEL.map DMB.memoryImage loadedBinaries
   initialMem <- initializeMemory bak
                                  halloc
@@ -993,4 +1002,4 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinaries
                                  initGlobals
                                  (fcFunctionOverrides fnConf)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg discoveryMem mFsRoot fnConf cliArgs
+  simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg mFsRoot fnConf cliArgs
