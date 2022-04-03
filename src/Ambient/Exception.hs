@@ -80,6 +80,10 @@ data AmbientException where
   SoMismatchedElfClass :: DE.ElfClass w -> DE.ElfClass w' -> AmbientException
   -- | The offset for the entry point function's address could not be resolved.
   EntryPointAddrOffResolutionFailure :: DMM.MemWidth w => DMM.MemWord w -> AmbientException
+  -- | An address corresponding to the name of the entry point function could not be found.
+  NamedEntryPointAddrLookupFailure :: WF.FunctionName -> AmbientException
+  -- | Two different binaries define dynamic functions with the same name.
+  DynamicFunctionNameClash :: DMM.MemWidth w => WF.FunctionName -> DMM.MemWord w -> DMM.MemWord w -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -185,3 +189,16 @@ instance PP.Pretty AmbientException where
         PP.pretty "A shared object has a different ELF class value than the main binary.  Shared object has class " PP.<+> PP.viaShow soClass <> PP.pretty " and main binary has class " PP.<+> PP.viaShow mainClass
       EntryPointAddrOffResolutionFailure addr ->
         PP.pretty "Could not resolve offset for entry point address" PP.<+> PP.pretty addr
+      NamedEntryPointAddrLookupFailure fnName ->
+        PP.vcat [ PP.pretty "Could not find an address for an entry point function named"
+                    PP.<+> PP.squotes (PP.pretty fnName)
+                , PP.pretty "Note that if you are verifying a stripped binary,"
+                , PP.pretty "you will likely need to supply the address of the entry point"
+                , PP.pretty "function using `--entry-point-addr 0xNNN` instead."
+                ]
+      DynamicFunctionNameClash fnName addr1 addr2 ->
+        PP.vcat [ PP.pretty "Multiple binaries define function named"
+                    PP.<+> PP.squotes (PP.pretty fnName)
+                , PP.pretty "- Address 1" <> PP.colon PP.<+> PP.pretty addr1
+                , PP.pretty "- Address 2" <> PP.colon PP.<+> PP.pretty addr2
+                ]

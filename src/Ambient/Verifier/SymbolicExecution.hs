@@ -25,7 +25,6 @@ import qualified Control.Monad.State.Strict as CMS
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
 import qualified Data.List as List
-import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.List as PL
@@ -47,10 +46,10 @@ import qualified Data.Macaw.BinaryLoader as DMB
 import qualified Data.Macaw.BinaryLoader.ELF as DMBE
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Memory as DMM
-import qualified Data.Macaw.Memory.ElfLoader as DMME
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.Symbolic.Memory as DMSM
 import qualified Data.Macaw.Types as DMT
+import qualified Lang.Crucible.Analysis.Postdom as LCAP
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Extension as LCCE
@@ -76,9 +75,12 @@ import qualified What4.Symbol as WSym
 import qualified What4.BaseTypes as WT
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Discovery as ADi
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.Lift as ALi
+import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Loader.LoadOptions as ALL
 import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
@@ -165,10 +167,11 @@ extractIP bak archVals regs = do
 -- NOTE: This currently only works for concrete function addresses, but once
 -- https://github.com/GaloisInc/crucible/pull/615 lands, we should update it to
 -- return a mux of all possible targets.
-lookupFunction :: forall sym bak arch p ext w scope solver st fs args ret mem
+lookupFunction :: forall sym bak arch binFmt p ext w scope solver st fs args ret mem
    . ( LCB.IsSymBackend sym bak
      , LCLM.HasLLVMAnn sym
      , LCCE.IsSyntaxExtension ext
+     , DMB.BinaryLoader arch binFmt
      , DMS.SymArchConstraints arch
      , sym ~ WE.ExprBuilder scope st fs
      , bak ~ LCBO.OnlineBackend solver scope st fs
@@ -180,17 +183,17 @@ lookupFunction :: forall sym bak arch p ext w scope solver st fs args ret mem
      , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
      , WPO.OnlineSolver solver
      )
-   => bak
+   => LJ.LogAction IO AD.Diagnostic
+   -> bak
    -> DMS.GenArchVals mem arch
-   -> NEV.NonEmptyVector (DMM.Memory w)
-   -- ^ The memory for each loaded binary
-   -> FunctionConfig w args ret arch sym p ext
-   -- ^ Configuration parameters concerning functions and overrides
+   -> ALB.BinaryConfig arch binFmt
+   -- ^ Information about the loaded binaries
    -> AF.FunctionABI arch sym p
    -- ^ Function call ABI specification for 'arch'
    -> LCF.HandleAllocator
+   -> DMA.ArchitectureInfo arch
    -> DMS.LookupFunctionHandle p sym arch
-lookupFunction bak archVals binaryMems fnConf abi hdlAlloc =
+lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo =
   DMS.LookupFunctionHandle $ \state _mem regs -> do
     -- Extract instruction pointer value and look the address up in
     -- 'addressToFnHandle'
@@ -263,90 +266,131 @@ lookupFunction bak archVals binaryMems fnConf abi hdlAlloc =
                         -> LCS.CrucibleState p sym ext rtp blocks r ctx
     incrementOvsApplied = AExt.incrementSimStat AExt.lensNumOvsApplied
 
-    -- Lookup a function handle from an address.  Performs the lookup in the
+    -- Look up a function handle from an address.  Performs the lookup in the
     -- following order:
     --
-    -- (1) Check for override for 'funcAddr' at a fixed address in kernel
+    -- (1) Check for an override for the address at a fixed address in kernel
     --     memory.  If not found, proceed to (2).
-    -- (2) If 'funcAddr' points to a PLT stub, dispatch an override.  Otherwise
-    --     proceed to (3).
-    -- (3) Resolve the function name corresponding to 'funcAddr'.  If an
-    --     override is registered to that name, dispatch the override.
-    --     Otherwise proceed to (4).
-    -- (4) Return the function handle found during discovery for 'funcAddr'.
+    -- (2) If the address points to a PLT stub:
     --
-    -- In each of steps (1)–(3), we check at the beginning to see if the
+    --     (a) If the PLT stub name has an override, dispatch the override.
+    --     (b) If not, determine the address that the PLT stub jumps to
+    --         and proceed to (3) with the new address.
+    --
+    --     If the address does not point to a PLT stub, proceed to (3).
+    -- (3) Look up the function name corresponding to the address. If an
+    --     override is registered to that name, dispatch the override.
+    --     Otherwise, proceed to (4).
+    -- (4) Perform incremental code discovery on the function at the address
+    --     (see Note [Incremental code discovery] in A.Extensions) and return
+    --     the resulting function handle, caching it in the process.
+    --
+    -- In each of steps (1)–(4), we check at the beginning to see if the
     -- function's handle has been registered previously. If so, we just use
     -- that. We only allocate a new function handle if it has not been
     -- registered before.
     -- See Note [Lazily registering overrides] in A.Extensions.
     lookupHandle
       :: forall rtp blocks r ctx
-       . DMME.MemWord w
+       . DMM.MemWord w
       -> LCS.CrucibleState p sym ext rtp blocks r ctx
       -> IO ( LCF.FnHandle args ret
             , LCS.CrucibleState p sym ext rtp blocks r ctx
             )
     lookupHandle funcAddr state =
+      -- Step (1)
       lazilyRegisterHandle state funcAddr AExt.functionKernelAddrOvHandles
                            (AF.functionKernelAddrMapping abi) $
-        case Map.lookup funcAddr (fcPltStubs fnConf) of
+        -- Step (2)
+        case Map.lookup funcAddr (ALB.bcPltStubs binConf) of
           -- If 'funcAddr' points to a PLT stub, dispatch an override.
           -- Otherwise continue resolving the function address.
-          Just fnName -> overridePLTStubByName fnName state
+          Just pltStubName ->
+            -- Step (2)(a)
+            lazilyRegisterHandle state pltStubName AExt.functionOvHandles
+                                 (AF.functionNameMapping abi) $ do
+              -- Step (2)(b)
+              (funcAddrOff, bin) <- resolvePLTStub pltStubName
+              dispatchFuncAddrOff funcAddrOff bin state
           Nothing -> do
-            funcAddrOff <- resolveFuncAddr funcAddr
-            handle <- lookupFuncAddrOff funcAddrOff
-            applyOverrideIfFound handle state
+            (funcAddrOff, bin) <- resolveFuncAddr funcAddr
+            dispatchFuncAddrOff funcAddrOff bin state
 
-    -- If we have an override for a certain function name, construct a function
-    -- handle for that override. Otherwise, return the supplied function handle
-    -- unchanged.
-    applyOverrideIfFound
-      :: forall rtp blocks r ctx
-       . LCF.FnHandle args ret
-      -> LCS.CrucibleState p sym ext rtp blocks r ctx
-      -> IO ( LCF.FnHandle args ret
-            , LCS.CrucibleState p sym ext rtp blocks r ctx
-            )
-    applyOverrideIfFound handle state =
-      lazilyRegisterHandle state (LCF.handleName handle) AExt.functionOvHandles
-                           (AF.functionNameMapping abi) $
-        pure (handle, state)
+    -- Resolve the address that a PLT stub will jump to, also returning the
+    -- binary that the address resides in (see
+    -- @Note [Address offsets for shared libraries]@ in A.Loader.LoadOffset).
+    resolvePLTStub ::
+      WF.FunctionName ->
+      IO (DMM.MemSegmentOff w, ALB.LoadedBinaryPath arch binFmt)
+    resolvePLTStub pltStubName =
+      case Map.lookup pltStubName (ALB.bcDynamicFuncSymbolMap binConf) of
+        Just funcAddr -> resolveFuncAddr funcAddr
+        Nothing -> CMC.throwM (AE.UnhandledPLTStub pltStubName)
 
-    overridePLTStubByName
-      :: forall rtp blocks r ctx
-       . WF.FunctionName
-      -> LCS.CrucibleState p sym ext rtp blocks r ctx
-      -> IO ( LCF.FnHandle args ret
-            , LCS.CrucibleState p sym ext rtp blocks r ctx
-            )
-    overridePLTStubByName fnName state =
-      lazilyRegisterHandle state fnName AExt.functionOvHandles
-                           (AF.functionNameMapping abi) $
-        case Map.lookup fnName (fcSoSymbolToFnHandle fnConf) of
-          Nothing ->
-            CMC.throwM (AE.UnhandledPLTStub fnName)
-          Just handle -> pure (handle, state)
-
-    resolveFuncAddr :: DMME.MemWord w -> IO (DMME.MemSegmentOff w)
+    -- Resolve an address offset, also returning the binary that the address
+    -- resides in (see @Note [Address offsets for shared libraries]@ in
+    -- A.Loader.LoadOffset).
+    resolveFuncAddr ::
+      DMM.MemWord w ->
+      IO (DMM.MemSegmentOff w, ALB.LoadedBinaryPath arch binFmt)
     resolveFuncAddr funcAddr = do
       -- To determine which Memory to use, we need to compute the index for
       -- the appropriate binary. See Note [Address offsets for shared libraries]
       -- in A.Loader.LoadOffset.
-      let loadOffset = ALL.addressToIndex funcAddr
-      let mem = binaryMems NEV.! fromInteger loadOffset
-      case DMBE.resolveAbsoluteAddress mem funcAddr of
+      let binIndex = fromInteger $ ALL.addressToIndex funcAddr
+      let loadedBinaryPath = ALB.bcBinaries binConf NEV.! binIndex
+      let bin = ALB.lbpBinary loadedBinaryPath
+      case DMBE.resolveAbsoluteAddress (DMB.memoryImage bin) funcAddr of
         Nothing -> panic ["Failed to resolve function address: " ++ show funcAddr]
-        Just funcAddrOff -> pure funcAddrOff
+        Just funcAddrOff -> pure (funcAddrOff, loadedBinaryPath)
 
-    lookupFuncAddrOff :: DMM.MemSegmentOff w -> IO (LCF.FnHandle args ret)
-    lookupFuncAddrOff funcAddrOff =
-      case Map.lookup funcAddrOff (fcAddressToFnHandle fnConf) of
-        -- TODO: Rather than panicking, we should re-run code discovery
-        -- to attempt to locate the function (see issue #13)
-        Nothing -> panic ["Failed to find function in function handle mapping"]
-        Just handle -> pure handle
+    -- This corresponds to step (3) in lookupHandle's documentation.
+    -- Any indirections by way of PLT stubs should be resolved by this point.
+    dispatchFuncAddrOff ::
+      DMM.MemSegmentOff w ->
+      -- ^ The address offset
+      ALB.LoadedBinaryPath arch binFmt ->
+      -- ^ The binary that the address resides in
+      LCS.CrucibleState p sym ext rtp blocks r ctx ->
+      IO ( LCF.FnHandle args ret
+         , LCS.CrucibleState p sym ext rtp blocks r ctx
+         )
+    dispatchFuncAddrOff funcAddrOff bin state = do
+      case Map.lookup funcAddrOff (ALB.lbpEntryPoints bin) of
+        Just fnName ->
+          lazilyRegisterHandle state fnName AExt.functionOvHandles
+                               (AF.functionNameMapping abi) $
+            discoverFuncAddrOff funcAddrOff bin state
+        Nothing ->
+          discoverFuncAddrOff funcAddrOff bin state
+
+    -- Look up the function handle for an address offset, performing code
+    -- discovery if the address has not yet been encountered before.
+    -- See Note [Incremental code discovery] in A.Extensions.
+    --
+    -- This corresponds to step (4) in lookupHandle's docs
+    discoverFuncAddrOff ::
+      DMM.MemSegmentOff w ->
+      -- ^ The address offset
+      ALB.LoadedBinaryPath arch binFmt ->
+      -- ^ The binary that the address resides in
+      LCS.CrucibleState p sym ext rtp blocks r ctx ->
+      IO ( LCF.FnHandle args ret
+         , LCS.CrucibleState p sym ext rtp blocks r ctx
+         )
+    discoverFuncAddrOff funcAddrOff bin state0 =
+      case Map.lookup funcAddrOff (state0 ^. LCS.stateContext . LCS.cruciblePersonality . AExt.discoveredFunctionHandles) of
+        Just handle -> pure (handle, state0)
+        Nothing -> do
+          Some discoveredEntry <- ADi.discoverFunction logAction archInfo bin funcAddrOff
+          LCCC.SomeCFG cfg <- ALi.liftDiscoveredFunction hdlAlloc (ALB.lbpPath bin)
+                                                         (DMS.archFunctions archVals) discoveredEntry
+          let cfgHandle = LCCC.cfgHandle cfg
+          let state1 = insertFunctionHandle state0 cfgHandle (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
+          let state2 = over (LCS.stateContext . LCS.cruciblePersonality . AExt.discoveredFunctionHandles)
+                            (Map.insert funcAddrOff cfgHandle)
+                            state1
+          pure (LCCC.cfgHandle cfg, state2)
 
     mkAndBindOverride :: forall fnArgs fnRet rtp blocks r ctx
                        . LCS.CrucibleState p sym ext rtp blocks r ctx
@@ -629,13 +673,7 @@ insertFreshGlobals sym globs initialState = foldM go initialState globs
 
 -- | Initial memory state for symbolic execution
 data InitialMemory sym w =
-  InitialMemory { imBinaryMems :: NEV.NonEmptyVector (DMM.Memory w)
-               -- ^ A vector of the 'DMM.Memory' for each loaded binary, where
-               -- the memory at index 0 is the main binary, index 1 is the
-               -- first shared library, index 2 is the second shared library,
-               -- and so on. See Note [Address offsets for shared libraries]
-               -- in A.Loader.LoadOffset.
-                , imMemVar :: LCS.GlobalVar LCLM.Mem
+  InitialMemory { imMemVar :: LCS.GlobalVar LCLM.Mem
                -- ^ MemVar to use in simulation
                 , imGlobals :: LCSG.SymGlobalState sym
                -- ^ Initial global variables
@@ -671,7 +709,7 @@ initializeMemory
   => bak
   -> LCF.HandleAllocator
   -> DMA.ArchitectureInfo arch
-  -> NEL.NonEmpty (DMM.Memory w)
+  -> NEV.NonEmptyVector (DMM.Memory w)
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
   -> [ AF.SomeFunctionOverride p sym ext ]
@@ -711,8 +749,7 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
                                  | AF.SomeFunctionOverride ov <- functionOvs ]
   globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
 
-  return (InitialMemory { imBinaryMems = NEV.fromNonEmpty mems
-                        , imMemVar = memVar
+  return (InitialMemory { imMemVar = memVar
                         , imGlobals = globals2
                         , imStackBasePtr = stackBasePtr
                         , imHeapEndGlob = heapEndGlob
@@ -826,21 +863,13 @@ allocaCString bak mem0 str = do
   pure (strPtr, mem2)
 
 -- | Configuration parameters concerning functions and overrides
-data FunctionConfig w args ret arch sym p ext = FunctionConfig {
-    fcAddressToFnHandle :: Map.Map (DMM.MemSegmentOff w) (LCF.FnHandle args ret)
-  -- ^ Mapping from discovered function addresses to function handles
-  , fcFnBindings :: LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch))
-  -- ^ Function bindings to insert into the simulation context
-  , fcBuildSyscallABI :: ASy.BuildSyscallABI arch sym p
+data FunctionConfig arch sym p ext = FunctionConfig {
+    fcBuildSyscallABI :: ASy.BuildSyscallABI arch sym p
   -- ^ Function to construct an ABI specification for system calls
   , fcBuildFunctionABI :: AF.BuildFunctionABI arch sym p
   -- ^ Function to construct an ABI specification for function calls
   , fcFunctionOverrides :: [ AF.SomeFunctionOverride p sym ext ]
   -- ^ A list of additional function overrides to register
-  , fcPltStubs :: Map.Map (DMME.MemWord w) WF.FunctionName
-  -- ^ Mapping from PLT stub addresses to function names
-  , fcSoSymbolToFnHandle :: Map.Map WF.FunctionName (LCF.FnHandle args ret)
-  -- ^ Mapping from symbols in shared objects to function handles
   }
 
 simulateFunction
@@ -850,11 +879,10 @@ simulateFunction
      , LCCE.IsSyntaxExtension ext
      , LCB.IsSymBackend sym bak
      , LCLM.HasLLVMAnn sym
+     , DMB.BinaryLoader arch binFmt
      , DMS.SymArchConstraints arch
      , w ~ DMC.ArchAddrWidth arch
      , 16 <= w
-     , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
-     , args ~ (LCT.EmptyCtx LCT.::> ret)
      , sym ~ WE.ExprBuilder scope st fs
      , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
@@ -865,14 +893,18 @@ simulateFunction
   -> bak
   -> [LCS.GenericExecutionFeature sym]
   -> LCF.HandleAllocator
+  -> DMA.ArchitectureInfo arch
   -> DMS.GenArchVals DMS.LLVMMemory arch
   -> SymbolicExecutionConfig arch sym
   -> InitialMemory sym w
-  -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
+  -> DMC.ArchSegmentOff arch
+  -- ^ The address of the entry point function
   -> Maybe FilePath
   -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
   -- will be empty
-  -> FunctionConfig w args ret arch sym p ext
+  -> ALB.BinaryConfig arch binFmt
+  -- ^ Information about the loaded binaries
+  -> FunctionConfig arch sym p ext
   -- ^ Configuration parameters concerning functions and overrides
   -> [BS.ByteString]
   -- ^ The user-supplied command-line arguments
@@ -880,7 +912,7 @@ simulateFunction
        , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg mFsRoot fnConf cliArgs = do
+simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs = do
   let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
@@ -921,17 +953,24 @@ simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cf
   let globals2 = LCSG.insertGlobal (imMemVar initialMem) mem1 globals1
   let arguments = LCS.RegMap (Ctx.singleton regsWithMainArgs)
 
-  -- FIXME: We might want to add all known functions to the map here. As an
-  -- alternative design, we might be able to lazily add functions as they are
-  -- encountered in calls
+  let mainBinaryPath = ALB.mainLoadedBinaryPath binConf
+  Some discoveredEntry <- ADi.discoverFunction logAction archInfo mainBinaryPath entryPointAddr
+  LCCC.SomeCFG cfg <- ALi.liftDiscoveredFunction halloc (ALB.lbpPath mainBinaryPath)
+                                                 (DMS.archFunctions archVals) discoveredEntry
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction bak archVals (imBinaryMems initialMem) fnConf functionABI halloc) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
+    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction logAction bak archVals binConf functionABI halloc archInfo) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
+    let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
+                                       (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
+                                       LCF.emptyHandleMap
+    let ambientSimState = set AExt.discoveredFunctionHandles
+                              (Map.singleton entryPointAddr (LCCC.cfgHandle cfg))
+                              AExt.emptyAmbientSimulatorState
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
-    let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings (fcFnBindings fnConf)) extImpl AExt.emptyAmbientSimulatorState
+    let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings bindings) extImpl ambientSimState
     let s0 = LCS.InitialState ctx globals2 LCS.defaultAbortHandler regsRepr simAction
 
     let wmCallback = secWMMCallback seConf
@@ -950,7 +989,7 @@ simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cf
 -- default memory model for machine code); we will almost certainly need a
 -- modified memory model.
 symbolicallyExecute
-  :: forall m sym bak arch binFmt w blocks args ret solver scope st fs ext p
+  :: forall m sym bak arch binFmt w solver scope st fs ext p
    . ( CMC.MonadThrow m
      , MonadIO m
      , LCB.IsSymBackend sym bak
@@ -963,8 +1002,6 @@ symbolicallyExecute
      , DMM.MemWidth w
      , 16 <= w
      , KnownNat w
-     , ret ~ LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
-     , args ~ (LCT.EmptyCtx LCT.::> ret)
      , sym ~ WE.ExprBuilder scope st fs
      , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
@@ -977,15 +1014,17 @@ symbolicallyExecute
   -> DMA.ArchitectureInfo arch
   -> DMS.GenArchVals DMS.LLVMMemory arch
   -> SymbolicExecutionConfig arch sym
-  -> NEL.NonEmpty (DMB.LoadedBinary arch binFmt)
   -> [LCS.GenericExecutionFeature sym]
-  -> LCCC.CFG (DMS.MacawExt arch) blocks (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch) (DMS.ArchRegStruct arch)
+  -> DMC.ArchSegmentOff arch
+  -- ^ The address of the entry point function
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
   -> Maybe FilePath
   -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
   -- will be empty
-  -> FunctionConfig w args ret arch sym p ext
+  -> ALB.BinaryConfig arch binFmt
+  -- ^ Information about the loaded binaries
+  -> FunctionConfig arch sym p ext
   -- ^ Configuration parameters concerning functions and overrides
   -> [BS.ByteString]
   -- ^ The user-supplied command-line arguments
@@ -993,8 +1032,8 @@ symbolicallyExecute
        , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinaries execFeatures cfg initGlobals mFsRoot fnConf cliArgs = do
-  let mems = NEL.map DMB.memoryImage loadedBinaries
+symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures entryPointAddr initGlobals mFsRoot binConf fnConf cliArgs = do
+  let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
   initialMem <- initializeMemory bak
                                  halloc
                                  archInfo
@@ -1002,4 +1041,4 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf loadedBinaries
                                  initGlobals
                                  (fcFunctionOverrides fnConf)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  simulateFunction logAction bak execFeatures halloc archVals seConf initialMem cfg mFsRoot fnConf cliArgs
+  simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs

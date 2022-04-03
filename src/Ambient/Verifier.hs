@@ -19,22 +19,18 @@ import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Control.Exception as X
 import           Control.Lens ( (^.), Identity )
-import           Control.Monad ( foldM, void )
+import           Control.Monad ( void )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as DA
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Foldable as F
 import           Data.IORef ( readIORef )
-import qualified Data.List.NonEmpty as NEL
-import qualified Data.Map.Strict as Map
 import           Data.Maybe ( catMaybes )
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Set as Set
 import qualified Data.Text as DT
-import qualified Data.Text.Encoding as DTE
 import qualified Data.Time.Clock as DTC
 import qualified Data.Traversable as Trav
 import           Data.Word ( Word64 )
@@ -45,14 +41,8 @@ import qualified System.Directory as Dir
 import qualified System.FilePath as FP
 
 import qualified Data.Macaw.Architecture.Info as DMA
-import qualified Data.Macaw.CFG as DMC
-import qualified Data.Macaw.Discovery as DMD
-import qualified Data.Macaw.Memory as DMM
-import qualified Data.Macaw.Symbolic as DMS
-import qualified Lang.Crucible.Analysis.Postdom as LCAP
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
-import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
@@ -65,20 +55,17 @@ import qualified Lang.Crucible.Simulator.SimError as LCSS
 import qualified Lang.Crucible.Simulator.SymSequence as LCSS
 import qualified What4.Config as WConf
 import qualified What4.Concrete as WC
-import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.Partial as WP
 
 import qualified Ambient.Diagnostic as AD
-import qualified Ambient.Discovery as ADi
 import qualified Ambient.EntryPoint as AEp
 import qualified Ambient.EventTrace as AEt
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
-import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
-import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader as AL
+import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Panic as AP
 import qualified Ambient.Profiler.EmbeddedData as APE
 import qualified Ambient.Property.Definition as APD
@@ -119,7 +106,7 @@ data ProgramInstance =
                   -- ^ The interpretation of floating point operations in SMT
                   , piProperties :: [APD.Property APD.StateID]
                   -- ^ A property to verify that the program satisfies
-                  , piEntryPoint :: AEp.EntryPoint Word64
+                  , piEntryPoint :: AEp.EntryPoint
                   -- ^ Where to begin simulation
                   , piProfileTo :: Maybe FilePath
                   -- ^ Optional directory to write profiler-related files to
@@ -162,177 +149,6 @@ instance DA.ToJSON Metrics
 instance DA.ToJSON (LCSProf.Metrics Identity)
 deriving instance Generic WI.Statistics
 instance DA.ToJSON WI.Statistics
-
--- | Retrieve a mapping from symbol names to addresses from code discovery
--- information.
-getSymbolNameToAddrMapping
-  :: DMD.DiscoveryState arch
-  -> Map.Map BSC.ByteString
-             (DMM.MemSegmentOff (DMC.RegAddrWidth (DMC.ArchReg arch)))
-getSymbolNameToAddrMapping discoveryState =
-  Map.fromList [ (name, addr)
-               | (addr, name) <- Map.toList (DMD.symbolNames discoveryState)
-               ]
-
--- | Retrieve the name of the entry point function (in its
--- 'DMD.DiscoveryFunInfo' form) from the code discovery information. Returns a
--- pair containing the entry point's address, as well as the named function.
---
--- If the supplied entry point is not present in the binary, or if discovery
--- was unable to find it, this function will throw exceptions.
-getEntryPointInfo
-  :: forall m arch w.
-     ( CMC.MonadThrow m
-     , DMM.MemWidth (DMC.ArchAddrWidth arch)
-     , w ~ DMC.RegAddrWidth (DMC.ArchReg arch)
-     )
-  => DMD.DiscoveryState arch
-  -- ^ A computed discovery state
-  -> AEp.EntryPoint (DMM.MemSegmentOff w)
-  -- ^ The entry point to look for in the discovery state
-  -> m (DMM.MemSegmentOff w, (Some (DMD.DiscoveryFunInfo arch)))
-getEntryPointInfo discoveryState entryPoint = do
-  entryAddr <-
-    case entryPoint of
-      AEp.DefaultEntryPoint   -> lookupEntryPointAddr defaultEntryPointName
-      AEp.EntryPointName n    -> lookupEntryPointAddr $ DTE.encodeUtf8 n
-      AEp.EntryPointAddr addr -> pure addr
-  case Map.lookup entryAddr (discoveryState ^. DMD.funInfo) of
-    Just dfi -> return (entryAddr, dfi)
-    Nothing  -> CMC.throwM (AE.MissingExpectedFunction mbEntryPointName entryAddr)
-  where
-    symbolNamesToAddrs = getSymbolNameToAddrMapping discoveryState
-
-    -- See Note [Entry Point] for why main() is the default entry point.
-    defaultEntryPointName = "main"
-
-    mbEntryPointName =
-      case entryPoint of
-        AEp.DefaultEntryPoint -> Just $ defaultEntryPointName
-        AEp.EntryPointName n  -> Just $ DTE.encodeUtf8 n
-        AEp.EntryPointAddr{}  -> Nothing
-
-    lookupEntryPointAddr :: BS.ByteString -> m (DMM.MemSegmentOff w)
-    lookupEntryPointAddr entryPointName =
-      case Map.lookup entryPointName symbolNamesToAddrs of
-        Nothing        -> CMC.throwM (AE.MissingExpectedSymbol entryPointName)
-        Just entryAddr -> pure entryAddr
-
--- | Build function bindings from a list of discovered function.  Returns a
--- pair containing:
---  * A list of pairs, where each pair consists of:
---    * A function address 'addr'
---    * A function handle for 'addr'
---  * Function handle map in the 'LCF.FnHandleMap' form
-buildBindings
-  :: forall sym m arch w mem blocks p
-   . ( MonadIO m
-     , w ~ DMC.ArchAddrWidth arch
-     , DMM.MemWidth w
-     )
-  => [(DMM.MemSegmentOff w, Some (DMD.DiscoveryFunInfo arch))]
-  -- ^ List containing pairs of addresses and corresponding discovered
-  -- functions
-  -> LCF.HandleAllocator
-  -> ProgramInstance
-  -> DMS.GenArchVals mem arch
-  -> DMM.MemSegmentOff w
-  -- ^ Entry point address
-  -> LCCC.CFG (DMS.MacawExt arch)
-              blocks
-              (LCCC.EmptyCtx LCCC.::> DMS.ArchRegStruct arch)
-              (DMS.ArchRegStruct arch)
-  -- ^ CFG for entry point
-  -> m ( [NamedHandle arch]
-       , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) )
-buildBindings fns hdlAlloc pinst archVals entryAddr cfg0 = do
-  case fns of
-    [] -> return ([], LCF.emptyHandleMap)
-    (addr, Some fn):fns' -> do
-      (namedHandles, bindings) <- buildBindings fns' hdlAlloc pinst archVals entryAddr cfg0
-      (handle, binding) <- buildBinding fn bindings addr
-      let namedHandle = NamedHandle { nhName = ALi.discoveredFunName fn
-                                    , nhAddrOff = addr
-                                    , nhHandle = handle
-                                    }
-      return (namedHandle : namedHandles, binding)
-  where
-    -- Given a discovered function 'fn', a function handle map, and the address
-    -- of 'fn', returns a function handle for 'fn' and an updated handle map.
-    buildBinding ::
-      forall ids.
-      DMD.DiscoveryFunInfo arch ids ->
-      LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) ->
-      DMM.MemSegmentOff w ->
-      m ( AF.FunctionOverrideHandle arch
-        , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) )
-    buildBinding fn handleMap addr = do
-      if addr == entryAddr
-      then return $ buildBindingFromCfg cfg0 handleMap
-      else bindFunction hdlAlloc pinst archVals fn handleMap
-
--- | A function override handle bundled with the name of the function being
--- overridden and the address where the function is defined.
-data NamedHandle arch = NamedHandle
-  { nhName :: WF.FunctionName
-  , nhAddrOff :: DMM.MemSegmentOff (DMC.ArchAddrWidth arch)
-  , nhHandle :: AF.FunctionOverrideHandle arch
-  }
-
--- | Build function bindings for a shared object.  Returns a pair containing:
---  * A list of 'NamedHandle's
---  * A function handle map in the 'LCF.FnHandleMap' form
-buildSoBindings
-  :: ( MonadIO m
-     , DMM.MemWidth (DMC.ArchAddrWidth arch) )
-  => LCF.HandleAllocator
-  -> ProgramInstance
-  -> DMS.GenArchVals mem arch
-  -> ([NamedHandle arch]
-     , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)))
-  -- ^ Initial bindings to build on
-  -> DMD.DiscoveryState arch
-  -> m ( [NamedHandle arch]
-       , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) )
-buildSoBindings hdlAlloc pinst archVals initBindings discoveryState = do
-  let fns = Map.toList (discoveryState ^. DMD.funInfo)
-  foldM buildBinding initBindings fns
-  where
-    -- Given a discovered function 'fn', a function handle map, and the address
-    -- of 'fn', returns a function handle for 'fn' and an updated handle map.
-    buildBinding (namedHandles, handleMap) (addr, Some fn) = do
-      (handle, handleMap') <- bindFunction hdlAlloc pinst archVals fn handleMap
-      let namedHandle = NamedHandle { nhName = ALi.discoveredFunName fn
-                                    , nhAddrOff = addr
-                                    , nhHandle = handle
-                                    }
-      return (namedHandle : namedHandles, handleMap')
-
--- | Build a function handle and update a handle map for a given function
-bindFunction
-  :: ( MonadIO m
-     , DMM.MemWidth (DMC.ArchAddrWidth arch) )
-  => LCF.HandleAllocator
-  -> ProgramInstance
-  -> DMS.GenArchVals mem arch
-  -> DMD.DiscoveryFunInfo arch ids
-  -> LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch))
-  -> m ( AF.FunctionOverrideHandle arch
-       , LCF.FnHandleMap (LCS.FnState p sym (DMS.MacawExt arch)) )
-bindFunction hdlAlloc pinst archVals fn handleMap = do
-  LCCC.SomeCFG cfg <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) fn
-  return $ buildBindingFromCfg cfg handleMap
-
--- | Given a Crucible CFG @cfg@ and a function handle map, returns a function
--- handle for @cfg@ and an updated handle map.
-buildBindingFromCfg
-  :: LCCC.CFG ext b i r
-  -> LCF.FnHandleMap (LCS.FnState p sym ext)
-  -> (LCF.FnHandle i r, LCF.FnHandleMap (LCS.FnState p sym ext))
-buildBindingFromCfg cfg handleMap =
-  let handle = LCCC.cfgHandle cfg in
-  let fnBindings = LCF.insertHandleMap handle (LCS.UseCFG cfg (LCAP.postdomInfo cfg)) handleMap in
-  (handle, fnBindings)
 
 -- | Extract the final value from a global variable
 --
@@ -490,36 +306,8 @@ verify logAction pinst timeoutDuration = do
 
     -- Load up the binary, which existentially introduces the architecture of the
     -- binary in the context of the continuation
-    AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals pltStubs numBytes loadedBinary sharedObjects -> DMA.withArchConstraints archInfo $ do
-      entryPoint <- AEp.resolveEntryPointAddrOff loadedBinary $ piEntryPoint pinst
-      discoveryState <- ADi.discoverFunctions logAction
-                                              archInfo
-                                              (ADi.MainBinary (AEp.entryPointAddrMaybe entryPoint))
-                                              loadedBinary
-      soDiscoveryState <- mapM (ADi.discoverFunctions logAction archInfo ADi.SharedLibrary)
-                               sharedObjects
-      let loadedBinaries = NEL.fromList (loadedBinary : sharedObjects)
-      (entryAddr, Some discoveredEntry) <- getEntryPointInfo discoveryState entryPoint
-      (LCCC.SomeCFG cfg0) <- ALi.liftDiscoveredFunction hdlAlloc (piPath pinst) (DMS.archFunctions archVals) discoveredEntry
-      (handles, bindings) <- buildBindings
-          (Map.toList (discoveryState ^. DMD.funInfo))
-          hdlAlloc
-          pinst
-          archVals
-          entryAddr
-          cfg0
-
-      (soHandles, bindings') <- foldM (buildSoBindings hdlAlloc pinst archVals)
-                                      ([], bindings)
-                                      soDiscoveryState
-      let allHandlesMap = Map.fromList [ (addr, handle)
-                                       | NamedHandle { nhAddrOff = addr
-                                                     , nhHandle = handle
-                                                     } <- handles ++ soHandles ]
-      let soHandlesMap = Map.fromList [ (name, handle)
-                                      | NamedHandle { nhName = name
-                                                    , nhHandle = handle
-                                                    } <- soHandles ]
+    AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals numBytes binConf -> DMA.withArchConstraints archInfo $ do
+      entryPointAddr <- AEp.resolveEntryPointAddrOff binConf $ piEntryPoint pinst
 
       profFeature <- liftIO $ mapM setupProfiling (piProfileTo pinst)
       iterationBoundFeature <-
@@ -550,7 +338,7 @@ verify logAction pinst timeoutDuration = do
                                    , recursionBoundFeature
                                    ]
       let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
-                                               , AVS.secWMMCallback = AVWme.wmExecutor bak archInfo loadedBinary hdlAlloc archVals execFeatures
+                                               , AVS.secWMMCallback = AVWme.wmExecutor bak archInfo (ALB.mainLoadedBinaryPath binConf) hdlAlloc archVals execFeatures
                                                , AVS.secSolver = piSolver pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions
@@ -559,15 +347,11 @@ verify logAction pinst timeoutDuration = do
           liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
         Nothing -> return []
       let fnConf = AVS.FunctionConfig {
-          AVS.fcAddressToFnHandle = allHandlesMap
-        , AVS.fcFnBindings = bindings'
-        , AVS.fcBuildSyscallABI = syscallABI
+          AVS.fcBuildSyscallABI = syscallABI
         , AVS.fcBuildFunctionABI = functionABI
         , AVS.fcFunctionOverrides = functionOvs
-        , AVS.fcPltStubs = pltStubs
-        , AVS.fcSoSymbolToFnHandle = soHandlesMap
         }
-      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf loadedBinaries execFeatures cfg0 buildGlobals (piFsRoot pinst) fnConf (piCommandLineArguments pinst)
+      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) binConf fnConf (piCommandLineArguments pinst)
 
       liftIO $ mapM_ (assertPropertySatisfied logAction bak execResult) (AEt.properties (AVW.wmProperties wmConfig))
 
@@ -616,6 +400,7 @@ main.
 
 This can be fixed up later by lazily re-running discovery as we identify new
 entry points (i.e., by demand as they are jumped to through function pointers).
+See Note [Incremental code discovery] in A.Extensions.
 
 The other complexity is that there is substantial state that must be reasonably
 concrete for symbolic execution from ~_start~ to terminate. We will eventually

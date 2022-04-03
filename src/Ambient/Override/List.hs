@@ -7,7 +7,6 @@ module Ambient.Override.List
   ) where
 
 import           Control.Monad.IO.Class ( MonadIO(..) )
-import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map as Map
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
@@ -28,6 +27,7 @@ import qualified Ambient.Diagnostic as AD
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Loader as AL
+import qualified Ambient.Loader.BinaryConfig as ALB
 import           Ambient.Override.List.Types
 import qualified Ambient.Solver as AS
 import qualified Ambient.Syscall as ASy
@@ -48,12 +48,12 @@ listOverrides logAction pinst = do
     AL.withBinary (AV.piPath pinst) (AV.piBinary pinst) (AV.piSharedObjectDir pinst) hdlAlloc sym $
         \(archInfo :: DMAI.ArchitectureInfo arch) _archVals
         (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI)
-        parserHooks buildGlobals _pltStubs _numBytes loadedBinary sharedObjects -> do
+        parserHooks buildGlobals _numBytes binConf -> do
       functionOvs <- case AV.piOverrideDir pinst of
         Just dir -> do
           liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
         Nothing -> return []
-      let mems = NEL.fromList (map DMB.memoryImage (loadedBinary : sharedObjects))
+      let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
       let ?memOpts = LCLM.defaultMemOptions
       initialMem <- AVS.initializeMemory bak hdlAlloc archInfo mems buildGlobals functionOvs
       fileContents <- liftIO $

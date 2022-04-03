@@ -43,9 +43,9 @@ import qualified What4.Expr as WE
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
 
-import qualified Ambient.Discovery as AD
 import qualified Ambient.Extensions as AExt
 import qualified Ambient.Lift as AL
+import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Panic as AP
 import qualified Ambient.Verifier.SymbolicExecution as AVS
 import qualified Ambient.Verifier.WMM as AVW
@@ -61,13 +61,13 @@ wmeReturnFeature :: ( DMS.SymArchConstraints arch
                     , ext ~ DMS.MacawExt arch
                     , LCB.IsSymInterface sym )
                  => DMAI.ArchitectureInfo arch
-                 -> DMB.LoadedBinary arch binFmt
+                 -> ALB.LoadedBinaryPath arch binFmt
                  -- ^ Binary to disassemble
                  -> LCF.HandleAllocator
                  -> DMS.GenArchVals mem arch
                  -> sym
                  -> LCSEv.ExecutionFeature p sym ext rtp
-wmeReturnFeature archInfo loadedBinary hdlAlloc archVals sym = LCSEv.ExecutionFeature $ \estate -> do
+wmeReturnFeature archInfo loadedBinaryPath hdlAlloc archVals sym = LCSEv.ExecutionFeature $ \estate -> do
   let symArchFns = DMS.archFunctions archVals
   let regsRepr = LCT.StructRepr (DMS.crucArchRegTypes (DMS.archFunctions archVals))
   case estate of
@@ -78,7 +78,7 @@ wmeReturnFeature archInfo loadedBinary hdlAlloc archVals sym = LCSEv.ExecutionFe
             symNatAddr <- WI.bvToNat sym ipVal
             case WI.asNat symNatAddr of
               Just addr -> do
-                mCfg <- buildCfgFromAddr archInfo loadedBinary hdlAlloc (toInteger addr) symArchFns
+                mCfg <- buildCfgFromAddr archInfo loadedBinaryPath hdlAlloc (toInteger addr) symArchFns
                 case mCfg of
                   Just (LCCC.SomeCFG cfg) -> do
                     let blockId = LCCC.cfgEntryBlockID cfg
@@ -106,7 +106,7 @@ buildCfgFromAddr :: forall arch binFmt w
                     , KnownNat w
                     , 1 <= w )
                  => DMAI.ArchitectureInfo arch
-                 -> DMB.LoadedBinary arch binFmt
+                 -> ALB.LoadedBinaryPath arch binFmt
                  -- ^ Binary to disassemble
                  -> LCF.HandleAllocator
                  -> Integer
@@ -115,11 +115,10 @@ buildCfgFromAddr :: forall arch binFmt w
                  -> IO (Maybe (LCCC.SomeCFG (DMS.MacawExt arch)
                                             (Ctx.EmptyCtx Ctx.::> DMS.ArchRegStruct arch)
                                             (DMS.ArchRegStruct arch)))
-buildCfgFromAddr archInfo loadedBinary hdlAlloc addr symArchFns = do
-  let mem = DMB.memoryImage loadedBinary
-  let symMap = AD.symbolMap loadedBinary
-  let mOff = DMBE.resolveAbsoluteAddress (DMB.memoryImage loadedBinary)
-                                         (fromInteger addr)
+buildCfgFromAddr archInfo loadedBinaryPath hdlAlloc addr symArchFns = do
+  let mem = DMB.memoryImage $ ALB.lbpBinary loadedBinaryPath
+  let symMap = ALB.lbpAddrSymMap loadedBinaryPath
+  let mOff = DMBE.resolveAbsoluteAddress mem (fromInteger addr)
   case mOff of
     Just off -> do
       let discoveryState = DMD.cfgFromAddrs archInfo mem symMap [off] []
@@ -148,13 +147,13 @@ wmeLookupFunction
   => bak
   -> DMAI.ArchitectureInfo arch
   -> DMS.GenArchVals mem arch
-  -> DMB.LoadedBinary arch binFmt
+  -> ALB.LoadedBinaryPath arch binFmt
   -> LCF.HandleAllocator
   -> DMS.LookupFunctionHandle p sym arch
-wmeLookupFunction bak archInfo archVals loadedBinary hdlAlloc =
+wmeLookupFunction bak archInfo archVals loadedBinaryPath hdlAlloc =
   DMS.LookupFunctionHandle $ \state _mem regs -> do
     addr <- AVS.extractIP bak archVals regs
-    mCfg <- buildCfgFromAddr archInfo loadedBinary hdlAlloc (toInteger addr) symArchFns
+    mCfg <- buildCfgFromAddr archInfo loadedBinaryPath hdlAlloc (toInteger addr) symArchFns
     case mCfg of
       Just (LCCC.SomeCFG cfg) -> do
         let handle = LCCC.cfgHandle cfg
@@ -224,7 +223,7 @@ wmExecutor :: forall arch binFmt w bak sym mem solver scope st fs
               )
            => bak
            -> DMAI.ArchitectureInfo arch
-           -> DMB.LoadedBinary arch binFmt
+           -> ALB.LoadedBinaryPath arch binFmt
            -- ^ Binary to disassemble
            -> LCF.HandleAllocator
            -> DMS.GenArchVals mem arch
@@ -232,13 +231,13 @@ wmExecutor :: forall arch binFmt w bak sym mem solver scope st fs
            -- ^ Additional execution features to use when executing the weird
            -- machine
            -> AVW.WMMCallback arch sym
-wmExecutor bak archInfo loadedBinary hdlAlloc archVals execFeatures = AVW.WMMCallback $ \addr st -> do
+wmExecutor bak archInfo loadedBinaryPath hdlAlloc archVals execFeatures = AVW.WMMCallback $ \addr st -> do
   let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
   let archInfo' = archInfo { DMAI.archClassifier = DMAI.archClassifier archInfo
                                                <|> weirdClassifier }
-  let lookupFn = wmeLookupFunction bak archInfo' archVals loadedBinary hdlAlloc
-  mCfg <- buildCfgFromAddr archInfo' loadedBinary hdlAlloc addr symArchFns
+  let lookupFn = wmeLookupFunction bak archInfo' archVals loadedBinaryPath hdlAlloc
+  mCfg <- buildCfgFromAddr archInfo' loadedBinaryPath hdlAlloc addr symArchFns
   case mCfg of
     Just (LCCC.SomeCFG cfg) -> do
       let ctx' = set (LCS.cruciblePersonality . AExt.overrideLookupFunctionHandle)
@@ -252,7 +251,7 @@ wmExecutor bak archInfo loadedBinary hdlAlloc archVals execFeatures = AVW.WMMCal
             Just PC.Refl -> do
               let simAction = LCS.runOverrideSim regsRepr (LCS.regValue <$> LCS.callCFG cfg (LCS.RegMap (Ctx.empty Ctx.:> reg)))
               let st' = LCS.InitialState ctx' globals LCS.defaultAbortHandler regsRepr simAction
-              let executionFeatures = (wmeReturnFeature archInfo' loadedBinary hdlAlloc archVals sym) : fmap LCS.genericToExecutionFeature execFeatures
+              let executionFeatures = (wmeReturnFeature archInfo' loadedBinaryPath hdlAlloc archVals sym) : fmap LCS.genericToExecutionFeature execFeatures
               res <- LCS.executeCrucible executionFeatures st'
               return $ AVW.WMMResultCompleted res
             _ -> AP.panic AP.WME "wmExecutor" ["Unexpected register shape"]

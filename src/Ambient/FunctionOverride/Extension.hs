@@ -27,7 +27,6 @@ import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import           Control.Monad.State.Class ( MonadState )
 import           Control.Monad.Writer.Class ( MonadWriter )
 import qualified Data.List as List
-import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
@@ -37,6 +36,7 @@ import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.String as DS
 import qualified Data.Text as DT
 import qualified Data.Text.IO as DTI
+import qualified Data.Vector.NonEmpty as NEV
 import           GHC.TypeNats ( KnownNat, type (<=) )
 import qualified Lumberjack as LJ
 import qualified System.FilePath as SF
@@ -196,7 +196,7 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
           initMem <- AVS.initializeMemory bak
                                           halloc
                                           archInfo
-                                          (NEL.fromList [mem])
+                                          (NEV.singleton mem)
                                           noopInitGlobals
                                           []
           let ?recordLLVMAnnotation = \_ _ _ -> return ()

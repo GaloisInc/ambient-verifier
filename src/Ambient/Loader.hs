@@ -15,12 +15,13 @@ import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
-import qualified Data.Map.Strict as Map
+import qualified Data.List.NonEmpty as NEL
 import           Data.Parameterized.Some ( Some(..) )
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
 import qualified Data.Traversable.WithIndex as DTW
 import qualified Data.Type.Equality as DTE
+import qualified Data.Vector.NonEmpty as NEV
 import           GHC.TypeLits ( type (<=) )
 import qualified System.FilePath as SF
 import qualified System.FilePath.Glob as SFG
@@ -43,7 +44,6 @@ import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified PE.Parser as PE
-import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 
 import qualified Ambient.ABI as AA
@@ -53,11 +53,13 @@ import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.X86_64.Linux as AFXL
 import qualified Ambient.FunctionOverride.AArch32.Linux as AFAL
+import qualified Ambient.Loader.BinaryConfig as ALB
+import qualified Ambient.Loader.ELF.FunctionSymbols as ALEF
+import qualified Ambient.Loader.ELF.PLTStubDetector as ALEP
 import qualified Ambient.Loader.LoadOptions as ALL
 import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.AArch32.Linux as AMAL
 import qualified Ambient.Memory.X86_64.Linux as AMXL
-import qualified Ambient.PLTStubDetector as AP
 import qualified Ambient.Syscall as AS
 import qualified Ambient.Syscall.AArch32.Linux as ASAL
 import qualified Ambient.Syscall.X86_64.Linux as ASXL
@@ -108,13 +110,10 @@ withBinary
      -> AF.BuildFunctionABI arch sym p
      -> LCSC.ParserHooks (DMS.MacawExt arch)
      -> AM.InitArchSpecificGlobals arch
-     -> Map.Map (DMM.MemWord w) WF.FunctionName
      -> Int
      -- ^ Total number of bytes loaded (includes shared libraries).
-     -> DMB.LoadedBinary arch binFmt
-     -- ^ Binary loaded from 'bytes'
-     -> [DMB.LoadedBinary arch binFmt]
-     -- ^ Loaded shared object files
+     -> ALB.BinaryConfig arch binFmt
+     -- ^ Information about the loaded binaries
      -> m a)
   -> m a
 withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
@@ -128,6 +127,7 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
       let options = MML.defaultLoadOptions
       sharedObjectBytes <- liftIO $
         maybe (return []) readSharedObjects sharedObjectDir
+      let soFilePaths = fmap fst sharedObjectBytes
       let totalBytes = BS.length bytes
                      + sum [BS.length x | (_, x) <- sharedObjectBytes]
       case (hdrMachine, hdrClass) of
@@ -145,8 +145,10 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
           let mArchVals = DMS.archVals (Proxy @DMX.X86_64) (Just extOverride)
           case mArchVals of
             Just archVals -> do
-              (lb, sos, headers) <-
-                loadBinaries options ehi hdrMachine hdrClass sharedObjectBytes
+              bins <- loadBinaries options ehi hdrMachine hdrClass sharedObjectBytes
+              let binConf = mkElfBinConf AA.X86_64Linux
+                               (Proxy @DE.X86_64_RelocationType)
+                               soFilePaths bins
               -- Here we capture all of the necessary constraints required by the
               -- callback and pass them down along with the architecture info
               k DMX.x86_64_linux_info
@@ -156,12 +158,8 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
                 (AFE.machineCodeParserHooks (Proxy @DMX.X86_64)
                                             AFXL.x86_64LinuxTypes)
                 (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
-                (AP.pltStubSymbols AA.X86_64Linux
-                                   (Proxy @DE.X86_64_RelocationType)
-                                   headers)
                 totalBytes
-                lb
-                sos
+                binConf
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_X86_64 DE.ELFCLASS64)
         (DE.EM_ARM, DE.ELFCLASS32) -> do
           tlsGlob <- liftIO $
@@ -171,8 +169,10 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
           let extOverride = AMAL.aarch32LinuxStmtExtensionOverride
           case DMS.archVals (Proxy @Macaw.AArch32.ARM) (Just extOverride) of
             Just archVals -> do
-              (lb, sos, headers) <-
-                loadBinaries options ehi hdrMachine hdrClass sharedObjectBytes
+              bins <- loadBinaries options ehi hdrMachine hdrClass sharedObjectBytes
+              let binConf = mkElfBinConf AA.AArch32Linux
+                                         (Proxy @DE.ARM32_RelocationType)
+                                         soFilePaths bins
               k Macaw.AArch32.arm_linux_info
                 archVals
                 ASAL.aarch32LinuxSyscallABI
@@ -180,12 +180,8 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
                 (AFE.machineCodeParserHooks (Proxy @Macaw.AArch32.ARM)
                                             AFAL.aarch32LinuxTypes)
                 (AMAL.aarch32LinuxInitGlobals tlsGlob)
-                (AP.pltStubSymbols AA.AArch32Linux
-                                   (Proxy @DE.ARM32_RelocationType)
-                                   headers)
                 totalBytes
-                lb
-                sos
+                binConf
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_ARM DE.ELFCLASS32)
         (machine, klass) -> CMC.throwM (AE.UnsupportedELFArchitecture name machine klass)
     Left _ -> throwDecodeFailure name bytes
@@ -193,11 +189,9 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
     -- Load the main binary and any shared objects
     loadBinaries options ehi hdrMachine hdrClass sharedObjectBytes = do
       lb <- DMB.loadBinary options ehi
-      soInfos <- DTW.itraverse (loadSharedObject hdrMachine hdrClass)
-                               sharedObjectBytes
-      let (sos, soHeaders) = unzip soInfos
-      let headers = (ehi, options) : soHeaders
-      return (lb, sos, headers)
+      sos <- DTW.itraverse (loadSharedObject hdrMachine hdrClass)
+                           sharedObjectBytes
+      pure $ NEV.fromNonEmpty $ lb NEL.:| sos
 
     loadSharedObject :: forall arch m w
                       . ( DMB.BinaryLoader arch (DE.ElfHeaderInfo w)
@@ -206,8 +200,7 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
                      -> DE.ElfClass w
                      -> Int
                      -> (FilePath, BS.ByteString)
-                     -> m ( DMB.LoadedBinary arch (DE.ElfHeaderInfo w)
-                          , (DE.ElfHeaderInfo w, MML.LoadOptions) )
+                     -> m (DMB.LoadedBinary arch (DE.ElfHeaderInfo w))
     loadSharedObject expectedHeaderMachine expectedHeaderClass index (soName, soBytes) =
       case DE.decodeElfHeaderInfo soBytes of
         Right (DE.SomeElf ehi) -> do
@@ -217,13 +210,48 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
             case DTE.testEquality (DE.headerClass hdr) expectedHeaderClass of
               Just DTE.Refl -> do
                 let options = ALL.indexToLoadOptions (fromIntegral (index + 1))
-                lb <- DMB.loadBinary options ehi
-                return (lb, (ehi, options))
+                DMB.loadBinary options ehi
               _ -> CMC.throwM (AE.SoMismatchedElfClass (DE.headerClass hdr)
                                                        expectedHeaderClass)
           else CMC.throwM (AE.SoMismatchedElfMachine (DE.headerMachine hdr)
                                                      expectedHeaderMachine)
         Left _ -> throwDecodeFailure soName soBytes
+
+    -- Construct a BinaryConfig for an ELF file.
+    mkElfBinConf ::
+      forall arch binFmt w proxy reloc.
+      ( binFmt ~ DE.ElfHeaderInfo (DMC.ArchAddrWidth arch)
+      , w ~ DMC.ArchAddrWidth arch
+      , w ~ DE.RelocationWidth reloc
+      , Integral (DE.ElfWordType w)
+      , DE.IsRelocationType reloc
+      , DMM.MemWidth w
+      ) =>
+      AA.ABI ->
+      proxy reloc ->
+      -- ^ The relocation type to use when detecting PLT stubs
+      [FilePath] ->
+      -- ^ The paths of the loaded shared libraries
+      NEV.NonEmptyVector (DMB.LoadedBinary arch binFmt) ->
+      -- ^ All loaded binaries, including shared libraries
+      ALB.BinaryConfig arch binFmt
+    mkElfBinConf abi proxyReloc soFilePaths bins =
+      let loadedBinaryPaths =
+            NEV.zipWith
+              (\bin path ->
+                ALB.LoadedBinaryPath
+                  { ALB.lbpBinary = bin
+                  , ALB.lbpPath = path
+                  , ALB.lbpEntryPoints = ALEF.elfEntryPointAddrMap bin
+                  })
+              bins
+              (NEV.fromNonEmpty (name NEL.:| soFilePaths)) in
+      ALB.BinaryConfig
+        { ALB.bcBinaries = loadedBinaryPaths
+        , ALB.bcMainBinarySymbolMap = ALEF.elfEntryPointSymbolMap (NEV.head bins)
+        , ALB.bcDynamicFuncSymbolMap = ALEF.elfDynamicFuncSymbolMap bins
+        , ALB.bcPltStubs = ALEP.pltStubSymbols abi proxyReloc bins
+        }
 
     throwDecodeFailure elfName elfBytes =
       case PE.decodePEHeaderInfo (BSL.fromStrict elfBytes) of

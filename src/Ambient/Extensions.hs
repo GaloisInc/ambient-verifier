@@ -16,6 +16,7 @@ module Ambient.Extensions
   , functionOvHandles
   , functionKernelAddrOvHandles
   , syscallOvHandles
+  , discoveredFunctionHandles
   , serverSocketFDs
   , simulationStats
   , overrideLookupFunctionHandle
@@ -263,6 +264,19 @@ data AmbientSimulatorState sym arch = AmbientSimulatorState
   , _syscallOvHandles :: MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle
     -- ^ A map from registered syscall overrides to their handles.
     -- See @Note [Lazily registering overrides]@.
+  , _discoveredFunctionHandles :: Map.Map (DMC.ArchSegmentOff arch) (AF.FunctionOverrideHandle arch)
+    -- ^ A map of discovered functions to their handles.
+    -- See @Note [Incremental code discovery]@.
+    --
+    -- Note that this puts every address from all binaries' address spaces into
+    -- a single map. This happens to work today since we ensure that the
+    -- address spaces in each binary are disjoint from each other (see
+    -- @Note [Address offsets for shared libraries]@ in
+    -- "Ambient.Loader.LoadOffset" for the details). However, we will want to
+    -- support more flexible memory layouts such as ASLR in the future. In
+    -- those sorts of layouts, we would run the risk of addresses from
+    -- different address spaces being mapped to the same 'DMC.ArchSegmentOff',
+    -- which will make a 'Map.Map' insufficient means of storage. See #86.
   , _serverSocketFDs :: Map.Map Integer AF.ServerSocketInfo
     -- ^ A map from registered socket file descriptors to their corresponding
     -- metadata. See @Note [The networking story]@ in
@@ -285,6 +299,7 @@ emptyAmbientSimulatorState = AmbientSimulatorState
   { _functionOvHandles = Map.empty
   , _functionKernelAddrOvHandles = Map.empty
   , _syscallOvHandles = MapF.empty
+  , _discoveredFunctionHandles = Map.empty
   , _serverSocketFDs = Map.empty
   , _simulationStats = emptyAmbientSimulationStats
   , _overrideLookupFunctionHandle = Nothing
@@ -304,6 +319,11 @@ syscallOvHandles :: Lens' (AmbientSimulatorState sym arch)
                           (MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle)
 syscallOvHandles = lens _syscallOvHandles
                         (\s v -> s { _syscallOvHandles = v })
+
+discoveredFunctionHandles :: Lens' (AmbientSimulatorState sym arch)
+                                   (Map.Map (DMC.ArchSegmentOff arch) (AF.FunctionOverrideHandle arch))
+discoveredFunctionHandles = lens _discoveredFunctionHandles
+                                 (\s v -> s { _discoveredFunctionHandles = v })
 
 serverSocketFDs :: Lens' (AmbientSimulatorState sym arch)
                        (Map.Map Integer AF.ServerSocketInfo)
@@ -352,4 +372,58 @@ types are easy to ascertain ahead of time. Registered overrides for syscalls,
 on the other hand, are stored in a MapF. Since their types are difficult to
 know ahead of time (point (2) above), existentially closing over their types
 avoids this problem.
+
+Note [Incremental code discovery]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The verifier will not perform code discovery unless it needs to, as:
+
+1. Code discovery is fairly expensive, and
+2. In large binaries, one typically only needs to discover a portion of the
+   functions available in the binary.
+
+Because of this, the verifier will only discover one function at a time, and
+only if the verifier needs to find an address that has not previously been
+discovered before. This has a number of consequences for the design of the
+verifier:
+
+* Because code discovery requires knowing which address to discover, the
+  first thing the verifier must do is determine the address corresponding
+  to the distinguished entry point function so that its code can be discovered.
+  If the user manually specifies an address, this is no issue. If the user
+  tries to find a function with a particular name, such as `main` (see
+  Note [Entry Point] in A.Verifier), then this is somewhat more challenging,
+  since we do not know a priori where `main`'s address is. We could uncover
+  this information by performing code discovery on all functions in the binary,
+  but this would be prohibitively expensive.
+
+  Our solution is to look at the section headers of the binary, which offer a
+  much cheaper way to map each function name to its address. This information
+  is stored in A.Loader.BinaryConfig.bcMainBinarySymbolMap. Note that this
+  won't work if the binary is stripped, but that is to be expected—there is
+  no hope of discovering code in a stripped binary unless you know the exact
+  address at which to start.
+
+* When looking up a function in the verifier, we want to avoid code discovery
+  if the function has a user-supplied override, as the override obviates the
+  need to discover the function's CFG. But overrides apply to function names,
+  whereas the verifier looks up functions by their addresses. In order to know
+  which function addresses have overrides, we need to look up the names for
+  each address. This mapping is contained in a LoadedBinaryPath's
+  lbpEntryPoints field. Again, this information is gleaned by inspecting each
+  binary's section headers.
+
+* When the verifier encounters a PLT stub, it knows the name of the function it
+  should jump to. But how does it know which binary the function is defined in?
+  We solve this problem by, once again, looking at each binary's section
+  headers. In particular, the A.Loader.BinaryConfig.bcDynamicFuncSymbolMap
+  field maps the names of global, dynamic functions (which are the only
+  functions that PLT stubs could reasonably jump to) to their addresses. When
+  the verifier encounters a PLT stub without an override, it will use the
+  bcDynamicFuncSymbolMap to determine the address in another binary to jump
+  to and then proceed like normal.
+
+* After a function has been discovered for the first time, its CFG handle is
+  stored in the discoveredFunctionHandles field of AmbientSimulatorState. That
+  way, subsequent lookups of the function need not re-perform code discovery.
+  This is very much in the same vein as Note [Lazily registering overrides].
 -}

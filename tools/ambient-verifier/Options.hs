@@ -48,7 +48,7 @@ data VerifyOptions =
                 -- ^ The solver timeout for each goal
                 , stateCharts :: [FilePath]
                 -- ^ File paths to a state charts encoding properties to verify
-                , entryPoint :: AEp.EntryPoint Word64
+                , entryPoint :: AEp.EntryPoint
                 -- ^ Where to begin simulation
                 , profileTo :: Maybe FilePath
                 -- ^ Optional directory to write profiler-related files to
@@ -137,7 +137,7 @@ timeoutParser =  OA.option (OA.maybeReader timeoutReader)
 
 -- | A parser for an 'AEp.EntryPoint', which may be supplied by way of the
 -- @--entry-point-name@ or @--entry-point-addr@ options.
-entryPointParser :: OA.Parser (AEp.EntryPoint Word64)
+entryPointParser :: OA.Parser AEp.EntryPoint
 entryPointParser =
          AEp.EntryPointName <$>
            (OA.strOption

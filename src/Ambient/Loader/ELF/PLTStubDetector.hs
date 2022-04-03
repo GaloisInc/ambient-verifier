@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Ambient.PLTStubDetector (
+module Ambient.Loader.ELF.PLTStubDetector (
     pltStubSymbols
   ) where
 
@@ -17,10 +17,9 @@ import qualified Data.Map as Map
 import           Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text.Encoding as DTE
 import           Data.Word (Word32)
-import           GHC.TypeNats (KnownNat)
 
-import qualified Data.Macaw.BinaryLoader.AArch32 as DMBA ()
-import qualified Data.Macaw.BinaryLoader.X86 as DMBX ()
+import qualified Data.Macaw.BinaryLoader as DMB
+import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Memory.LoadCommon as MML
 import qualified What4.FunctionName as WF
@@ -32,7 +31,7 @@ import qualified Ambient.Exception as AE
 data SomeRel tp where
   SomeRel :: [r tp] -> (r tp -> Word32) -> SomeRel tp
 
--- | Match up names PLT stub entries
+-- | Match up names to PLT stub entries in an ELF binary.
 --
 -- Calls to functions in shared libraries are issued through PLT stubs. These
 -- are short sequences included in the binary by the compiler that jump to the
@@ -41,20 +40,23 @@ data SomeRel tp where
 --
 -- See Note [PLT Stub Names] for details
 pltStubSymbols
-  :: forall w proxy reloc
-   . ( KnownNat w
-     , w ~ DEP.RelocationWidth reloc
+  :: forall f w proxy reloc arch
+   . ( w ~ DEP.RelocationWidth reloc
+     , w ~ DMC.ArchAddrWidth arch
      , Integral (DEP.ElfWordType w)
      , DEP.IsRelocationType reloc
-     , (DMM.MemWidth w)
+     , DMM.MemWidth w
+     , Foldable f
      )
   => AA.ABI
   -> proxy reloc
-  -> [(DEP.ElfHeaderInfo w, MML.LoadOptions)]
+  -> f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w))
   -> Map.Map (DMM.MemWord w) WF.FunctionName
-pltStubSymbols abi _ elfHeaderInfos = Map.fromList $ foldl' go [] elfHeaderInfos
+pltStubSymbols abi _ loadedBinaries = Map.fromList $ foldl' go [] loadedBinaries
   where
-    go acc (elfHeaderInfo, loadOptions) = fromMaybe acc $ do
+    go acc loadedBinary = fromMaybe acc $ do
+      let elfHeaderInfo = DMB.originalBinary loadedBinary
+      let loadOptions = DMB.loadOptions loadedBinary
       let (_, elf) = DE.getElf elfHeaderInfo
       let phdrs = DE.headerPhdrs elfHeaderInfo
       let elfBytes = DE.headerFileContents elfHeaderInfo

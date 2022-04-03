@@ -8,6 +8,7 @@ import qualified Panic as P
 
 data Component = FunctionOverride
                | Memory
+               | Loader
                | Override
                | PropertyParser
                | SymbolicExecution
