@@ -58,6 +58,7 @@ library
                       Ambient.FunctionOverride.X86_64.Linux,
                       Ambient.Lift,
                       Ambient.Loader,
+                      Ambient.Loader.LoadOptions,
                       Ambient.Memory,
                       Ambient.Memory.AArch32.Linux,
                       Ambient.Memory.X86_64.Linux,

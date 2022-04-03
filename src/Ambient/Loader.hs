@@ -21,7 +21,6 @@ import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
 import qualified Data.Traversable.WithIndex as DTW
 import qualified Data.Type.Equality as DTE
-import           Data.Word ( Word64 )
 import           GHC.TypeLits ( type (<=) )
 import qualified System.FilePath as SF
 import qualified System.FilePath.Glob as SFG
@@ -54,6 +53,7 @@ import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.X86_64.Linux as AFXL
 import qualified Ambient.FunctionOverride.AArch32.Linux as AFAL
+import qualified Ambient.Loader.LoadOptions as ALL
 import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.AArch32.Linux as AMAL
 import qualified Ambient.Memory.X86_64.Linux as AMXL
@@ -216,7 +216,7 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
           then
             case DTE.testEquality (DE.headerClass hdr) expectedHeaderClass of
               Just DTE.Refl -> do
-                let options = indexToLoadOptions (fromIntegral (index + 1))
+                let options = ALL.indexToLoadOptions (fromIntegral (index + 1))
                 lb <- DMB.loadBinary options ehi
                 return (lb, (ehi, options))
               _ -> CMC.throwM (AE.SoMismatchedElfClass (DE.headerClass hdr)
@@ -229,20 +229,6 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
       case PE.decodePEHeaderInfo (BSL.fromStrict elfBytes) of
         Right (Some _) -> CMC.throwM (AE.UnsupportedPEArchitecture elfName)
         Left _ -> CMC.throwM (AE.UnsupportedBinaryFormat elfName)
-
--- | Given an index value, constructs an 'MML.LoadOptions' for the appropriate
--- offset to load a shared object at.
-indexToLoadOptions :: Word64 -> MML.LoadOptions
-indexToLoadOptions index =
-  -- NOTE: This load offset calculation is safe so long as all binaries are
-  -- under 256MB.  It seems likely that something else in the verifier would
-  -- fail before binaries reach that size.
-  -- NOTE: On 32-bit architectures 'index' values of 16 or higher will cause
-  -- the offset to reach inaccessible values.  Macaw throws an exception in
-  -- this case.  If this occurs in practice we will need to reduce the offset
-  -- multiplier to something smaller (the trade-off is that the maximum
-  -- allowable library size will also decrease).
-  MML.LoadOptions { MML.loadOffset = Just $ 0x10000000 * index }
 
 {- Note [ELF Load Options]
 
