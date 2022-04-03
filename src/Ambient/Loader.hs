@@ -66,7 +66,7 @@ import qualified Ambient.Syscall.X86_64.Linux as ASXL
 -- @.so@ file names and the binary data those files contain.
 readSharedObjects :: FilePath -> IO [(FilePath, BS.ByteString)]
 readSharedObjects dir = do
-  paths <- SFG.namesMatching (dir SF.</> "*.so*")
+  paths <- SFG.glob (dir SF.</> "*.so*")
   mapM (\p -> (p,) <$> BS.readFile p) paths
 
 -- | Load a bytestring as a binary image and associate it with a macaw

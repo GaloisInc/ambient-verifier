@@ -30,6 +30,7 @@ common shared
         containers,
         exceptions,
         filepath,
+        Glob,
         lens >= 4 && < 6,
         lumberjack >= 1 && < 1.1,
         megaparsec >= 7 && < 10,
@@ -99,7 +100,6 @@ library
                       macaw-loader-aarch32,
                       directory,
                       file-embed,
-                      filemanip,
                       flexdis86,
                       macaw-x86,
                       macaw-x86-symbolic,
@@ -138,7 +138,6 @@ executable ambient-verifier
     build-depends:
         gitrev,
         optparse-applicative,
-        filemanip,
         ambient-verifier
 
     hs-source-dirs:   tools/ambient-verifier
@@ -154,7 +153,6 @@ test-suite ambient-tests
                  crucible,
                  crucible-syntax,
                  directory,
-                 filemanip,
                  tasty,
                  tasty-ant-xml,
                  tasty-expected-failure,

@@ -164,7 +164,7 @@ runOverrideTests :: forall ext s sym bak arch w solver scope st fs
                  -- ^ ParserHooks for the desired syntax extension
                  -> IO ()
 runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
-  paths <- SFG.namesMatching (dirPath SF.</> "function" SF.</> "*.cbl")
+  paths <- SFG.glob (dirPath SF.</> "function" SF.</> "*.cbl")
   mapM_ go paths
   where
     sym = LCB.backendGetSym bak
@@ -246,7 +246,7 @@ loadCrucibleSyntaxOverrides :: LCCE.IsSyntaxExtension ext
                             -> IO [AF.SomeFunctionOverride p sym ext]
                             -- ^ A list of loaded overrides
 loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
-  paths <- SFG.namesMatching (dirPath SF.</> "function" SF.</> "*.cbl")
+  paths <- SFG.glob (dirPath SF.</> "function" SF.</> "*.cbl")
   mapM go paths
   where
     go path = do

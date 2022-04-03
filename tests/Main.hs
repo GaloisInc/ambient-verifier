@@ -241,8 +241,8 @@ overrideTests abi = TTH.testCase ((show abi) ++ " override tests") $ do
 
 main :: IO ()
 main = do
-  testExpectedOutputs <- SFG.namesMatching "tests/binaries/*/*.expected"
-  failingTestExpectedOutputs <- SFG.namesMatching
+  testExpectedOutputs <- SFG.glob "tests/binaries/*/*.expected"
+  failingTestExpectedOutputs <- SFG.glob
                                 "tests/binaries/*/*.expected-failing"
   TT.defaultMainWithIngredients
     (TTRA.antXMLRunner : TT.defaultIngredients) $
