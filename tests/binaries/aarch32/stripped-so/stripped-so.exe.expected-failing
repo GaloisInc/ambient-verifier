@@ -1,0 +1,4 @@
+successful: 1
+failed: 0
+sharedObjectsDir: tests/binaries/aarch32/stripped-so
+entryPointAddr: 0x5a0

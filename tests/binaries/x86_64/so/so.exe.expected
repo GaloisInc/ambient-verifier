@@ -1,4 +1,4 @@
 successful: 1
 failed: 0
 overrideDir: tests/overrides/
-sharedObjectsDir: tests/binaries/x86_64
+sharedObjectsDir: tests/binaries/x86_64/so

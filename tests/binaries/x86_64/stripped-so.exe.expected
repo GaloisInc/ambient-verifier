@@ -1,4 +1,0 @@
-successful: 0
-failed: 0
-sharedObjectsDir: tests/binaries/x86_64
-entryPointAddr: 0x113c

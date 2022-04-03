@@ -82,14 +82,18 @@ plt-ov.exe: plt-ov.c
 plt-no-pltgot.exe: plt-no-pltgot.c
 	$(CC) -nostartfiles -pie $^ -o $@
 
-libfib.so: fib.o libgetone.so
-	$(CC) -nostdlib -L./ -shared $< -lgetone -o $@
+so/libfib.so: fib.o so/libgetone.so
+	$(CC) -nostdlib -Lso/ -shared $< -lgetone -o $@
 
-libgetone-stripped.so: libgetone.so
-	$(STRIP) $< -o $@
+so/libgetone.so: getone.c
+	$(CC) -nostdlib -shared $< -o $@
 
-so.exe: so.c libfib.so ambient_assert.o
-	$(CC) -nostdlib -L./ so.c ambient_assert.o -lfib -lgetone -o $@
+stripped-so/libgetone-stripped.so: getone.c
+	$(CC) -nostdlib -shared $< -o $@
+	$(STRIP) $@
+
+so/so.exe: so/so.c so/libfib.so ambient_assert.o
+	$(CC) -nostdlib -Lso/ -I./ so/so.c ambient_assert.o -lfib -lgetone -o $@
 
 server-inet.exe: server-inet.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
@@ -117,8 +121,8 @@ stripped-dynamic.exe: stripped.c
 	$(CC) -pie $< -o $@
 	$(STRIP) $@
 
-stripped-so.exe: stripped-so.c libgetone-stripped.so
-	$(CC) -L./ stripped-so.c -lgetone-stripped -o $@
+stripped-so/stripped-so.exe: stripped-so/stripped-so.c stripped-so/libgetone-stripped.so
+	$(CC) -Lstripped-so/ -I./ stripped-so/stripped-so.c -lgetone-stripped -o $@
 	$(STRIP) $@
 
 errno-glibc.exe: errno.c
