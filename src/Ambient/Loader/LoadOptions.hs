@@ -76,4 +76,9 @@ Be aware of the caveats to this approach to offsets:
   the addresses that they ultimately jump to, which reside in a different
   binary. For this reason, PLT stubs are handled in a special case in
   `lookupFunction` that bypasses the indexing mechanisms described above.
+
+* The commentary above describes one particular load strategy for shared
+  objects. In the future, we will want to be able to configure the load
+  strategy so that we can model things like ASLR. If we do this, we will need
+  to update the code for resolving addresses accordingly. See #86.
 -}
