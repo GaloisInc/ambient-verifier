@@ -42,22 +42,23 @@ import qualified Lang.Crucible.Types as LCT
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.EventTrace as AE
+import qualified Ambient.Extensions as AExt
 import qualified Ambient.Panic as AP
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
 
 -- | A WMMCallbackResult represents the possible outcomes from executing a
 -- WMMCallback
-data WMMCallbackResult p sym arch f a =
+data WMMCallbackResult sym arch f a =
     -- Weird machine execution is complete and symbolic execution should end
     -- and propagate the 'ExecResult' up
-    WMMResultCompleted (LCSE.ExecResult p
+    WMMResultCompleted (LCSE.ExecResult (AExt.AmbientSimulatorState sym arch)
                                         sym
                                         (DMS.MacawExt arch)
                                         (LCS.RegEntry sym (DMS.ArchRegStruct arch)))
 
   -- Symbolic execution should continue with a new 'SimState'
-  | WMMResultNewState (LCSE.SimState p
+  | WMMResultNewState (LCSE.SimState (AExt.AmbientSimulatorState sym arch)
                                      sym
                                      (DMS.MacawExt arch)
                                      (LCS.RegEntry sym (DMS.ArchRegStruct arch))
@@ -107,7 +108,7 @@ initWMConfig sym halloc globals0 props = do
 --   1. The address of the Weird Machine entry point
 --   2. The entire symbolic execution state at the start of the Weird Machine
 newtype WMMCallback arch sym where
-  WMMCallback :: (forall p f a . Integer -> LCSE.SimState p sym (DMS.MacawExt arch) (LCS.RegEntry sym (DMS.ArchRegStruct arch)) f a -> IO (WMMCallbackResult p sym arch f a)) -> WMMCallback arch sym
+  WMMCallback :: (forall f a . Integer -> LCSE.SimState (AExt.AmbientSimulatorState sym arch) sym (DMS.MacawExt arch) (LCS.RegEntry sym (DMS.ArchRegStruct arch)) f a -> IO (WMMCallbackResult sym arch f a)) -> WMMCallback arch sym
 
 -- | The SMT interaction logger
 smtLogger :: LJ.LogAction IO AD.Diagnostic -> WS.LogData
@@ -156,6 +157,7 @@ handleControlTransfer
      , LCB.IsSymInterface sym
      , sym ~ WE.ExprBuilder t st fs
      , rtp ~ LCS.RegEntry sym (DMS.ArchRegStruct arch)
+     , p ~ AExt.AmbientSimulatorState sym arch
      )
   => LJ.LogAction IO AD.Diagnostic
   -> WS.SolverAdapter st
@@ -229,29 +231,34 @@ handleControlTransfer logAction adapter archVals props (WMMCallback action) regS
                 ]
     regsRepr = LCT.StructRepr (DMS.crucArchRegTypes (DMS.archFunctions archVals))
     sym = st ^. LCSE.stateContext . LCSE.ctxSymInterface
-    go :: WI.SymBV sym (DMC.ArchAddrWidth arch) -> [Integer] -> IO (Maybe (WMMCallbackResult p sym arch f a, LCSE.SimState p sym ext rtp f a))
+    go :: WI.SymBV sym (DMC.ArchAddrWidth arch) -> [Integer] -> IO (Maybe (WMMCallbackResult sym arch f a, LCSE.SimState p sym ext rtp f a))
     go _ [] = return Nothing
     go ipVal (wmEntry : rest) = do
       targetBV <- WI.bvLit sym PN.knownNat (BVS.mkBV PN.knownNat wmEntry)
       ipEqTarget <- WI.bvEq sym ipVal targetBV
       goal <- WI.notPred sym ipEqTarget
       let logData = smtLogger logAction
-      WS.solver_adapter_check_sat adapter sym logData [goal] $ \sr ->
-        case sr of
-          WSR.Unsat {} -> do
-            LJ.writeLog logAction (AD.ExecutingWeirdMachineAt wmEntry)
-            let globs = st ^. LCSE.stateGlobals
-            let pleatM seed xs f = F.foldlM f seed xs
-            globs' <- pleatM globs (AE.properties props) $ \theseGlobals (prop, eventTraceGlob) -> do
-              currentTrace <- lookupGlobal eventTraceGlob theseGlobals
-              nextTrace <- AE.recordEvent (matchWeirdEntry wmEntry) sym prop currentTrace
-              return (LCSG.insertGlobal eventTraceGlob nextTrace theseGlobals)
-            let st' = set LCSE.stateGlobals globs' st
-            -- FIXME: The action probably needs to return an updated state, as
-            -- it will have continued execution on its own
-            result <- action wmEntry st'
-            return $ Just (result, st')
-          _ -> go ipVal rest
+      LCSE.withBackend (st ^. LCSE.stateContext) $ \bak -> do
+        -- NOTE: We need to include the path condition as an assumption.
+        -- Without it a symbolic instruction pointer may be under-constrained
+        -- resulting in a sat result from the solver.
+        cond <- LCB.getPathCondition bak
+        WS.solver_adapter_check_sat adapter sym logData [cond, goal] $ \sr -> do
+          case sr of
+            WSR.Unsat {} -> do
+              LJ.writeLog logAction (AD.ExecutingWeirdMachineAt wmEntry)
+              let globs = st ^. LCSE.stateGlobals
+              let pleatM seed xs f = F.foldlM f seed xs
+              globs' <- pleatM globs (AE.properties props) $ \theseGlobals (prop, eventTraceGlob) -> do
+                currentTrace <- lookupGlobal eventTraceGlob theseGlobals
+                nextTrace <- AE.recordEvent (matchWeirdEntry wmEntry) sym prop currentTrace
+                return (LCSG.insertGlobal eventTraceGlob nextTrace theseGlobals)
+              let st' = set LCSE.stateGlobals globs' st
+              -- FIXME: The action probably needs to return an updated state, as
+              -- it will have continued execution on its own
+              result <- action wmEntry st'
+              return $ Just (result, st')
+            _ -> go ipVal rest
 
 
 -- | This execution feature observes all control flow transfers and halts
@@ -272,6 +279,7 @@ wmmFeature
      , LCB.IsSymInterface sym
      , sym ~ WE.ExprBuilder t st fs
      , rtp ~ LCS.RegEntry sym (DMS.ArchRegStruct arch)
+     , p ~ AExt.AmbientSimulatorState sym arch
      )
   => LJ.LogAction IO AD.Diagnostic
   -> AS.Solver

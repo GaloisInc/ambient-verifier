@@ -115,7 +115,7 @@ x86_64LinuxIntegerReturnRegisters bak ovTyp ovSim initRegs =
                             "x86_64LinuxIntegerReturnRegisters"
                             ["Failed to update rax register"]
 
-x86_64LinuxFunctionABI :: AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState DMX.X86_64)
+x86_64LinuxFunctionABI :: AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
 x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs bumpEndVar memVar ovs kernelOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @64 in

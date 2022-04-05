@@ -25,6 +25,9 @@ fsbase.exe: fsbase.c
 rop.exe: rop.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@
 
+rop-unbal.exe: rop-unbal.c
+	$(MUSL_CC) -g -nostartfiles -static -no-pie $< -o $@
+
 rop-read.exe: rop-read.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@
 

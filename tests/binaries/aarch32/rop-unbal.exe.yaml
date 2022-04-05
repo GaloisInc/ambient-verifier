@@ -1,0 +1,22 @@
+statechart:
+  name: ROP
+  root state:
+    name: Root
+    initial: NormalExecution
+    states:
+      - name: NormalExecution
+        description: |
+          Execution before the Weird Machine starts
+        transitions:
+          - target: WMEntered
+            event: EnterWeirdMachine(0x1009c)
+      - name: WMEntered
+        description: |
+          The Weird Machine has been entered by clobbering the return address
+        transitions:
+          - target: DidExec
+            event: IssuesExecveSyscall
+      - name: DidExec
+        description: |
+          The ROP attack has completed
+        type: final

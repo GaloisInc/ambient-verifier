@@ -130,7 +130,7 @@ callKUserGetTLSOverride _bak tlsGlob = do
 aarch32LinuxFunctionABI ::
      LCCC.GlobalVar (LCLM.LLVMPointerType 32)
      -- ^ Global variable for TLS
-  -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState DMA.ARM)
+  -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
 aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs _bumpEndVar memVar ovs kernelOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @32 in

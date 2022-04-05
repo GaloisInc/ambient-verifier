@@ -325,7 +325,7 @@ networkOverrides :: ( LCLM.HasLLVMAnn sym
                     )
                  => LCLS.LLVMFileSystem w
                  -> LCS.GlobalVar LCLM.Mem
-                 -> [SomeFunctionOverride (AExt.AmbientSimulatorState arch) sym ext]
+                 -> [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
 networkOverrides fs memVar =
   [ SomeFunctionOverride (buildAcceptOverride fs)
   , SomeFunctionOverride (buildBindOverride fs memVar)
@@ -340,7 +340,7 @@ buildAcceptOverride :: ( LCLM.HasPtrWidth w
                        , w ~ DMC.ArchAddrWidth arch
                        )
                     => LCLS.LLVMFileSystem w
-                    -> FunctionOverride (AExt.AmbientSimulatorState arch) sym
+                    -> FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
                                         (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                       Ctx.::> LCLM.LLVMPointerType w
                                                       Ctx.::> LCLM.LLVMPointerType w) ext
@@ -372,7 +372,7 @@ callAccept :: ( LCB.IsSymBackend sym bak
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-           -> LCS.OverrideSim (AExt.AmbientSimulatorState arch) sym ext r args ret
+           -> LCS.OverrideSim (AExt.AmbientSimulatorState sym arch) sym ext r args ret
                               (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callAccept fs bak sockfd _addr _addrlen = do
   let sym = LCB.backendGetSym bak
@@ -405,7 +405,7 @@ buildBindOverride :: ( LCLM.HasPtrWidth w
                      )
                   => LCLS.LLVMFileSystem w
                   -> LCS.GlobalVar LCLM.Mem
-                  -> FunctionOverride (AExt.AmbientSimulatorState arch) sym
+                  -> FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
                                       (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                     Ctx.::> LCLM.LLVMPointerType w
                                                     Ctx.::> LCLM.LLVMPointerType w) ext
@@ -437,7 +437,7 @@ callBind :: ( LCB.IsSymBackend sym bak
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-         -> LCS.OverrideSim (AExt.AmbientSimulatorState arch) sym ext r args ret
+         -> LCS.OverrideSim (AExt.AmbientSimulatorState sym arch) sym ext r args ret
                             (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callBind _fs memVar bak sockfd addr _addrlen = do
   let sym = LCB.backendGetSym bak
@@ -523,7 +523,7 @@ loadSockaddrInPort bak mem sockaddrInPtr = do
 buildConnectOverride :: ( LCLM.HasPtrWidth w
                         , w ~ DMC.ArchAddrWidth arch
                         )
-                     => FunctionOverride (AExt.AmbientSimulatorState arch) sym
+                     => FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
                                          (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                        Ctx.::> LCLM.LLVMPointerType w
                                                        Ctx.::> LCLM.LLVMPointerType w) ext
@@ -558,14 +558,14 @@ callConnect :: ( LCB.IsSymBackend sym bak
             -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
             -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
             -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-            -> LCS.OverrideSim (AExt.AmbientSimulatorState arch) sym ext r args ret
+            -> LCS.OverrideSim (AExt.AmbientSimulatorState sym arch) sym ext r args ret
                                (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callConnect bak sockfd _addr _addrlen = checkSocketFDInUse bak "connect" sockfd
 
 buildListenOverride :: ( LCLM.HasPtrWidth w
                        , w ~ DMC.ArchAddrWidth arch
                        )
-                    => FunctionOverride (AExt.AmbientSimulatorState arch) sym
+                    => FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
                                         (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                       Ctx.::> LCLM.LLVMPointerType w) ext
                                         (LCLM.LLVMPointerType w)
@@ -592,7 +592,7 @@ callListen :: ( LCB.IsSymBackend sym bak
            => bak
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-           -> LCS.OverrideSim (AExt.AmbientSimulatorState arch) sym ext r args ret
+           -> LCS.OverrideSim (AExt.AmbientSimulatorState sym arch) sym ext r args ret
                               (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callListen bak sockfd _backlog = checkSocketFDInUse bak "listen" sockfd
 
@@ -611,7 +611,7 @@ checkSocketFDInUse :: ( LCB.IsSymBackend sym bak
                    => bak
                    -> T.Text
                    -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-                   -> LCS.OverrideSim (AExt.AmbientSimulatorState arch) sym ext r args ret
+                   -> LCS.OverrideSim (AExt.AmbientSimulatorState sym arch) sym ext r args ret
                                       (LCS.RegValue sym (LCLM.LLVMPointerType w))
 checkSocketFDInUse bak fnName sockfd = do
   let sym = LCB.backendGetSym bak
@@ -702,7 +702,7 @@ buildSocketOverride :: ( LCLM.HasPtrWidth w
                        , w ~ DMC.ArchAddrWidth arch
                        )
                     => LCLS.LLVMFileSystem w
-                    -> FunctionOverride (AExt.AmbientSimulatorState arch) sym
+                    -> FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
                                         (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                       Ctx.::> LCLM.LLVMPointerType w
                                                       Ctx.::> LCLM.LLVMPointerType w) ext
@@ -733,7 +733,7 @@ callSocket :: ( LCB.IsSymBackend sym bak
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-           -> LCS.OverrideSim (AExt.AmbientSimulatorState arch) sym ext r args ret
+           -> LCS.OverrideSim (AExt.AmbientSimulatorState sym arch) sym ext r args ret
                               (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callSocket fs bak domain typ _protocol = do
   let sym = LCB.backendGetSym bak

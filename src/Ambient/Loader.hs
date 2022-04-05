@@ -99,7 +99,7 @@ withBinary
         , 16 <= DMC.ArchAddrWidth arch
         , DMS.SymArchConstraints arch
         , mem ~ DMS.LLVMMemory
-        , p ~ AExt.AmbientSimulatorState arch
+        , p ~ AExt.AmbientSimulatorState sym arch
         , w ~ DMC.RegAddrWidth (DMC.ArchReg arch)
         )
      => DMA.ArchitectureInfo arch

@@ -22,6 +22,12 @@ fsbase.exe: fsbase.c
 rop.exe: rop.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@
 
+rop-unbal.exe: rop-unbal.c
+	$(CC) -nostartfiles -static -no-pie $< -o $@
+
+rop-unbal-read.exe: rop-unbal-read.c
+	$(CC) -nostartfiles -no-pie -fno-stack-protector -fcf-protection=none -DAMBIENT_TARGET -g $< -o $@
+
 rop-read.exe: rop-read.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@
 

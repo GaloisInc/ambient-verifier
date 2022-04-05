@@ -8,11 +8,15 @@
 
 module Ambient.Verifier.WME (wmExecutor) where
 
-import           Control.Lens ( (^.) )
+import           Control.Applicative ( (<|>) )
+import           Control.Lens ( (^.), set )
+import qualified Control.Monad.Reader as CMR
+import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Classes as PC
 import qualified Data.Parameterized.Context as Ctx
 import           Data.Parameterized.Some ( Some(..) )
+import           Data.Parameterized.TraversableFC ( anyFC )
 import           GHC.TypeNats ( KnownNat, type (<=) )
 import           Numeric (showHex)
 
@@ -21,9 +25,12 @@ import qualified Data.Macaw.BinaryLoader as DMB
 import qualified Data.Macaw.BinaryLoader.ELF as DMBE
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Discovery as DMD
+import qualified Data.Macaw.Discovery.Classifier as DMDC
+import qualified Data.Macaw.Discovery.ParsedContents as DMDP
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.Analysis.Postdom as LCAP
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
@@ -32,11 +39,15 @@ import qualified Lang.Crucible.Simulator.CallFrame as LCSC
 import qualified Lang.Crucible.Simulator.EvalStmt as LCSEv
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.Expr as WE
 import qualified What4.Interface as WI
+import qualified What4.Protocol.Online as WPO
 
 import qualified Ambient.Discovery as AD
+import qualified Ambient.Extensions as AExt
 import qualified Ambient.Lift as AL
 import qualified Ambient.Panic as AP
+import qualified Ambient.Verifier.SymbolicExecution as AVS
 import qualified Ambient.Verifier.WMM as AVW
 
 -- | An execution feature for following return oriented programs.  On each
@@ -120,20 +131,99 @@ buildCfgFromAddr archInfo loadedBinary hdlAlloc addr symArchFns = do
     lift (Some fn) =
       AL.liftDiscoveredFunction hdlAlloc "weird-machine" symArchFns fn
 
+-- | This function is used to look up a function handle when a call is
+-- encountered within a weird machine.  Because 'wmeReturnFeature' flags all
+-- ROP gadgets as ending in a tail call, this function is also called at the
+-- end of each gadget to disassemble and jump to the next gadget.
+wmeLookupFunction
+  :: forall arch mem binFmt p sym bak solver scope st fs
+   . ( bak ~ LCBO.OnlineBackend solver scope st fs
+     , sym ~ WE.ExprBuilder scope st fs
+     , p ~ AExt.AmbientSimulatorState sym arch
+     , DMS.SymArchConstraints arch
+     , LCB.IsSymBackend sym bak
+     , WPO.OnlineSolver solver
+     , DMB.BinaryLoader arch binFmt
+     )
+  => bak
+  -> DMAI.ArchitectureInfo arch
+  -> DMS.GenArchVals mem arch
+  -> DMB.LoadedBinary arch binFmt
+  -> LCF.HandleAllocator
+  -> DMS.LookupFunctionHandle p sym arch
+wmeLookupFunction bak archInfo archVals loadedBinary hdlAlloc =
+  DMS.LookupFunctionHandle $ \state _mem regs -> do
+    addr <- AVS.extractIP bak archVals regs
+    mCfg <- buildCfgFromAddr archInfo loadedBinary hdlAlloc (toInteger addr) symArchFns
+    case mCfg of
+      Just (LCCC.SomeCFG cfg) -> do
+        let handle = LCCC.cfgHandle cfg
+        let fnState = LCS.UseCFG cfg (LCAP.postdomInfo cfg)
+        return (handle, AVS.insertFunctionHandle state handle fnState)
+      Nothing -> AP.panic AP.WME
+                          "wmeLookupFunction"
+                          ["Failed to build CFG at 0x" ++ (showHex addr "")]
+  where
+    symArchFns = DMS.archFunctions archVals
+
+-- | This classifier identifies gadgets in which the instruction pointer at the
+-- end of the block is either read from memory, or computed from a memory read.
+-- We expect existing classifiers to handle cases where the instruction pointer
+-- is a constant.
+--
+-- The goal of this architecture agnostic classifier is to capture instances of
+-- calls, returns, and indirect branches that may be missed by Macaw.  Further
+-- relaxing of the classifier may require architecture specific gadget
+-- classifiers that inspect the instructions themselves (much like the
+-- architecture specific call and return classifiers that Macaw employs).
+weirdClassifier :: DMD.BlockClassifier arch ids
+weirdClassifier = DMAI.classifierName "Weird gadget" $ do
+  bcc <- CMR.ask
+  let ctx = DMAI.classifierParseContext bcc
+  DMAI.withArchConstraints (DMAI.pctxArchInfo ctx) $ do
+    let regs = DMAI.classifierFinalRegState bcc
+    let blockEnd = DMDC.classifierEndBlock bcc
+    let ipVal = regs ^. DMC.boundValue DMC.ip_reg
+    if containsReadMem ipVal
+    then pure $ DMDP.ParsedContents {
+             DMDP.parsedNonterm = F.toList (DMAI.classifierStmts bcc)
+           , DMDP.parsedTerm  = DMDP.ParsedCall regs Nothing
+           , DMDP.writtenCodeAddrs =
+             filter (\a -> DMC.segoffAddr a /= blockEnd) $
+             DMAI.classifierWrittenAddrs bcc
+           , DMDP.intraJumpTargets = []
+           , DMDP.newFunctionAddrs = []
+           }
+    else fail "ip is not read from memory"
+  where
+    containsReadMem :: DMC.Value arch ids tp -> Bool
+    containsReadMem val =
+      case DMC.valueAsRhs val of
+        Just (DMC.ReadMem {}) -> True
+        Just (DMC.CondReadMem {}) -> True
+        Just (DMC.EvalApp app) -> anyFC containsReadMem app
+        _ -> False
+
+
 -- | Produces a 'WMMCallback' for symbolically executing weird machines.  This
 -- callback disassembles from the entry point of the weird machine, constructs
 -- a crucible CFG, and then symbolically executes the CFG.
 --
 -- Currently this only supports return oriented programs, but could be extended
 -- to support other types of weird machines.
-wmExecutor :: forall arch binFmt w sym mem
+wmExecutor :: forall arch binFmt w bak sym mem solver scope st fs
             . ( w ~ DMC.ArchAddrWidth arch
+              , bak ~ LCBO.OnlineBackend solver scope st fs
+              , sym ~ WE.ExprBuilder scope st fs
               , DMS.SymArchConstraints arch
               , 1 <= w
               , KnownNat w
               , LCB.IsSymInterface sym
-              , DMB.BinaryLoader arch binFmt )
-           => DMAI.ArchitectureInfo arch
+              , DMB.BinaryLoader arch binFmt
+              , WPO.OnlineSolver solver
+              )
+           => bak
+           -> DMAI.ArchitectureInfo arch
            -> DMB.LoadedBinary arch binFmt
            -- ^ Binary to disassemble
            -> LCF.HandleAllocator
@@ -141,14 +231,19 @@ wmExecutor :: forall arch binFmt w sym mem
            -> [LCS.GenericExecutionFeature sym]
            -- ^ Additional execution features to use when executing the weird
            -- machine
-           -> sym
            -> AVW.WMMCallback arch sym
-wmExecutor archInfo loadedBinary hdlAlloc archVals execFeatures sym = AVW.WMMCallback $ \addr st -> do
+wmExecutor bak archInfo loadedBinary hdlAlloc archVals execFeatures = AVW.WMMCallback $ \addr st -> do
+  let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
-  mCfg <- buildCfgFromAddr archInfo loadedBinary hdlAlloc addr symArchFns
+  let archInfo' = archInfo { DMAI.archClassifier = DMAI.archClassifier archInfo
+                                               <|> weirdClassifier }
+  let lookupFn = wmeLookupFunction bak archInfo' archVals loadedBinary hdlAlloc
+  mCfg <- buildCfgFromAddr archInfo' loadedBinary hdlAlloc addr symArchFns
   case mCfg of
     Just (LCCC.SomeCFG cfg) -> do
-      let ctx = st ^. LCS.stateContext
+      let ctx' = set (LCS.cruciblePersonality . AExt.overrideLookupFunctionHandle)
+                     (Just lookupFn)
+                     (st ^. LCS.stateContext)
       let globals = st ^. LCSE.stateGlobals
       let regsRepr = LCT.StructRepr (DMS.crucArchRegTypes symArchFns)
       case st ^. LCSE.stateTree . LCSE.actFrame . LCS.gpValue of
@@ -156,8 +251,8 @@ wmExecutor archInfo loadedBinary hdlAlloc archVals execFeatures sym = AVW.WMMCal
           case PC.testEquality regsRepr (LCS.regType reg) of
             Just PC.Refl -> do
               let simAction = LCS.runOverrideSim regsRepr (LCS.regValue <$> LCS.callCFG cfg (LCS.RegMap (Ctx.empty Ctx.:> reg)))
-              let st' = LCS.InitialState ctx globals LCS.defaultAbortHandler regsRepr simAction
-              let executionFeatures = (wmeReturnFeature archInfo loadedBinary hdlAlloc archVals sym) : fmap LCS.genericToExecutionFeature execFeatures
+              let st' = LCS.InitialState ctx' globals LCS.defaultAbortHandler regsRepr simAction
+              let executionFeatures = (wmeReturnFeature archInfo' loadedBinary hdlAlloc archVals sym) : fmap LCS.genericToExecutionFeature execFeatures
               res <- LCS.executeCrucible executionFeatures st'
               return $ AVW.WMMResultCompleted res
             _ -> AP.panic AP.WME "wmExecutor" ["Unexpected register shape"]

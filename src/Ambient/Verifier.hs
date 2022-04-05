@@ -247,7 +247,7 @@ buildBindings
                         (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
             (LCCC.StructType
                (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))))],
-        LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState arch) sym (DMS.MacawExt arch)))
+        LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)))
 buildBindings fns hdlAlloc pinst archVals entryAddr cfg0 = do
   case fns of
     [] -> return ([], LCF.emptyHandleMap)
@@ -279,11 +279,11 @@ buildSoBindings
   -> ProgramInstance
   -> DMS.GenArchVals mem arch
   -> ([NamedHandle arch]
-     , LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState arch) sym (DMS.MacawExt arch)))
+     , LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)))
   -- ^ Initial bindings to build on
   -> DMD.DiscoveryState arch
   -> m ( [NamedHandle arch]
-       , LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState arch) sym (DMS.MacawExt arch)) )
+       , LCF.FnHandleMap (LCS.FnState (AExt.AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)) )
 buildSoBindings hdlAlloc pinst archVals initBindings discoveryState = do
   let fns = Map.toList (discoveryState ^. DMD.funInfo)
   foldM buildBinding initBindings fns
@@ -543,7 +543,7 @@ verify logAction pinst timeoutDuration = do
                                    , recursionBoundFeature
                                    ]
       let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
-                                               , AVS.secWMMCallback = AVWme.wmExecutor archInfo loadedBinary hdlAlloc archVals execFeatures sym
+                                               , AVS.secWMMCallback = AVWme.wmExecutor bak archInfo loadedBinary hdlAlloc archVals execFeatures
                                                , AVS.secSolver = piSolver pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions

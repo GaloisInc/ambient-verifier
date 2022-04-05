@@ -18,12 +18,13 @@ module Ambient.Extensions
   , syscallOvHandles
   , serverSocketFDs
   , simulationStats
+  , overrideLookupFunctionHandle
   ) where
 
 import           Control.Lens ( Lens', (^.), lens, (&), (+~))
 import qualified Data.Aeson as DA
 import qualified Data.Map.Strict as Map
-import           Data.Maybe ( isNothing )
+import           Data.Maybe ( fromMaybe, isNothing )
 import qualified Data.Parameterized.Map as MapF
 import           GHC.Generics ( Generic )
 
@@ -56,18 +57,18 @@ ambientExtensions ::
      , ?memOpts :: LCLM.MemOptions
      )
   => bak
-  -> DMS.MacawArchEvalFn (AmbientSimulatorState arch) sym LCLM.Mem arch
+  -> DMS.MacawArchEvalFn (AmbientSimulatorState sym arch) sym LCLM.Mem arch
   -> LCS.GlobalVar LCLM.Mem
   -> DMS.GlobalMap sym LCLM.Mem (DMC.ArchAddrWidth arch)
-  -> DMS.LookupFunctionHandle (AmbientSimulatorState arch) sym arch
+  -> DMS.LookupFunctionHandle (AmbientSimulatorState sym arch) sym arch
   -- ^ A function to translate virtual addresses into function handles
   -- dynamically during symbolic execution
-  -> DMS.LookupSyscallHandle (AmbientSimulatorState arch) sym arch
+  -> DMS.LookupSyscallHandle (AmbientSimulatorState sym arch) sym arch
   -- ^ A function to examine the machine state to determine which system call
   -- should be invoked; returns the function handle to invoke
   -> DMS.MkGlobalPointerValidityAssertion sym (DMC.ArchAddrWidth arch)
   -- ^ A function to make memory validity predicates
-  -> LCSE.ExtensionImpl (AmbientSimulatorState arch) sym (DMS.MacawExt arch)
+  -> LCSE.ExtensionImpl (AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)
 ambientExtensions bak f mvar globs lookupH lookupSyscall toMemPred =
   (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred)
     { LCSE.extensionExec = execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred
@@ -80,7 +81,7 @@ execAmbientStmtExtension :: forall sym scope st fs bak solver arch p.
      , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
      , LCLM.HasLLVMAnn sym
-     , p ~ AmbientSimulatorState arch
+     , p ~ AmbientSimulatorState sym arch
      , ?memOpts :: LCLM.MemOptions
      )
   => bak
@@ -152,7 +153,12 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st 
       mem1 <- DMSMO.doCondWriteMem bak mem addrWidth memRep (LCS.regValue cond) ptr2 (LCS.regValue v)
       let st' = updateBoundsRefined resolveEffect st
       pure ((), DMSMO.setMem st' mvar mem1)
-    _ -> LCSE.extensionExec (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred) s0 st
+    _ ->
+      let lookupFnH = fromMaybe lookupH ( st
+                                       ^. LCS.stateContext
+                                        . LCS.cruciblePersonality
+                                        . overrideLookupFunctionHandle ) in
+      LCSE.extensionExec (DMS.macawExtensions f mvar globs lookupFnH lookupSyscall toMemPred) s0 st
   where
     -- Update the metric tracking the number of symbolic bitvector bounds
     -- refined
@@ -222,7 +228,7 @@ emptyAmbientSimulationStats =
 
 -- | Increment a counter in the 'AmbientSimulationStats' held in a given
 -- crucible state.
-incrementSimStat :: ( p ~ AmbientSimulatorState arch )
+incrementSimStat :: ( p ~ AmbientSimulatorState sym arch )
                  => Lens' AmbientSimulationStats Integer
                  -- ^ Accessor for the stat to update
                  -> LCS.CrucibleState p sym ext rtp blocks r ctx
@@ -247,7 +253,7 @@ lensNumSymbolicReads :: Lens' AmbientSimulationStats Integer
 lensNumSymbolicReads = lens numSymbolicReads (\s v -> s { numSymbolicReads = v })
 
 -- | The state extension for Crucible holding verifier-specific state.
-data AmbientSimulatorState arch = AmbientSimulatorState
+data AmbientSimulatorState sym arch = AmbientSimulatorState
   { _functionOvHandles :: Map.Map WF.FunctionName (AF.FunctionOverrideHandle arch)
     -- ^ A map from registered function overrides to their handles.
     -- See @Note [Lazily registering overrides]@.
@@ -262,40 +268,57 @@ data AmbientSimulatorState arch = AmbientSimulatorState
     -- metadata. See @Note [The networking story]@ in
     -- "Ambient.FunctionOverride.Overrides".
   , _simulationStats :: AmbientSimulationStats
+    -- ^ Metrics from the Ambient simulator
+  , _overrideLookupFunctionHandle :: Maybe (DMSMO.LookupFunctionHandle (AmbientSimulatorState sym arch) sym arch)
+    -- ^ Override for the default 'DMSMO.LookupFunctionHandle' implementation
+    -- in Ambient.Verifier.SymbolicExecution.  If set this will be used for
+    -- resolving function calls instead of the default lookup function.
+    -- The Weird Machine Executor uses this to replace the default function
+    -- lookup with one that will disassemble the function address and use a
+    -- more relaxed code discovery classifier to handle gadgets that may
+    -- unbalance the stack (which prevents Macaw from detecting them properly).
   }
 
 -- | An initial value for 'AmbientSimulatorState'.
-emptyAmbientSimulatorState :: AmbientSimulatorState arch
+emptyAmbientSimulatorState :: AmbientSimulatorState sym arch
 emptyAmbientSimulatorState = AmbientSimulatorState
   { _functionOvHandles = Map.empty
   , _functionKernelAddrOvHandles = Map.empty
   , _syscallOvHandles = MapF.empty
   , _serverSocketFDs = Map.empty
   , _simulationStats = emptyAmbientSimulationStats
+  , _overrideLookupFunctionHandle = Nothing
   }
 
-functionOvHandles :: Lens' (AmbientSimulatorState arch)
+functionOvHandles :: Lens' (AmbientSimulatorState sym arch)
                            (Map.Map WF.FunctionName (AF.FunctionOverrideHandle arch))
 functionOvHandles = lens _functionOvHandles
                          (\s v -> s { _functionOvHandles = v })
 
-functionKernelAddrOvHandles :: Lens' (AmbientSimulatorState arch)
+functionKernelAddrOvHandles :: Lens' (AmbientSimulatorState sym arch)
                                      (Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) (AF.FunctionOverrideHandle arch))
 functionKernelAddrOvHandles = lens _functionKernelAddrOvHandles
                                    (\s v -> s { _functionKernelAddrOvHandles = v })
 
-syscallOvHandles :: Lens' (AmbientSimulatorState arch)
+syscallOvHandles :: Lens' (AmbientSimulatorState sym arch)
                           (MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle)
 syscallOvHandles = lens _syscallOvHandles
                         (\s v -> s { _syscallOvHandles = v })
 
-serverSocketFDs :: Lens' (AmbientSimulatorState arch)
+serverSocketFDs :: Lens' (AmbientSimulatorState sym arch)
                        (Map.Map Integer AF.ServerSocketInfo)
 serverSocketFDs = lens _serverSocketFDs
                        (\s v -> s { _serverSocketFDs = v })
 
-simulationStats :: Lens' (AmbientSimulatorState arch) AmbientSimulationStats
+simulationStats :: Lens' (AmbientSimulatorState sym arch) AmbientSimulationStats
 simulationStats = lens _simulationStats (\s v -> s { _simulationStats = v })
+
+overrideLookupFunctionHandle
+  :: Lens' (AmbientSimulatorState sym arch)
+           (Maybe (DMSMO.LookupFunctionHandle (AmbientSimulatorState sym arch) sym arch))
+overrideLookupFunctionHandle =
+  lens _overrideLookupFunctionHandle
+       (\s v -> s { _overrideLookupFunctionHandle = v })
 
 {-
 Note [Lazily registering overrides]

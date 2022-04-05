@@ -13,6 +13,8 @@ module Ambient.Verifier.SymbolicExecution (
   , InitialMemory(..)
   , initializeMemory
   , FunctionConfig(..)
+  , extractIP
+  , insertFunctionHandle
   ) where
 
 import           Control.Lens ( Lens', (^.), set, over )
@@ -122,6 +124,39 @@ mkInitialRegVal symArchFns sym r = do
     DMT.VecTypeRepr {} ->
       AP.panic AP.SymbolicExecution "mkInitialRegVal" ["Vector-typed registers are not supported in initial states: " ++ show regName]
 
+-- | Extract the instruction pointer from a register assignment.  This function
+-- concretizes the instruction pointer and throws an
+-- 'AE.ConcretizationFailedUnknown' or 'AE.ConcretizationFailedSymbolic'
+-- exception if the instruction pointer cannot be concretized.
+extractIP
+  :: forall bak mem arch sym solver scope st fs
+   . ( bak ~ LCBO.OnlineBackend solver scope st fs
+     , sym ~ WE.ExprBuilder scope st fs
+     , DMS.SymArchConstraints arch
+     , LCB.IsSymBackend sym bak
+     , WPO.OnlineSolver solver
+     )
+  => bak
+  -> DMS.GenArchVals mem arch
+  -> Ctx.Assignment (LCS.RegValue' sym)
+                    (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+  -- ^ Registers to extract IP from
+  -> IO Integer
+extractIP bak archVals regs = do
+  let regsEntry = LCS.RegEntry regsRepr regs
+  let offset = LCLMP.llvmPointerOffset $ LCS.regValue
+                                       $ DMS.lookupReg archVals regsEntry DMC.ip_reg
+  resolveConcreteStackVal bak (Proxy @arch) AE.FunctionAddress offset
+  where
+    symArchFns :: DMS.MacawSymbolicArchFunctions arch
+    symArchFns = DMS.archFunctions archVals
+
+    crucRegTypes :: Ctx.Assignment LCT.TypeRepr (DMS.CtxToCrucibleType (DMS.ArchRegContext arch))
+    crucRegTypes = DMS.crucArchRegTypes symArchFns
+
+    regsRepr :: LCT.TypeRepr (LCT.StructType (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
+    regsRepr = LCT.StructRepr crucRegTypes
+
 -- | This function is used to look up a function handle when a call is encountered
 --
 -- NOTE: This currently only works for concrete function addresses, but once
@@ -134,7 +169,7 @@ lookupFunction :: forall sym bak arch p ext w scope solver st fs args ret mem
      , DMS.SymArchConstraints arch
      , sym ~ WE.ExprBuilder scope st fs
      , bak ~ LCBO.OnlineBackend solver scope st fs
-     , p ~ AExt.AmbientSimulatorState arch
+     , p ~ AExt.AmbientSimulatorState sym arch
      , ext ~ DMS.MacawExt arch
      , w ~ DMC.ArchAddrWidth arch
      , args ~ (LCT.EmptyCtx LCT.::>
@@ -154,12 +189,9 @@ lookupFunction :: forall sym bak arch p ext w scope solver st fs args ret mem
    -> DMS.LookupFunctionHandle p sym arch
 lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
   DMS.LookupFunctionHandle $ \state _mem regs -> do
-    let regsEntry = LCS.RegEntry regsRepr regs
     -- Extract instruction pointer value and look the address up in
     -- 'addressToFnHandle'
-    let offset = LCLMP.llvmPointerOffset $ LCS.regValue
-                                         $ DMS.lookupReg archVals regsEntry DMC.ip_reg
-    funcAddr <- fromIntegral <$> resolveConcreteStackVal bak (Proxy @arch) AE.FunctionAddress offset
+    funcAddr <- fromIntegral <$> extractIP bak archVals regs
     lookupHandle funcAddr state
 
   where
@@ -190,7 +222,7 @@ lookupFunction bak archVals discoveryMem fnConf abi hdlAlloc =
       -> key
          -- ^ The type of function. This can be a MemWord (for kernel-specific
          --   functions) or a FunctionName (for other kinds of functions).
-      -> Lens' (AExt.AmbientSimulatorState arch)
+      -> Lens' (AExt.AmbientSimulatorState sym arch)
                (Map.Map key (AF.FunctionOverrideHandle arch))
          -- ^ A lens into the corresponding field of AmbientSimulatorState.
          --   This is used both in step (1), for checking if the key is
@@ -366,19 +398,25 @@ bindOverrideHandle :: MonadIO m
                         , LCS.SimState p sym ext r f a)
                        -- ^ Updated state containing new function handle
 bindOverrideHandle state hdlAlloc atps rtps ov = do
-  let LCS.FnBindings curHandles = state ^. LCS.stateContext ^. LCS.functionBindings
   handle <- liftIO $ LCF.mkHandle' hdlAlloc
                                    (LCS.overrideName ov)
                                    atps
                                    (LCT.StructRepr rtps)
+  return (handle, insertFunctionHandle state handle (LCS.UseOverride ov))
+
+-- | Insert a function handle into a state's function bindings
+insertFunctionHandle :: LCS.SimState p sym ext r f a
+                   -- ^ State to update
+                   -> LCF.FnHandle args ret
+                   -- ^ Handle to bind and insert
+                   -> LCS.FnState p sym ext args ret
+                   -- ^ Function state to bind handle to
+                   -> LCS.SimState p sym ext r f a
+insertFunctionHandle state handle fnState =
+  let LCS.FnBindings curHandles = state ^. LCS.stateContext ^. LCS.functionBindings in
   let newHandles = LCS.FnBindings $
-                   LCF.insertHandleMap handle
-                                       (LCS.UseOverride ov)
-                                       curHandles
-  let state' = set (LCS.stateContext . LCS.functionBindings)
-                   newHandles
-                   state
-  return (handle, state')
+                   LCF.insertHandleMap handle fnState curHandles in
+  set (LCS.stateContext . LCS.functionBindings) newHandles state
 
 -- | This function is used to generate a function handle for an override once a
 -- syscall is encountered
@@ -388,7 +426,7 @@ lookupSyscall
      , LCB.IsSymBackend sym bak
      , LCLM.HasLLVMAnn sym
      , DMS.SymArchConstraints arch
-     , p ~ AExt.AmbientSimulatorState arch
+     , p ~ AExt.AmbientSimulatorState sym arch
      , ext ~ DMS.MacawExt arch
      , sym ~ WE.ExprBuilder scope st fs
      , bak ~ LCBO.OnlineBackend solver scope st fs
@@ -807,7 +845,7 @@ simulateFunction
      , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
      , ?memOpts :: LCLM.MemOptions
-     , p ~ AExt.AmbientSimulatorState arch
+     , p ~ AExt.AmbientSimulatorState sym arch
      )
   => LJ.LogAction IO AD.Diagnostic
   -> bak
@@ -919,7 +957,7 @@ symbolicallyExecute
      , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
      , ?memOpts :: LCLM.MemOptions
-     , p ~ AExt.AmbientSimulatorState arch
+     , p ~ AExt.AmbientSimulatorState sym arch
      )
   => LJ.LogAction IO AD.Diagnostic
   -> bak
