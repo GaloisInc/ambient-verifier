@@ -83,14 +83,19 @@ printLogs logHdls chan = go
               case mbSolverDebugMessagesHandle logHdls of
                 Nothing -> pure ()
                 Just solverDebugMsgsHdl
-                  -> PPT.hPutDoc solverDebugMsgsHdl ppd
+                  -> hPutDocAndFlush solverDebugMsgsHdl ppd
             AD.DiscoveryEvent{} ->
               case mbFunctionCFGsHandle logHdls of
                 Nothing -> pure ()
                 Just functionCFGsHdl
-                  -> PPT.hPutDoc functionCFGsHdl ppd
-            _ -> PPT.hPutDoc (defaultHandle logHdls) ppd
+                  -> hPutDocAndFlush functionCFGsHdl ppd
+            _ -> hPutDocAndFlush (defaultHandle logHdls) ppd
           go
+
+    hPutDocAndFlush :: IO.Handle -> PP.Doc a -> IO ()
+    hPutDocAndFlush hdl doc = do
+      PPT.hPutDoc hdl doc
+      IO.hFlush hdl
 
 loadProperty :: FilePath -> IO (APD.Property APD.StateID)
 loadProperty fp = do
