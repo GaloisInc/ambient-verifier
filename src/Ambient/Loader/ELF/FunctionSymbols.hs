@@ -17,6 +17,7 @@ import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe )
 import qualified Data.Text.Encoding as DTE
+import qualified Data.Text.Encoding.Error as DTEE
 import qualified Data.Vector as DV
 import           Data.Word ( Word32 )
 
@@ -67,7 +68,7 @@ elfDynamicFuncSymbolMap = F.foldl' addFuncs Map.empty
 
         dynSymbolTable = concatMap DV.toList $ elfDynamicSymbolTable elfHeader elfBytes elfShdrs
         binaryMap = DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
-                    [ ( WF.functionNameFromText $ DTE.decodeUtf8 $ DE.steName ste
+                    [ ( WF.functionNameFromText $ DTE.decodeUtf8With DTEE.lenientDecode $ DE.steName ste
                       , fromIntegral (DE.steValue ste) + fromIntegral offset
                       )
                     | ste <- dynSymbolTable
@@ -99,7 +100,7 @@ elfEntryPointAddrMap loadedBinary =
                      Just addrOff -> addrOff
                      Nothing -> AP.panic AP.Loader "elfEntryPointAddrMap"
                                   ["Failed to resolve function address: " ++ show addr]
-                 , WF.functionNameFromText $ DTE.decodeUtf8 $ DE.steName ste
+                 , WF.functionNameFromText $ DTE.decodeUtf8With DTEE.lenientDecode $ DE.steName ste
                  )
                | ste <- elfEntryPoints elfHeaderInfo
                , let addr = fromIntegral (DE.steValue ste) + fromIntegral offset
@@ -118,7 +119,7 @@ elfEntryPointSymbolMap ::
 elfEntryPointSymbolMap loadedBinary =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
   Map.fromList
-    [ ( WF.functionNameFromText $ DTE.decodeUtf8 $ DE.steName ste
+    [ ( WF.functionNameFromText $ DTE.decodeUtf8With DTEE.lenientDecode $ DE.steName ste
       , fromIntegral (DE.steValue ste) + fromIntegral offset
       )
     | ste <- elfEntryPoints elfHeaderInfo

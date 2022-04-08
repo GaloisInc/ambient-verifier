@@ -16,6 +16,7 @@ import           Data.Foldable (Foldable(..))
 import qualified Data.Map as Map
 import           Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text.Encoding as DTE
+import qualified Data.Text.Encoding.Error as DTEE
 import           Data.Word (Word32)
 
 import qualified Data.Macaw.BinaryLoader as DMB
@@ -90,7 +91,7 @@ pltStubSymbols abi _ loadedBinaries = Map.fromList $ foldl' go [] loadedBinaries
     buildAssocList nameRelaMap baseAddr stubSize loadOptions =
       let loadOffset = toInteger $ fromMaybe 0 (MML.loadOffset loadOptions) in
       [ ( DMM.memWord (fromIntegral addr)
-        , WF.functionNameFromText (DTE.decodeUtf8 symName) )
+        , WF.functionNameFromText (DTE.decodeUtf8With DTEE.lenientDecode symName) )
       | (idx, symName) <- nameRelaMap
       , let addr = loadOffset + baseAddr + idx * stubSize
       ]
