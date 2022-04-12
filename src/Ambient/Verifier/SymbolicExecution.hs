@@ -78,6 +78,7 @@ import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Discovery as ADi
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
+import qualified Ambient.Extensions.Memory as AEM
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader.BinaryConfig as ALB
@@ -699,6 +700,8 @@ data InitialMemory sym w =
                -- ^ Globals used by the macaw translation; note that this is
                -- separate from the global variable map passed to crucible, as
                -- it is only used for initializing the macaw extension
+                , imMemPtrTable :: AEM.MemPtrTable sym w
+               -- ^ The global memory
                 }
 
 globalMemoryHooks :: forall w
@@ -770,9 +773,9 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
   -- Initialize memory
   let endianness = DMSM.toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  (initMem, memPtrTbl) <- liftIO $ DMSM.newMergedGlobalMemoryWith (globalMemoryHooks globals) (Proxy @arch) bak endianness DMSM.ConcreteMutable mems
-  let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
-  let globalMap = DMSM.mapRegionPointers memPtrTbl
+  (initMem, memPtrTbl) <- AEM.newMemPtrTable (globalMemoryHooks globals) bak endianness mems
+  let validityCheck = AEM.mkGlobalPointerValidityPred memPtrTbl
+  let globalMap = AEM.mapRegionPointers memPtrTbl
 
   -- Allocate memory for the stack, initialize it with symbolic contents, and
   -- then insert it into the memory model
@@ -804,6 +807,7 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
                         , imHeapEndGlob = heapEndGlob
                         , imValidityCheck = validityCheck
                         , imGlobalMap = globalMap
+                        , imMemPtrTable = memPtrTbl
                         })
 
 -- | Populate the registers corresponding to @main(argc, argv)@'s arguments
@@ -1009,13 +1013,13 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction logAction bak archVals binConf functionABI halloc archInfo) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem) (ALB.bcUnsuportedRelocations binConf)
+    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction logAction bak archVals binConf functionABI halloc archInfo) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem) (ALB.bcUnsuportedRelocations binConf) (imMemPtrTable initialMem)
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
                                        LCF.emptyHandleMap
     let ambientSimState = set AExt.discoveredFunctionHandles
-                              (Map.singleton entryPointAddr (LCCC.cfgHandle cfg))
-                              AExt.emptyAmbientSimulatorState
+                          (Map.singleton entryPointAddr (LCCC.cfgHandle cfg))
+                          AExt.emptyAmbientSimulatorState
     -- Note: the 'Handle' here is the target of any print statements in the
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.

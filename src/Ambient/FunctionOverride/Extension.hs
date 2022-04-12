@@ -212,6 +212,7 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
                                                  syscallLookup
                                                  (AVS.imValidityCheck initMem)
                                                  Map.empty
+                                                 (AVS.imMemPtrTable initMem)
             let ctx = LCS.initSimContext bak
                                          LCLI.llvmIntrinsicTypes
                                          halloc

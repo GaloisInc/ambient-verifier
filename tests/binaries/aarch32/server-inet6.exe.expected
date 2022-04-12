@@ -1,3 +1,3 @@
-successful: 6
+successful: 0
 failed: 1
 fsRoot: tests/filesystems/server-inet

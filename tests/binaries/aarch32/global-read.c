@@ -16,14 +16,13 @@ char array[ARRAY_SIZE] = {0};
 int main(void) {
   char val;
 
-  // In bounds read with a concrete index.  Generates 1 successful goal.
+  // In bounds read with a concrete index.
   val = array[0];
 
   // Read off the end of the .bss section.  Generates 1 failing goal.
   val += array[ARRAY_SIZE];
 
-  // Read from text section.  This is generally legal.  Generates 1 successful
-  // goal.
+  // Read from text section.  This is generally legal.
   val += array[TEXT_START_OFFSET];
 
   // Create but do not initialize a variable `i`.  The verifier will leave `i`

@@ -22,7 +22,8 @@ int main() {
 
   struct sockaddr_in6 server;
   server.sin6_family = AF_INET6;
-  // The line below generates 6 successful goals and 1 failing goal.
+  // The line below generates 1 failing goal due to
+  // https://github.com/GaloisInc/macaw/issues/266.
   server.sin6_addr = in6addr_any;
   server.sin6_port = htons(5000);
   int connect_rc = connect(sock_fd, (struct sockaddr *) &server, sizeof(server));

@@ -29,7 +29,8 @@ int main() {
      return -1;
   }
 
-  // The line below generates 2 successful goals and 1 failing goal.
+  // The line below generates 1 failing goal due to
+  // https://github.com/GaloisInc/macaw/issues/266.
   char buf[5] = "ABCD";
   int send_rc = send(sock_fd, buf, sizeof(buf), 0);
   if (send_rc == -1) {

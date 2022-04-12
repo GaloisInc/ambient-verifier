@@ -22,7 +22,8 @@ int main() {
 
   struct sockaddr_in6 server;
   server.sin6_family = AF_INET6;
-  // The line below generates 6 successful goals and 1 failing goal.
+  // The line below generates 1 failing goal due to
+  // https://github.com/GaloisInc/macaw/issues/266.
   server.sin6_addr = in6addr_any;
   // NB: the number 5000 becomes 34835 when converted from host byte order
   // to network byte order, which is why the corresponding directory in the
