@@ -70,21 +70,25 @@ pltStubSymbols abi _ loadedBinaries = Map.fromList $ foldl' go [] loadedBinaries
         Left _dynErr -> Nothing
         Right dynSec -> return dynSec
 
+      vdefm <- case DEP.dynVersionDefMap dynSec vam of
+        Left _dynErr -> Nothing
+        Right vm -> return vm
+
       vreqm <- case DEP.dynVersionReqMap dynSec vam of
         Left _dynErr -> Nothing
         Right vm -> return vm
 
-      let pltAddrs = case extractPltAddrs dynSec vam vreqm loadOptions elf of
+      let pltAddrs = case extractPltAddrs dynSec vam vdefm vreqm loadOptions elf of
             Nothing -> []
             Just addrs -> addrs
 
-      let pltGotAddrs = case extractPltGotAddrs dynSec vam vreqm loadOptions elf of
+      let pltGotAddrs = case extractPltGotAddrs dynSec vam vdefm vreqm loadOptions elf of
             Nothing -> []
             Just addrs -> addrs
       return (pltAddrs ++ pltGotAddrs ++ acc)
 
-    pltStubAddress dynSec vam vreqm getRelSymIdx accum rel
-      | Right (symtabEntry, _versionedVal) <- DEP.dynSymEntry dynSec vam vreqm (getRelSymIdx rel) =
+    pltStubAddress dynSec vam vdefm vreqm getRelSymIdx accum rel
+      | Right (symtabEntry, _versionedVal) <- DEP.dynSymEntry dynSec vam vdefm vreqm (getRelSymIdx rel) =
           DE.steName symtabEntry : accum
       | otherwise = accum
 
@@ -97,12 +101,12 @@ pltStubSymbols abi _ loadedBinaries = Map.fromList $ foldl' go [] loadedBinaries
       ]
 
     -- Build assoc list from addresses of stubs in .plt to function names
-    extractPltAddrs dynSec vam vreqm loadOptions elf = do
+    extractPltAddrs dynSec vam vdefm vreqm loadOptions elf = do
       SomeRel rels getRelSymIdx <- case DEP.dynPLTRel @reloc dynSec vam of
         Right (DEP.PLTRela relas) -> return (SomeRel relas DEP.relaSym)
         Right (DEP.PLTRel rels) -> return (SomeRel rels DEP.relSym)
         _ -> Nothing
-      let revNameRelaMap = foldl' (pltStubAddress dynSec vam vreqm getRelSymIdx) [] rels
+      let revNameRelaMap = foldl' (pltStubAddress dynSec vam vdefm vreqm getRelSymIdx) [] rels
       let nameRelaMap = zip [0..] (reverse revNameRelaMap)
       pltSec <- listToMaybe (DE.findSectionByName (BSC.pack ".plt") elf)
       let pltBase = DE.elfSectionAddr pltSec
@@ -115,11 +119,11 @@ pltStubSymbols abi _ loadedBinaries = Map.fromList $ foldl' go [] loadedBinaries
       return $ buildAssocList nameRelaMap (pltSize + toInteger pltBase) pltStubSize loadOptions
 
     -- Build assoc list from addresses of stubs in .plt.got to function names
-    extractPltGotAddrs dynSec vam vreqm loadOptions elf = do
+    extractPltGotAddrs dynSec vam vdefm vreqm loadOptions elf = do
       relsGot <- case DEP.dynRelaEntries @reloc dynSec vam of
         Right relas -> return relas
         Left _ -> Nothing
-      let revNameRelaMapGot = foldl' (pltStubAddress dynSec vam vreqm DEP.relaSym) [] relsGot
+      let revNameRelaMapGot = foldl' (pltStubAddress dynSec vam vdefm vreqm DEP.relaSym) [] relsGot
       let nameRelaMapGot = zip [0..] (reverse revNameRelaMapGot)
 
       pltGotSec <- listToMaybe (DE.findSectionByName (BSC.pack ".plt.got") elf)
