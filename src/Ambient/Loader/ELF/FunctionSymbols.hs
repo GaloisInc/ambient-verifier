@@ -7,20 +7,24 @@ module Ambient.Loader.ELF.FunctionSymbols
   ( elfDynamicFuncSymbolMap
   , elfEntryPointAddrMap
   , elfEntryPointSymbolMap
+  , symtabEntryFunctionName
+  , versionTableValueToSymbolVersion
   ) where
 
 import qualified Control.Exception as X
 import           Control.Monad ( guard )
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ElfEdit as DE
 import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
-import           Data.Maybe ( fromMaybe )
+import           Data.Maybe ( fromMaybe, listToMaybe )
 import qualified Data.Text.Encoding as DTE
 import qualified Data.Text.Encoding.Error as DTEE
 import qualified Data.Vector as DV
 import           Data.Word ( Word32 )
 
+import qualified Data.BinarySymbols as BinSym
 import qualified Data.Macaw.BinaryLoader as DMB
 import qualified Data.Macaw.BinaryLoader.ELF as DMBE
 import qualified Data.Macaw.CFG as DMC
@@ -29,6 +33,7 @@ import qualified Data.Macaw.Memory.LoadCommon as DMML
 import qualified What4.FunctionName as WF
 
 import qualified Ambient.Exception as AE
+import qualified Ambient.Loader.Versioning as ALV
 import qualified Ambient.Panic as AP
 
 -- | Given a collection of binaries, map the name of each dynamic function to
@@ -48,30 +53,28 @@ elfDynamicFuncSymbolMap ::
   , DMM.MemWidth w
   ) =>
   f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
-  Map.Map WF.FunctionName (DMM.MemWord w)
+  Map.Map ALV.VersionedFunctionName (DMM.MemWord w)
 elfDynamicFuncSymbolMap = F.foldl' addFuncs Map.empty
   where
     addFuncs ::
-      Map.Map WF.FunctionName (DMM.MemWord w) ->
+      Map.Map ALV.VersionedFunctionName (DMM.MemWord w) ->
       DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
-      Map.Map WF.FunctionName (DMM.MemWord w)
+      Map.Map ALV.VersionedFunctionName (DMM.MemWord w)
     addFuncs m loadedBinary =
       Map.unionWithKey
         (\nm addr1 addr2 -> X.throw $ AE.DynamicFunctionNameClash nm addr1 addr2)
         m (Map.fromList binaryMap)
       where
         elfHeaderInfo = DMB.originalBinary loadedBinary
-        elfHeader = DE.header elfHeaderInfo
-        elfBytes = DE.headerFileContents elfHeaderInfo
-        elfShdrs = DE.headerShdrs elfHeaderInfo
         offset = fromMaybe 0 $ DMML.loadOffset $ DMB.loadOptions loadedBinary
 
-        dynSymbolTable = concatMap DV.toList $ elfDynamicSymbolTable elfHeader elfBytes elfShdrs
+        dynSymbolTable = concatMap DV.toList $ elfResolveDynamicSymbolVersions elfHeaderInfo
         binaryMap = DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
-                    [ ( WF.functionNameFromText $ DTE.decodeUtf8With DTEE.lenientDecode $ DE.steName ste
+                    [ ( fmap symtabEntryFunctionName versym
                       , fromIntegral (DE.steValue ste) + fromIntegral offset
                       )
-                    | ste <- dynSymbolTable
+                    | versym <- dynSymbolTable
+                    , let ste = ALV.versymSymbol versym
                     , isFuncSymbol ste
                     ]
 
@@ -93,16 +96,17 @@ isFuncSymbol e
 elfEntryPointAddrMap ::
   (w ~ DMC.ArchAddrWidth arch, DMM.MemWidth w) =>
   DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
-  Map.Map (DMM.MemSegmentOff w) WF.FunctionName
+  Map.Map (DMM.MemSegmentOff w) ALV.VersionedFunctionName
 elfEntryPointAddrMap loadedBinary =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
   Map.fromList [ ( case DMBE.resolveAbsoluteAddress mem addr of
                      Just addrOff -> addrOff
                      Nothing -> AP.panic AP.Loader "elfEntryPointAddrMap"
                                   ["Failed to resolve function address: " ++ show addr]
-                 , WF.functionNameFromText $ DTE.decodeUtf8With DTEE.lenientDecode $ DE.steName ste
+                 , fmap symtabEntryFunctionName versym
                  )
-               | ste <- elfEntryPoints elfHeaderInfo
+               | versym <- elfEntryPoints elfHeaderInfo
+               , let ste = ALV.versymSymbol versym
                , let addr = fromIntegral (DE.steValue ste) + fromIntegral offset
                ]
   where
@@ -119,10 +123,11 @@ elfEntryPointSymbolMap ::
 elfEntryPointSymbolMap loadedBinary =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
   Map.fromList
-    [ ( WF.functionNameFromText $ DTE.decodeUtf8With DTEE.lenientDecode $ DE.steName ste
+    [ ( symtabEntryFunctionName ste
       , fromIntegral (DE.steValue ste) + fromIntegral offset
       )
-    | ste <- elfEntryPoints elfHeaderInfo
+    | versym <- elfEntryPoints elfHeaderInfo
+    , let ste = ALV.versymSymbol versym
     ]
   where
     elfHeaderInfo = DMB.originalBinary loadedBinary
@@ -134,23 +139,107 @@ elfEntryPointSymbolMap loadedBinary =
 elfEntryPoints ::
   (DE.ElfWidthConstraints w, DMM.MemWidth w) =>
   DE.ElfHeaderInfo w ->
-  [DE.SymtabEntry BS.ByteString (DE.ElfWordType w)]
+  [VersionedSymtabEntry BS.ByteString (DE.ElfWordType w)]
 elfEntryPoints elfHeaderInfo =
-  filter (\ste -> DE.steType ste == DE.STT_FUNC
-               -- Somewhat surprisingly, there can be STT_FUNC entries whose
-               -- values are zero. See, for instance, the static symbol table in
-               -- tests/binaries/aarch32/main-args.exe. These won't resolve
-               -- properly, so filter them out.
-               && toInteger (DE.steValue ste) /= 0)
+  filter (\versym -> let ste = ALV.versymSymbol versym
+                  in DE.steType ste == DE.STT_FUNC
+                  -- Somewhat surprisingly, there can be STT_FUNC entries whose
+                  -- values are zero. See, for instance, the static symbol table in
+                  -- tests/binaries/aarch32/main-args.exe. These won't resolve
+                  -- properly, so filter them out.
+                  && toInteger (DE.steValue ste) /= 0)
          (staticSymbolTable ++ dynSymbolTable)
   where
+    staticSymbolTable = concatMap DV.toList $ elfResolveStaticSymbolVersions elfHeaderInfo
+    dynSymbolTable    = concatMap DV.toList $ elfResolveDynamicSymbolVersions elfHeaderInfo
+
+-- | Find and get static symbol table entries from an ELF binary along with
+-- their versions (if present).
+elfResolveStaticSymbolVersions ::
+  forall w.
+  DE.ElfHeaderInfo w ->
+  Maybe (DV.Vector (VersionedSymtabEntry BS.ByteString (DE.ElfWordType w)))
+elfResolveStaticSymbolVersions elfHeaderInfo = do
+  res <- DE.decodeHeaderSymtab elfHeaderInfo
+  entries <- case res of
+    Left symtabError -> error $ show symtabError
+    Right entries    -> return entries
+  pure $ DV.map resolve $ DE.symtabEntries entries
+  where
+    -- This code was taken from macaw-base
+    -- (https://github.com/GaloisInc/macaw/blob/e4b198ab2dd882e34690ed33056d5231b2d776bf/base/src/Data/Macaw/Memory/ElfLoader.hs#L407-L421),
+    -- which is licensed under the 3-Clause BSD license.
+    --
+    -- TODO: This code would be a better fit for elf-edit.
+    resolve ::
+      DE.SymtabEntry BS.ByteString (DE.ElfWordType w) ->
+      VersionedSymtabEntry BS.ByteString (DE.ElfWordType w)
+    resolve sym =
+      -- Look for '@' as it is used to separate symbol name from version information
+      -- in object files.
+      case BSC.findIndex (== '@') (DE.steName sym) of
+        Just i ->
+          let nm = DE.steName sym in
+                  -- If "@@" appears in the symbol, this is a default versioned symbol
+          let ver | i+1 < BSC.length nm, BSC.index nm (i+1) == '@' =
+                      BinSym.ObjectDefaultSymbol (BSC.drop (i+2) nm)
+                  -- Otherwise "@" appears in the symbol, and this is a non-default symbol.
+                  | otherwise =
+                      BinSym.ObjectNonDefaultSymbol (BSC.drop (i+1) nm) in
+          ALV.VerSym { ALV.versymSymbol = sym { DE.steName = BSC.take i nm }
+                     , ALV.versymVersion = ver
+                     }
+        Nothing ->
+          ALV.VerSym { ALV.versymSymbol = sym
+                     , ALV.versymVersion = BinSym.UnversionedSymbol
+                     }
+
+-- | Find and get dynamic symbol table entries from an ELF binary along with
+-- their versions (if present).
+elfResolveDynamicSymbolVersions ::
+  DE.ElfHeaderInfo w ->
+  Maybe (DV.Vector (VersionedSymtabEntry BS.ByteString (DE.ElfWordType w)))
+elfResolveDynamicSymbolVersions elfHeaderInfo = DE.elfClassInstances elfClass $ do
+  vam <- DE.virtAddrMap elfBytes elfPhdrs
+  rawDynSec <- listToMaybe (DE.findSectionByName (BSC.pack ".dynamic") elf)
+
+  let dynBytes = DE.elfSectionData rawDynSec
+  dynSec <- case DE.dynamicEntries (DE.elfData elf) (DE.elfClass elf) dynBytes of
+    Left _dynErr -> Nothing
+    Right dynSec -> return dynSec
+
+  vdefm <- case DE.dynVersionDefMap dynSec vam of
+    Left _dynErr -> Nothing
+    Right vm -> return vm
+
+  vreqm <- case DE.dynVersionReqMap dynSec vam of
+    Left _dynErr -> Nothing
+    Right vm -> return vm
+
+  entries <- elfDynamicSymbolTable elfHeader elfBytes elfShdrs
+  DV.imapM (\idx entry ->
+             case DE.dynSymEntry dynSec vam vdefm vreqm (fromIntegral idx) of
+               Left _dynError -> Nothing
+               Right (_, ver) -> return $
+                 ALV.VerSym { ALV.versymSymbol = entry
+                            , ALV.versymVersion = versionTableValueToSymbolVersion ver
+                            })
+           entries
+  where
+    (_, elf) = DE.getElf elfHeaderInfo
     elfHeader = DE.header elfHeaderInfo
+    elfClass = DE.headerClass elfHeader
     elfBytes = DE.headerFileContents elfHeaderInfo
+    elfPhdrs = DE.headerPhdrs elfHeaderInfo
     elfShdrs = DE.headerShdrs elfHeaderInfo
 
-    staticSymbolTable = concatMap (either (error . show) (DV.toList . DE.symtabEntries))
-                                  (DE.decodeHeaderSymtab elfHeaderInfo)
-    dynSymbolTable = concatMap DV.toList $ elfDynamicSymbolTable elfHeader elfBytes elfShdrs
+-- | Convert GNU versioning information for a dynamic symbol to a
+-- 'BinSym.SymbolVersion'.
+versionTableValueToSymbolVersion :: DE.VersionTableValue -> BinSym.SymbolVersion
+versionTableValueToSymbolVersion DE.VersionLocal  = BinSym.UnversionedSymbol
+versionTableValueToSymbolVersion DE.VersionGlobal = BinSym.UnversionedSymbol
+versionTableValueToSymbolVersion (DE.VersionSpecific elfVer) =
+  BinSym.VersionedSymbol (DE.verFile elfVer) (DE.verName elfVer)
 
 -- | Find and get dynamic symbol table entries from an ELF binary.
 --
@@ -166,7 +255,7 @@ elfDynamicSymbolTable ::
   DV.Vector (DE.Shdr Word32 (DE.ElfWordType w)) ->
   -- ^ Section header table
   Maybe (DV.Vector (DE.SymtabEntry BS.ByteString (DE.ElfWordType w)))
-elfDynamicSymbolTable hdr contents shdrs = DE.elfClassInstances (DE.headerClass hdr) $ do
+elfDynamicSymbolTable hdr contents shdrs = DE.elfClassInstances cl $ do
   guard (DE.headerType hdr == DE.ET_DYN)
   symtab <-
     case DV.toList $ DV.filter (\s -> DE.shdrType s == DE.SHT_DYNSYM) shdrs of
@@ -183,3 +272,12 @@ elfDynamicSymbolTable hdr contents shdrs = DE.elfClassInstances (DE.headerClass 
   where
     cl  = DE.headerClass hdr
     dta = DE.headerData hdr
+
+-- | Return the 'WF.FunctionName' for a symbol table entry. This assumes that
+-- the symbol name is UTF-8–encoded.
+symtabEntryFunctionName :: DE.SymtabEntry BS.ByteString w -> WF.FunctionName
+symtabEntryFunctionName =
+  WF.functionNameFromText . DTE.decodeUtf8With DTEE.lenientDecode . DE.steName
+
+-- | A symbol table entry paired with a version.
+type VersionedSymtabEntry nm w = ALV.VersionedSymbol (DE.SymtabEntry nm w)

@@ -1,0 +1,4 @@
+successful: 0
+failed: 0
+overrideDir: tests/overrides/
+sharedObjectsDir: tests/binaries/x86_64/symbol-versions

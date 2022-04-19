@@ -68,7 +68,6 @@ import qualified Lang.Crucible.SymIO as LCSy
 import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Expr as WE
-import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
 import qualified What4.Symbol as WSym
@@ -82,6 +81,7 @@ import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Loader.LoadOptions as ALL
+import qualified Ambient.Loader.Versioning as ALV
 import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
 import qualified Ambient.Property.Definition as APD
@@ -305,12 +305,18 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo =
         case Map.lookup funcAddr (ALB.bcPltStubs binConf) of
           -- If 'funcAddr' points to a PLT stub, dispatch an override.
           -- Otherwise continue resolving the function address.
-          Just pltStubName ->
+          Just pltStubVersym ->
             -- Step (2)(a)
-            lazilyRegisterHandle state pltStubName AExt.functionOvHandles
+            --
+            -- NB: When looking up overrides, we only consult the function name
+            -- and completely ignore the version. In the future, we will want
+            -- to allow users to specify overrides that only apply to
+            -- particular versions. See #104.
+            lazilyRegisterHandle state (ALV.versymSymbol pltStubVersym)
+                                 AExt.functionOvHandles
                                  (AF.functionNameMapping abi) $ do
               -- Step (2)(b)
-              (funcAddrOff, bin) <- resolvePLTStub pltStubName
+              (funcAddrOff, bin) <- resolvePLTStub pltStubVersym
               dispatchFuncAddrOff funcAddrOff bin state
           Nothing -> do
             (funcAddrOff, bin) <- resolveFuncAddr funcAddr
@@ -320,12 +326,12 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo =
     -- binary that the address resides in (see
     -- @Note [Address offsets for shared libraries]@ in A.Loader.LoadOffset).
     resolvePLTStub ::
-      WF.FunctionName ->
+      ALV.VersionedFunctionName ->
       IO (DMM.MemSegmentOff w, ALB.LoadedBinaryPath arch binFmt)
-    resolvePLTStub pltStubName =
-      case Map.lookup pltStubName (ALB.bcDynamicFuncSymbolMap binConf) of
+    resolvePLTStub pltStubVersym =
+      case Map.lookup pltStubVersym (ALB.bcDynamicFuncSymbolMap binConf) of
         Just funcAddr -> resolveFuncAddr funcAddr
-        Nothing -> CMC.throwM (AE.UnhandledPLTStub pltStubName)
+        Nothing -> CMC.throwM (AE.UnhandledPLTStub pltStubVersym)
 
     -- Resolve an address offset, also returning the binary that the address
     -- resides in (see @Note [Address offsets for shared libraries]@ in
@@ -357,8 +363,13 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo =
          )
     dispatchFuncAddrOff funcAddrOff bin state = do
       case Map.lookup funcAddrOff (ALB.lbpEntryPoints bin) of
-        Just fnName ->
-          lazilyRegisterHandle state fnName AExt.functionOvHandles
+        Just fnVersym ->
+          -- NB: When looking up overrides, we only consult the function name
+          -- and completely ignore the version. In the future, we will want
+          -- to allow users to specify overrides that only apply to
+          -- particular versions. See #104.
+          lazilyRegisterHandle state (ALV.versymSymbol fnVersym)
+                               AExt.functionOvHandles
                                (AF.functionNameMapping abi) $
             discoverFuncAddrOff funcAddrOff bin state
         Nothing ->

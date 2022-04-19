@@ -140,6 +140,15 @@ errno-musl.exe: errno.c
 main-args.exe: main-args.c ambient_assert.o
 	$(CC) $^ -o $@
 
+symbol-versions/libsymbol-versions-bar.so: symbol-versions/symbol-versions-bar.c symbol-versions/symbol-versions-bar.map
+	$(CC) symbol-versions/symbol-versions-bar.c -Wl,--version-script=symbol-versions/symbol-versions-bar.map -fpic -o $@ -shared
+
+symbol-versions/libsymbol-versions-baz.so: symbol-versions/symbol-versions-baz.c symbol-versions/symbol-versions-baz.map
+	$(CC) symbol-versions/symbol-versions-baz.c -Wl,--version-script=symbol-versions/symbol-versions-baz.map -fpic -o $@ -shared
+
+symbol-versions/symbol-versions-main.exe: symbol-versions/symbol-versions-main.c symbol-versions/libsymbol-versions-bar.so symbol-versions/libsymbol-versions-baz.so ambient_assert.o
+	$(CC) $^ -o $@ -Lsymbol-versions/ -I./
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

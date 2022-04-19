@@ -1,0 +1,9 @@
+BAR_1.2 {
+          global:
+bar;
+          local: *;
+};
+BAZ_1.1 {
+          global:
+baz;
+};

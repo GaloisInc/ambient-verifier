@@ -15,18 +15,17 @@ import qualified Data.ElfEdit.Prim as DEP
 import           Data.Foldable (Foldable(..))
 import qualified Data.Map as Map
 import           Data.Maybe (fromMaybe, listToMaybe)
-import qualified Data.Text.Encoding as DTE
-import qualified Data.Text.Encoding.Error as DTEE
 import           Data.Word (Word32)
 
 import qualified Data.Macaw.BinaryLoader as DMB
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Memory.LoadCommon as MML
-import qualified What4.FunctionName as WF
 
 import qualified Ambient.ABI as AA
 import qualified Ambient.Exception as AE
+import qualified Ambient.Loader.ELF.FunctionSymbols as ALEF
+import qualified Ambient.Loader.Versioning as ALV
 
 -- | A wrapper type to make it easier to extract both Rel and Rela entries
 data SomeRel tp where
@@ -52,7 +51,7 @@ pltStubSymbols
   => AA.ABI
   -> proxy reloc
   -> f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w))
-  -> Map.Map (DMM.MemWord w) WF.FunctionName
+  -> Map.Map (DMM.MemWord w) ALV.VersionedFunctionName
 pltStubSymbols abi _ loadedBinaries = Map.fromList $ foldl' go [] loadedBinaries
   where
     go acc loadedBinary = fromMaybe acc $ do
@@ -88,15 +87,17 @@ pltStubSymbols abi _ loadedBinaries = Map.fromList $ foldl' go [] loadedBinaries
       return (pltAddrs ++ pltGotAddrs ++ acc)
 
     pltStubAddress dynSec vam vdefm vreqm getRelSymIdx accum rel
-      | Right (symtabEntry, _versionedVal) <- DEP.dynSymEntry dynSec vam vdefm vreqm (getRelSymIdx rel) =
-          DE.steName symtabEntry : accum
+      | Right (symtabEntry, versionedVal) <- DEP.dynSymEntry dynSec vam vdefm vreqm (getRelSymIdx rel) =
+          let versym = ALV.VerSym { ALV.versymSymbol = ALEF.symtabEntryFunctionName symtabEntry
+                                  , ALV.versymVersion = ALEF.versionTableValueToSymbolVersion versionedVal
+                                  } in
+          versym : accum
       | otherwise = accum
 
     buildAssocList nameRelaMap baseAddr stubSize loadOptions =
       let loadOffset = toInteger $ fromMaybe 0 (MML.loadOffset loadOptions) in
-      [ ( DMM.memWord (fromIntegral addr)
-        , WF.functionNameFromText (DTE.decodeUtf8With DTEE.lenientDecode symName) )
-      | (idx, symName) <- nameRelaMap
+      [ (DMM.memWord (fromIntegral addr), versym)
+      | (idx, versym) <- nameRelaMap
       , let addr = loadOffset + baseAddr + idx * stubSize
       ]
 

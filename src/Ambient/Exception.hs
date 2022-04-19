@@ -20,6 +20,8 @@ import qualified Lang.Crucible.Syntax.ExprParse as LCSE
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.FunctionName as WF
 
+import qualified Ambient.Loader.Versioning as ALV
+
 data AmbientException where
   -- | The given binary format is not supported
   --
@@ -66,7 +68,7 @@ data AmbientException where
   Aarch32BinaryHasPltGot :: AmbientException
   -- | Encountered a PLT stub without an accompanying override or
   -- implementation
-  UnhandledPLTStub :: WF.FunctionName -> AmbientException
+  UnhandledPLTStub :: ALV.VersionedFunctionName -> AmbientException
   -- | The @socket@ function was invoked with an unsupported argument.
   -- See @Note [The networking story]@ in "Ambient.FunctionOverride.Overrides".
   UnsupportedSocketArgument :: NetworkFunctionArgument -> Integer -> AmbientException
@@ -83,7 +85,7 @@ data AmbientException where
   -- | An address corresponding to the name of the entry point function could not be found.
   NamedEntryPointAddrLookupFailure :: WF.FunctionName -> AmbientException
   -- | Two different binaries define dynamic functions with the same name.
-  DynamicFunctionNameClash :: DMM.MemWidth w => WF.FunctionName -> DMM.MemWord w -> DMM.MemWord w -> AmbientException
+  DynamicFunctionNameClash :: DMM.MemWidth w => ALV.VersionedFunctionName -> DMM.MemWord w -> DMM.MemWord w -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException

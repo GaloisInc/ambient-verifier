@@ -15,6 +15,8 @@ import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
 import qualified What4.FunctionName as WF
 
+import qualified Ambient.Loader.Versioning as ALV
+
 -- | All of the loaded binaries along with information about their file paths,
 -- function symbols, and PLT stubs. Retrieving this information requires
 -- functionality that is specific to a particular file format (e.g., ELF), so
@@ -33,12 +35,12 @@ data BinaryConfig arch binFmt = BinaryConfig {
   -- the starting entry point. See @Note [Incremental code discovery]@ in
   -- "Ambient.Extensions".
 
-  , bcDynamicFuncSymbolMap :: Map.Map WF.FunctionName (DMM.MemWord (DMC.ArchAddrWidth arch))
+  , bcDynamicFuncSymbolMap :: Map.Map ALV.VersionedFunctionName (DMM.MemWord (DMC.ArchAddrWidth arch))
   -- ^ Maps the names of dynamic functions in each binary to their addresses.
   -- This is used to determine the address that a PLT stub should jump to.
   -- See @Note [Incremental code discovery]@ in "Ambient.Extensions".
 
-  , bcPltStubs :: Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) WF.FunctionName
+  , bcPltStubs :: Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) ALV.VersionedFunctionName
   -- ^ Maps the addresses of PLT stub in each binary and shared library to
   -- their corresponding function names. See @Note [PLT Stub Names]@ in
   -- "Ambient.ELF.Loader.PLTStubDetector".
@@ -54,7 +56,7 @@ data LoadedBinaryPath arch binFmt = LoadedBinaryPath {
   , lbpPath :: FilePath
   -- ^ The path the 'lbpBinary' was loaded from.
 
-  , lbpEntryPoints :: Map.Map (DMC.ArchSegmentOff arch) WF.FunctionName
+  , lbpEntryPoints :: Map.Map (DMC.ArchSegmentOff arch) ALV.VersionedFunctionName
   -- This maps the entry point addresses in the 'lbpBinary' to their
   -- corresponding function names. This information is used for two purposes:
   --
@@ -76,7 +78,7 @@ data LoadedBinaryPath arch binFmt = LoadedBinaryPath {
 -- @ByteString@s. This conversion is needed so that the map can be passed to
 -- code discovery–related functions in @macaw@.
 lbpAddrSymMap :: LoadedBinaryPath arch binFmt -> DMD.AddrSymMap (DMC.ArchAddrWidth arch)
-lbpAddrSymMap = fmap (DTE.encodeUtf8 . WF.functionName) . lbpEntryPoints
+lbpAddrSymMap = fmap (DTE.encodeUtf8 . WF.functionName . ALV.versymSymbol) . lbpEntryPoints
 
 -- | Retrieve the main binary—that is, the binary at index 0 of
 -- 'bcBinaries'.
