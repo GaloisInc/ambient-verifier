@@ -60,6 +60,8 @@ library
                       Ambient.Lift,
                       Ambient.Loader,
                       Ambient.Loader.BinaryConfig,
+                      Ambient.Loader.ELF.DecodeError,
+                      Ambient.Loader.ELF.DynamicLoader,
                       Ambient.Loader.ELF.PLTStubDetector,
                       Ambient.Loader.ELF.Symbols,
                       Ambient.Loader.ELF.Symbols.AArch32,

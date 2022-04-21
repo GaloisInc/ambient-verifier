@@ -149,6 +149,15 @@ symbol-versions/libsymbol-versions-baz.so: symbol-versions/symbol-versions-baz.c
 symbol-versions/symbol-versions-main.exe: symbol-versions/symbol-versions-main.c symbol-versions/libsymbol-versions-bar.so symbol-versions/libsymbol-versions-baz.so ambient_assert.o
 	$(CC) -Lsymbol-versions/ -I./ symbol-versions/symbol-versions-main.c ambient_assert.o -lsymbol-versions-bar -lsymbol-versions-baz -o $@
 
+lookup-scope/liblookup-scope-a.so: lookup-scope/lookup-scope-a.c
+	$(CC) -nostdlib $< -o $@ -shared
+
+lookup-scope/liblookup-scope-b.so: lookup-scope/lookup-scope-b.c
+	$(CC) -nostdlib $< -o $@ -shared
+
+lookup-scope/lookup-scope.exe: lookup-scope/lookup-scope.c lookup-scope/liblookup-scope-a.so lookup-scope/liblookup-scope-b.so ambient_assert.o
+	$(CC) -nostdlib -Llookup-scope/ -I./ lookup-scope/lookup-scope.c ambient_assert.o -llookup-scope-a -llookup-scope-b -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

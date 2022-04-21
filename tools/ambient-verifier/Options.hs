@@ -234,7 +234,13 @@ verifyOptions = VerifyOptions
            <*> OA.optional (OA.strOption ( OA.long "shared-objects"
                                         <> OA.short 'L'
                                         <> OA.metavar "DIRECTORY"
-                                        <> OA.help "Directory containing shared objects to verify"))
+                                        <> OA.help (unlines
+                                             [ "Directory containing shared objects to verify."
+                                             , "The default value is the directory in which the main binary lives."
+                                             , "If the program you are verifying attempts to invoke a function in"
+                                             , "a shared library that not in this directory, then the verifier"
+                                             , "will fail unless an override is supplied for that function."
+                                             ])))
            <*> OA.optional (OA.strOption ( OA.long "metrics"
                                         <> OA.metavar "FILE"
                                         <> OA.help "File to write metrics to"))

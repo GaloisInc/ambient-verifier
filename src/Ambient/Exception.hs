@@ -84,15 +84,26 @@ data AmbientException where
   EntryPointAddrOffResolutionFailure :: DMM.MemWidth w => DMM.MemWord w -> AmbientException
   -- | An address corresponding to the name of the entry point function could not be found.
   NamedEntryPointAddrLookupFailure :: WF.FunctionName -> AmbientException
-  -- | Two different binaries define dynamic functions with the same name.
-  DynamicFunctionNameClash :: DMM.MemWidth w => ALV.VersionedFunctionName -> DMM.MemWord w -> DMM.MemWord w -> AmbientException
-  -- | Two different binaries define dynamic global variables with the same name.
-  DynamicGlobalNameClash :: DMM.MemWidth w => ALV.VersionedGlobalVarName -> DMM.MemWord w -> DMM.MemWord w -> AmbientException
   -- | An aarch32 binary contains a .rela.dyn section
   Aarch32RelaDynUnsupported :: AmbientException
   -- | Simulation encountered a read from an unsupported relocation type.  The
   -- argument is the name of the relocation type.
   UnsupportedRelocation :: String -> AmbientException
+  -- | Encountered an error when parsing a dynamic section in an ELF binary.
+  ElfDynamicParseError :: FilePath -> DE.DynamicError -> AmbientException
+  -- | Could not constuct a virtual address map for an ELF binary.
+  ElfVirtualAddressMapError :: FilePath -> AmbientException
+  -- | Encountered an error when parsing the @DT_NEEDED@ entries in a dynamic ELF binary.
+
+  -- Unfortunately, elf-edit's @dynNeeded@ function only returns a String when
+  -- it errors, so that is as precise as we can make things without changing
+  -- the upstream elf-edit API.
+  ElfDynamicNeededError :: FilePath -> String -> AmbientException
+  -- | Encountered multiple @PT_DYNAMIC@ program headers when parsing an ELF
+  -- binary.
+  ElfMultipleDynamicHeaders :: FilePath -> AmbientException
+  -- | Encountered a shared library that is not dynamically linked.
+  ElfNonDynamicSharedLib :: FilePath -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -205,21 +216,25 @@ instance PP.Pretty AmbientException where
                 , PP.pretty "you will likely need to supply the address of the entry point"
                 , PP.pretty "function using `--entry-point-addr 0xNNN` instead."
                 ]
-      DynamicFunctionNameClash fnName addr1 addr2 ->
-        PP.vcat [ PP.pretty "Multiple binaries define function named"
-                    PP.<+> PP.squotes (PP.pretty fnName)
-                , PP.pretty "- Address 1" <> PP.colon PP.<+> PP.pretty addr1
-                , PP.pretty "- Address 2" <> PP.colon PP.<+> PP.pretty addr2
-                ]
-      DynamicGlobalNameClash globalName addr1 addr2 ->
-        PP.vcat [ PP.pretty "Multiple binaries define global variables named"
-                    PP.<+> PP.squotes (PP.viaShow globalName)
-                , PP.pretty "- Address 1" <> PP.colon PP.<+> PP.pretty addr1
-                , PP.pretty "- Address 2" <> PP.colon PP.<+> PP.pretty addr2
-                ]
       Aarch32RelaDynUnsupported ->
         PP.pretty "AArch32 binaries containing .rela.dyn sections are not currently supported"
       UnsupportedRelocation relTypeName ->
         PP.pretty "Simulation encountered a read from an unsupported relocation type: " <> PP.pretty relTypeName
-
-
+      ElfDynamicParseError fp dynErr ->
+        PP.vcat [ PP.viaShow dynErr
+                , PP.pretty "In the file:" PP.<+> PP.pretty fp
+                ]
+      ElfVirtualAddressMapError fp ->
+        PP.vcat [ PP.pretty "Could not construct virtual address map"
+                , PP.pretty "In the file:" PP.<+> PP.pretty fp
+                ]
+      ElfDynamicNeededError fp errMsg ->
+        PP.vcat [ PP.pretty errMsg
+                , PP.pretty "In the file:" PP.<+> PP.pretty fp
+                ]
+      ElfMultipleDynamicHeaders fp ->
+        PP.vcat [ PP.pretty"Encountered multiple PT_DYNAMIC program headers"
+                , PP.pretty "In the file:" PP.<+> PP.pretty fp
+                ]
+      ElfNonDynamicSharedLib fp ->
+        PP.pretty "The shared library" PP.<+> PP.pretty fp PP.<+> PP.pretty "is not dynamically linked"

@@ -13,7 +13,6 @@ module Ambient.Loader.ELF.Symbols
   , versionTableValueToSymbolVersion
   ) where
 
-import qualified Control.Exception as X
 import           Control.Monad ( guard )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
@@ -34,7 +33,6 @@ import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Memory.LoadCommon as DMML
 import qualified What4.FunctionName as WF
 
-import qualified Ambient.Exception as AE
 import qualified Ambient.Loader.Versioning as ALV
 import qualified Ambient.Panic as AP
 
@@ -42,8 +40,11 @@ import qualified Ambient.Panic as AP
 -- its address. (See 'isFuncSymbol' for a precise definition of
 -- \"dynamic function\".)
 --
--- This checks that each dynamic function's name is unique across all binaries,
--- and if not, this function will throw an exception.
+-- If multiple binaries define the same symbol, the symbol from the binary that
+-- appears first in the collection will be chosen over the symbol from the
+-- later binary. As a result, the order of the binaries in the collection will
+-- determine the lookup scope, as described in @Note [Dynamic lookup scope]@ in
+-- "Ambient.Loader.ELF.DynamicLoader".
 
 -- TODO: This check may be too strict in the presence of weak symbols. If this
 -- is the case, we should establish a load order and respect weak symbols, only
@@ -55,9 +56,8 @@ elfDynamicFuncSymbolMap ::
   , DMM.MemWidth w
   ) =>
   f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
-  IO (Map.Map ALV.VersionedFunctionName (DMM.MemWord w))
+  Map.Map ALV.VersionedFunctionName (DMM.MemWord w)
 elfDynamicFuncSymbolMap = elfDynamicSymbolMap
-  (\nm addr1 addr2 -> X.throwIO $ AE.DynamicFunctionNameClash nm addr1 addr2)
   symtabEntryFunctionName
   isFuncSymbol
 
@@ -91,6 +91,12 @@ isGlobalVar e
 
 -- | Given a collection of binaries, filter dynamic symbols by @filterFn@ and
 -- map the name of each symbol to its address.
+--
+-- If multiple binaries define the same symbol, the symbol from the binary that
+-- appears first in the collection will be chosen over the symbol from the
+-- later binary. As a result, the order of the binaries in the collection will
+-- determine the lookup scope, as described in @Note [Dynamic lookup scope]@ in
+-- "Ambient.Loader.ELF.DynamicLoader".
 elfDynamicSymbolMap ::
   forall f arch w symbol.
   ( Foldable f
@@ -98,10 +104,6 @@ elfDynamicSymbolMap ::
   , DMM.MemWidth w
   , Ord symbol
   ) =>
-  (ALV.VersionedSymbol symbol -> DMM.MemWord w -> DMM.MemWord w -> IO (DMM.MemWord w)) ->
-  -- ^ Function to run on collisions.  Takes the symbol name, and the two
-  -- addresses the symbol maps to and returns the address the symbol should map
-  -- to.
   (DE.SymtabEntry (BSC.ByteString) (DE.ElfWordType w) -> symbol) ->
   -- ^ Function to extract the symbol name from a SymtabEntry
   (DE.SymtabEntry (BSC.ByteString) (DE.ElfWordType w) -> Bool) ->
@@ -109,15 +111,19 @@ elfDynamicSymbolMap ::
   -- function returns True will be included in the returned map.
   f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
   -- ^ Binaries to build symbol map from
-  IO (Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w))
-elfDynamicSymbolMap onCollision getSymbol filterFn = F.foldlM addSymbols Map.empty
+  Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w)
+elfDynamicSymbolMap getSymbol filterFn = F.foldl' addSymbols Map.empty
   where
     addSymbols ::
       Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w) ->
       DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
-      IO (Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w))
+      Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w)
     addSymbols m loadedBinary =
-      F.foldlM insertM m binaryMap
+      -- We use a left-biased map union so that it will favor
+      -- already-encountered symbols over symbols that appear in later
+      -- binaries. This is what implements the lookup scope scheme described in
+      -- Note [Dynamic lookup scope] in Ambient.Loader.ELF.DynamicLoader.
+      Map.unionWith (\sym1 _sym2 -> sym1) m (Map.fromList binaryMap)
       where
         elfHeaderInfo = DMB.originalBinary loadedBinary
         offset = fromMaybe 0 $ DMML.loadOffset $ DMB.loadOptions loadedBinary
@@ -132,13 +138,15 @@ elfDynamicSymbolMap onCollision getSymbol filterFn = F.foldlM addSymbols Map.emp
                     , filterFn ste
                     ]
 
-        insertM mp (k, insertVal) =
-          case Map.lookup k mp of
-            Just existingVal -> do
-              newVal <- onCollision k insertVal existingVal
-              return $ Map.insert k newVal mp
-            Nothing -> return $ Map.insert k insertVal mp
-
+-- | Given a collection of binaries, map the name of each dynamic global
+-- variable to its address. (See 'isGlobalVar' for a precise definition of
+-- \"global variable\".)
+--
+-- If multiple binaries define the same symbol, the symbol from the binary that
+-- appears first in the collection will be chosen over the symbol from the
+-- later binary. As a result, the order of the binaries in the collection will
+-- determine the lookup scope, as described in @Note [Dynamic lookup scope]@ in
+-- "Ambient.Loader.ELF.DynamicLoader".
 elfDynamicGlobalSymbolMap ::
   forall f arch w.
   ( Foldable f
@@ -146,9 +154,8 @@ elfDynamicGlobalSymbolMap ::
   , DMM.MemWidth w
   ) =>
   f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
-  IO (Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w))
+  Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
 elfDynamicGlobalSymbolMap = elfDynamicSymbolMap
-  (\nm addr1 addr2 -> X.throwIO $ AE.DynamicGlobalNameClash nm addr1 addr2)
   DE.steName
   isGlobalVar
 
