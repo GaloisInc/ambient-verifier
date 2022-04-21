@@ -8,9 +8,9 @@
  */
 
 int main(void) {
-  // On ARM the creation of a getpid function pointer has no effect on whether
-  // a stub for getpid is placed in .plt.got.  It is still placed in .plt.
-  pid_t (*g)() = &getpid;
+  // The PLT stubs for these functions will be placed in .plt.  Unlike the
+  // X86_64 tests, binding a function pointer to these will not result in the
+  // stubs being placed in .plt.got.
   pid_t pid = getpid();
   pid_t ppid = getppid();
 

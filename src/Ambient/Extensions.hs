@@ -1,9 +1,13 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- | Defines verifier-specific extensions for Macaw's simulation functionality.
 module Ambient.Extensions
@@ -23,7 +27,9 @@ module Ambient.Extensions
   ) where
 
 import           Control.Lens ( Lens', (^.), lens, (&), (+~))
+import qualified Control.Exception as X
 import qualified Data.Aeson as DA
+import qualified Data.BitVector.Sized as BV
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe, isNothing )
 import qualified Data.Parameterized.Map as MapF
@@ -44,6 +50,7 @@ import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
 
+import qualified Ambient.Exception as AE
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Syscall as ASy
 import qualified Ambient.Verifier.Concretize as AVC
@@ -56,50 +63,59 @@ ambientExtensions ::
      , WPO.OnlineSolver solver
      , LCLM.HasLLVMAnn sym
      , ?memOpts :: LCLM.MemOptions
+     , w ~ DMC.ArchAddrWidth arch
+     , DMM.MemWidth w
      )
   => bak
   -> DMS.MacawArchEvalFn (AmbientSimulatorState sym arch) sym LCLM.Mem arch
   -> LCS.GlobalVar LCLM.Mem
-  -> DMS.GlobalMap sym LCLM.Mem (DMC.ArchAddrWidth arch)
+  -> DMS.GlobalMap sym LCLM.Mem w
   -> DMS.LookupFunctionHandle (AmbientSimulatorState sym arch) sym arch
   -- ^ A function to translate virtual addresses into function handles
   -- dynamically during symbolic execution
   -> DMS.LookupSyscallHandle (AmbientSimulatorState sym arch) sym arch
   -- ^ A function to examine the machine state to determine which system call
   -- should be invoked; returns the function handle to invoke
-  -> DMS.MkGlobalPointerValidityAssertion sym (DMC.ArchAddrWidth arch)
+  -> DMS.MkGlobalPointerValidityAssertion sym w
   -- ^ A function to make memory validity predicates
+  -> Map.Map (DMM.MemWord w) String
+  -- ^ Mapping from unsupported relocation addresses to the names of the
+  -- unsupported relocation types.
   -> LCSE.ExtensionImpl (AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)
-ambientExtensions bak f mvar globs lookupH lookupSyscall toMemPred =
+ambientExtensions bak f mvar globs lookupH lookupSyscall toMemPred unsupportedRelocs =
   (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred)
-    { LCSE.extensionExec = execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred
+    { LCSE.extensionExec = execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred unsupportedRelocs
     }
 
 -- | This evaluates a Macaw statement extension in the simulator.
-execAmbientStmtExtension :: forall sym scope st fs bak solver arch p.
+execAmbientStmtExtension :: forall sym scope st fs bak solver arch p w.
      ( LCB.IsSymInterface sym
      , sym ~ WE.ExprBuilder scope st fs
      , bak ~ LCBO.OnlineBackend solver scope st fs
      , WPO.OnlineSolver solver
      , LCLM.HasLLVMAnn sym
      , p ~ AmbientSimulatorState sym arch
+     , w ~ DMC.ArchAddrWidth arch
      , ?memOpts :: LCLM.MemOptions
+     , DMM.MemWidth w
      )
   => bak
   -> DMS.MacawArchEvalFn p sym LCLM.Mem arch
   -> LCS.GlobalVar LCLM.Mem
-  -> DMS.GlobalMap sym LCLM.Mem (DMC.ArchAddrWidth arch)
+  -> DMS.GlobalMap sym LCLM.Mem w
   -> DMS.LookupFunctionHandle p sym arch
   -- ^ A function to turn machine addresses into Crucible function
   -- handles (which can also perform lazy CFG creation)
   -> DMS.LookupSyscallHandle p sym arch
   -- ^ A function to examine the machine state to determine which system call
   -- should be invoked; returns the function handle to invoke
-  -> DMS.MkGlobalPointerValidityAssertion sym (DMC.ArchAddrWidth arch)
+  -> DMS.MkGlobalPointerValidityAssertion sym w
   -- ^ A function to make memory validity predicates
+  -> Map.Map (DMM.MemWord w) String
+  -- ^ Mapping from unsupported relocation addresses to the names of the
+  -- unsupported relocation types.
   -> DMSB.MacawEvalStmtFunc (DMS.MacawStmtExtension arch) p sym (DMS.MacawExt arch)
-execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st =
-  let sym = LCB.backendGetSym bak in
+execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred unsupportedRelocs s0 st =
   -- NB: Most of this code is copied directly from the 'execMacawStmtExtension'
   -- function in macaw-symbolic. One notable difference is the use of
   -- 'AVC.resolveSingletonPointer' to attempt to concrete the pointer being
@@ -110,6 +126,7 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st 
       mem <- DMSMO.getMem st mvar
       ptr1 <- DMSMO.tryGlobPtr bak mem globs (LCS.regValue ptr0)
       (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
+      assertRelocSupported ptr2
       let puse = DMS.PointerUse (st ^. LCSE.stateLocation) DMS.PointerRead
       mGlobalPtrValid <- toMemPred sym puse Nothing ptr0
       case mGlobalPtrValid of
@@ -122,6 +139,7 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st 
       mem <- DMSMO.getMem st mvar
       ptr1 <- DMSMO.tryGlobPtr bak mem globs (LCS.regValue ptr0)
       (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
+      assertRelocSupported ptr2
       let puse = DMS.PointerUse (st ^. LCSE.stateLocation) DMS.PointerRead
       mGlobalPtrValid <- toMemPred sym puse (Just cond) ptr0
       case mGlobalPtrValid of
@@ -161,6 +179,8 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st 
                                         . overrideLookupFunctionHandle ) in
       LCSE.extensionExec (DMS.macawExtensions f mvar globs lookupFnH lookupSyscall toMemPred) s0 st
   where
+    sym = LCB.backendGetSym bak
+
     -- Update the metric tracking the number of symbolic bitvector bounds
     -- refined
     updateBoundsRefined :: AVC.ResolveSymBVEffect
@@ -203,6 +223,25 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred s0 st 
         DMC.PackedVecMemRepr _w vecMemRep ->
           -- Recursively look for symbolic values in vector
           any (readIsSymbolic vecMemRep) readVal
+
+    -- | Check whether a pointer points to a relocation address, and if so,
+    -- assert that the underlying relocation type is supported.  If not, throw
+    -- an UnsupportedRelocation exception.  This is a best effort attempt: if
+    -- the read is symbolic the check is skipped.
+    assertRelocSupported :: LCLM.LLVMPtr sym w -> IO ()
+    assertRelocSupported (LCLM.LLVMPointer _base offset) =
+      case WI.asBV offset of
+        Nothing ->
+          -- Symbolic read.  Cannot check whether this is an unsupported
+          -- relocation.
+          return ()
+        Just bv -> do
+          -- Check whether this read is from an unsupported relocation type.
+          let addr = DMM.memWord (fromIntegral (BV.asUnsigned bv))
+          case Map.lookup addr unsupportedRelocs of
+            Just relTypeName ->
+              X.throwIO $ AE.UnsupportedRelocation relTypeName
+            Nothing -> return ()
 
 -- | Statistics gathered during simulation
 data AmbientSimulationStats = AmbientSimulationStats

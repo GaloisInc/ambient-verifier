@@ -24,7 +24,7 @@ import qualified Data.Macaw.Memory.LoadCommon as MML
 
 import qualified Ambient.ABI as AA
 import qualified Ambient.Exception as AE
-import qualified Ambient.Loader.ELF.FunctionSymbols as ALEF
+import qualified Ambient.Loader.ELF.Symbols as ALES
 import qualified Ambient.Loader.Versioning as ALV
 
 -- | A wrapper type to make it easier to extract both Rel and Rela entries
@@ -88,8 +88,8 @@ pltStubSymbols abi _ loadedBinaries = Map.fromList $ foldl' go [] loadedBinaries
 
     pltStubAddress dynSec vam vdefm vreqm getRelSymIdx accum rel
       | Right (symtabEntry, versionedVal) <- DEP.dynSymEntry dynSec vam vdefm vreqm (getRelSymIdx rel) =
-          let versym = ALV.VerSym { ALV.versymSymbol = ALEF.symtabEntryFunctionName symtabEntry
-                                  , ALV.versymVersion = ALEF.versionTableValueToSymbolVersion versionedVal
+          let versym = ALV.VerSym { ALV.versymSymbol = ALES.symtabEntryFunctionName symtabEntry
+                                  , ALV.versymVersion = ALES.versionTableValueToSymbolVersion versionedVal
                                   } in
           versym : accum
       | otherwise = accum

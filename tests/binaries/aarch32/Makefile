@@ -86,6 +86,18 @@ so-static-function/libgetone-static-function.so: so-static-function/getone-stati
 so-static-function/so-static-function.exe: so-static-function/so-static-function.c so-static-function/libgetone-static-function.so ambient_assert.o
 	$(CC) -nostdlib -Lso-static-function/ -I./ so-static-function/so-static-function.c ambient_assert.o -lgetone-static-function -o $@
 
+relocations/reexport.o: relocations/reexport.c relocations/reexport.h
+	$(CC) -nostdlib -c $< -o $@
+
+relocations/libreexport.so: relocations/reexport.o relocations/libexport.so
+	$(CC) -nostdlib -Lrelocations/ -shared $< -lexport -o $@
+
+relocations/libexport.so: relocations/export.c
+	$(CC) -nostdlib -shared $< -o $@
+
+relocations/relocations.exe: relocations/relocations.c relocations/libreexport.so relocations/libexport.so
+	$(CC) -nostdlib -Lrelocations/ -I./ relocations/relocations.c ambient_assert.o -lexport -lreexport -o $@
+
 server-inet.exe: server-inet.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 

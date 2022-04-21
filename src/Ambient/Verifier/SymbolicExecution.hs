@@ -26,6 +26,7 @@ import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
+import           Data.Maybe ( fromMaybe )
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.List as PL
 import qualified Data.Parameterized.Map as MapF
@@ -700,11 +701,46 @@ data InitialMemory sym w =
                -- it is only used for initializing the macaw extension
                 }
 
-globalMemoryHooks :: DMSM.GlobalMemoryHooks w
-globalMemoryHooks = DMSM.GlobalMemoryHooks {
-    -- For now, do nothing
-    DMSM.populateRelocation = \_ _ -> return []
+globalMemoryHooks :: forall w
+                   . ( DMM.MemWidth w )
+                  => Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
+                  -- ^ Mapping from shared library global variables to their
+                  -- addresses
+                  -> DMSM.GlobalMemoryHooks w
+globalMemoryHooks globals = DMSM.GlobalMemoryHooks {
+    DMSM.populateRelocation = \bak reloc -> do
+      -- This function populates relocation types we support with the
+      -- appropriate address from 'globals'.  It populates all other
+      -- relocations with symbolic bytes.
+      let sym = LCB.backendGetSym bak
+      case DMM.relocationSym reloc of
+        DMM.SymbolRelocation name version ->
+          case Map.lookup (ALV.VerSym name version) globals of
+            Just addr -> do
+              let bv = BVS.mkBV (DMM.memWidthNatRepr @w) (fromIntegral addr)
+              let bytesLE = fromMaybe
+                    (AP.panic AP.SymbolicExecution
+                              "globalMemoryHooks"
+                              ["Failed to split bitvector into bytes"])
+                    (BVS.asBytesLE (DMM.memWidthNatRepr @w) bv)
+              mapM ( WI.bvLit sym (WI.knownNat @8)
+                   . BVS.mkBV (WI.knownNat @8)
+                   . fromIntegral )
+                   bytesLE
+            Nothing -> symbolicRelocation sym reloc (Just (show name))
+        _ -> symbolicRelocation sym reloc Nothing
   }
+  where
+    -- Build a symbolic relocation value for 'reloc'.  We use this for
+    -- relocation types we don't yet support.
+    symbolicRelocation sym reloc mName = do
+      let name = (fromMaybe "unknown" mName) ++ "-reloc"
+      mapM (symbolicByte sym name) [1..(DMM.relocationSize reloc)]
+
+    -- Construct a symbolic byte.
+    symbolicByte sym name idx = do
+      let symbol = WI.safeSymbol $ name ++ "-byte" ++ show (idx-1)
+      WI.freshConstant sym symbol WI.knownRepr
 
 initializeMemory
   :: forall sym bak arch w p ext m t st fs
@@ -725,14 +761,16 @@ initializeMemory
   -- ^ Function to initialize special global variables needed for 'arch'
   -> [ AF.SomeFunctionOverride p sym ext ]
   -- ^ A list of additional function overrides to register.
+  -> Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
+  -- ^ Mapping from shared library global variables to their addresses
   -> m ( InitialMemory sym w )
-initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobals) functionOvs = do
+initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobals) functionOvs globals = do
   let sym = LCB.backendGetSym bak
 
   -- Initialize memory
   let endianness = DMSM.toCrucibleEndian (DMA.archEndianness archInfo)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  (initMem, memPtrTbl) <- liftIO $ DMSM.newMergedGlobalMemoryWith globalMemoryHooks (Proxy @arch) bak endianness DMSM.ConcreteMutable mems
+  (initMem, memPtrTbl) <- liftIO $ DMSM.newMergedGlobalMemoryWith (globalMemoryHooks globals) (Proxy @arch) bak endianness DMSM.ConcreteMutable mems
   let validityCheck = DMSM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = DMSM.mapRegionPointers memPtrTbl
 
@@ -971,7 +1009,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction logAction bak archVals binConf functionABI halloc archInfo) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem)
+    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction logAction bak archVals binConf functionABI halloc archInfo) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem) (ALB.bcUnsuportedRelocations binConf)
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
                                        LCF.emptyHandleMap
@@ -1051,5 +1089,6 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures e
                                  mems
                                  initGlobals
                                  (fcFunctionOverrides fnConf)
+                                 (ALB.bcGlobalVarAddrs binConf)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
   simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs

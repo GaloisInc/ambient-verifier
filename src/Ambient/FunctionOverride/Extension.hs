@@ -199,6 +199,7 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
                                           (NEV.singleton mem)
                                           noopInitGlobals
                                           []
+                                          Map.empty
           let ?recordLLVMAnnotation = \_ _ _ -> return ()
           DMS.withArchEval archVals sym $ \archEvalFn -> do
             let fnLookup = DMS.unsupportedFunctionCalls "Ambient override tests"
@@ -210,6 +211,7 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
                                                  fnLookup
                                                  syscallLookup
                                                  (AVS.imValidityCheck initMem)
+                                                 Map.empty
             let ctx = LCS.initSimContext bak
                                          LCLI.llvmIntrinsicTypes
                                          halloc

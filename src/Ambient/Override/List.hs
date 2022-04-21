@@ -55,7 +55,7 @@ listOverrides logAction pinst = do
         Nothing -> return []
       let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
       let ?memOpts = LCLM.defaultMemOptions
-      initialMem <- AVS.initializeMemory bak hdlAlloc archInfo mems buildGlobals functionOvs
+      initialMem <- AVS.initializeMemory bak hdlAlloc archInfo mems buildGlobals functionOvs Map.empty
       fileContents <- liftIO $
         case AV.piFsRoot pinst of
           Nothing -> return LCSy.emptyInitialFileSystemContents

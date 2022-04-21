@@ -1,12 +1,14 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
--- | Various utilities for looking up function symbols in ELF binaries.
-module Ambient.Loader.ELF.FunctionSymbols
+-- | Various utilities for looking up symbols in ELF binaries.
+module Ambient.Loader.ELF.Symbols
   ( elfDynamicFuncSymbolMap
   , elfEntryPointAddrMap
   , elfEntryPointSymbolMap
+  , elfDynamicGlobalSymbolMap
   , symtabEntryFunctionName
   , versionTableValueToSymbolVersion
   ) where
@@ -53,32 +55,24 @@ elfDynamicFuncSymbolMap ::
   , DMM.MemWidth w
   ) =>
   f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
-  Map.Map ALV.VersionedFunctionName (DMM.MemWord w)
-elfDynamicFuncSymbolMap = F.foldl' addFuncs Map.empty
-  where
-    addFuncs ::
-      Map.Map ALV.VersionedFunctionName (DMM.MemWord w) ->
-      DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
-      Map.Map ALV.VersionedFunctionName (DMM.MemWord w)
-    addFuncs m loadedBinary =
-      Map.unionWithKey
-        (\nm addr1 addr2 -> X.throw $ AE.DynamicFunctionNameClash nm addr1 addr2)
-        m (Map.fromList binaryMap)
-      where
-        elfHeaderInfo = DMB.originalBinary loadedBinary
-        offset = fromMaybe 0 $ DMML.loadOffset $ DMB.loadOptions loadedBinary
+  IO (Map.Map ALV.VersionedFunctionName (DMM.MemWord w))
+elfDynamicFuncSymbolMap = elfDynamicSymbolMap
+  (\nm addr1 addr2 -> X.throwIO $ AE.DynamicFunctionNameClash nm addr1 addr2)
+  symtabEntryFunctionName
+  isFuncSymbol
 
-        dynSymbolTable = concatMap DV.toList $ elfResolveDynamicSymbolVersions elfHeaderInfo
-        binaryMap = DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
-                    [ ( fmap symtabEntryFunctionName versym
-                      , fromIntegral (DE.steValue ste) + fromIntegral offset
-                      )
-                    | versym <- dynSymbolTable
-                    , let ste = ALV.versymSymbol versym
-                    , isFuncSymbol ste
-                    ]
+-- | Return true if this symbol table entry corresponds to a
+-- globally defined symbol.
+--
+-- Taken from reopt (https://github.com/GaloisInc/reopt), which is licensed
+-- under the 3-Clause BSD license.
+isGlobalSymbol :: DE.SymtabEntry nm w -> Bool
+isGlobalSymbol e
+  =  DE.steBind  e == DE.STB_GLOBAL
+  && DE.steIndex e /= DE.SHN_UNDEF
+  && DE.steIndex e <  DE.SHN_LORESERVE
 
--- | Return true if this symbol table entry appears corresponds to a
+-- | Return true if this symbol table entry corresponds to a
 -- globally defined function.
 --
 -- Taken from reopt (https://github.com/GaloisInc/reopt), which is licensed
@@ -86,9 +80,77 @@ elfDynamicFuncSymbolMap = F.foldl' addFuncs Map.empty
 isFuncSymbol :: DE.SymtabEntry nm w -> Bool
 isFuncSymbol e
   =  DE.steType  e == DE.STT_FUNC
-  && DE.steBind  e == DE.STB_GLOBAL
-  && DE.steIndex e /= DE.SHN_UNDEF
-  && DE.steIndex e <  DE.SHN_LORESERVE
+  && isGlobalSymbol e
+
+-- | Return true if this symbol table entry corresponds to a
+-- globally defined variable.
+isGlobalVar :: DE.SymtabEntry nm w -> Bool
+isGlobalVar e
+  =  DE.steType  e == DE.STT_OBJECT
+  && isGlobalSymbol e
+
+-- | Given a collection of binaries, filter dynamic symbols by @filterFn@ and
+-- map the name of each symbol to its address.
+elfDynamicSymbolMap ::
+  forall f arch w symbol.
+  ( Foldable f
+  , w ~ DMC.ArchAddrWidth arch
+  , DMM.MemWidth w
+  , Ord symbol
+  ) =>
+  (ALV.VersionedSymbol symbol -> DMM.MemWord w -> DMM.MemWord w -> IO (DMM.MemWord w)) ->
+  -- ^ Function to run on collisions.  Takes the symbol name, and the two
+  -- addresses the symbol maps to and returns the address the symbol should map
+  -- to.
+  (DE.SymtabEntry (BSC.ByteString) (DE.ElfWordType w) -> symbol) ->
+  -- ^ Function to extract the symbol name from a SymtabEntry
+  (DE.SymtabEntry (BSC.ByteString) (DE.ElfWordType w) -> Bool) ->
+  -- ^ Filter function over SymtabEntries.  Only symbols for which this
+  -- function returns True will be included in the returned map.
+  f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
+  -- ^ Binaries to build symbol map from
+  IO (Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w))
+elfDynamicSymbolMap onCollision getSymbol filterFn = F.foldlM addSymbols Map.empty
+  where
+    addSymbols ::
+      Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w) ->
+      DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
+      IO (Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w))
+    addSymbols m loadedBinary =
+      F.foldlM insertM m binaryMap
+      where
+        elfHeaderInfo = DMB.originalBinary loadedBinary
+        offset = fromMaybe 0 $ DMML.loadOffset $ DMB.loadOptions loadedBinary
+
+        dynSymbolTable = concatMap DV.toList $ elfResolveDynamicSymbolVersions elfHeaderInfo
+        binaryMap = DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
+                    [ ( fmap getSymbol versym
+                      , fromIntegral (DE.steValue ste) + fromIntegral offset
+                      )
+                    | versym <- dynSymbolTable
+                    , let ste = ALV.versymSymbol versym
+                    , filterFn ste
+                    ]
+
+        insertM mp (k, insertVal) =
+          case Map.lookup k mp of
+            Just existingVal -> do
+              newVal <- onCollision k insertVal existingVal
+              return $ Map.insert k newVal mp
+            Nothing -> return $ Map.insert k insertVal mp
+
+elfDynamicGlobalSymbolMap ::
+  forall f arch w.
+  ( Foldable f
+  , w ~ DMC.ArchAddrWidth arch
+  , DMM.MemWidth w
+  ) =>
+  f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
+  IO (Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w))
+elfDynamicGlobalSymbolMap = elfDynamicSymbolMap
+  (\nm addr1 addr2 -> X.throwIO $ AE.DynamicGlobalNameClash nm addr1 addr2)
+  DE.steName
+  isGlobalVar
 
 -- | Given a binary, map the resolved address offset of each entry point
 -- function to its name. This includes entry points in both the static and

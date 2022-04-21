@@ -86,6 +86,13 @@ data AmbientException where
   NamedEntryPointAddrLookupFailure :: WF.FunctionName -> AmbientException
   -- | Two different binaries define dynamic functions with the same name.
   DynamicFunctionNameClash :: DMM.MemWidth w => ALV.VersionedFunctionName -> DMM.MemWord w -> DMM.MemWord w -> AmbientException
+  -- | Two different binaries define dynamic global variables with the same name.
+  DynamicGlobalNameClash :: DMM.MemWidth w => ALV.VersionedGlobalVarName -> DMM.MemWord w -> DMM.MemWord w -> AmbientException
+  -- | An aarch32 binary contains a .rela.dyn section
+  Aarch32RelaDynUnsupported :: AmbientException
+  -- | Simulation encountered a read from an unsupported relocation type.  The
+  -- argument is the name of the relocation type.
+  UnsupportedRelocation :: String -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -204,3 +211,15 @@ instance PP.Pretty AmbientException where
                 , PP.pretty "- Address 1" <> PP.colon PP.<+> PP.pretty addr1
                 , PP.pretty "- Address 2" <> PP.colon PP.<+> PP.pretty addr2
                 ]
+      DynamicGlobalNameClash globalName addr1 addr2 ->
+        PP.vcat [ PP.pretty "Multiple binaries define global variables named"
+                    PP.<+> PP.squotes (PP.viaShow globalName)
+                , PP.pretty "- Address 1" <> PP.colon PP.<+> PP.pretty addr1
+                , PP.pretty "- Address 2" <> PP.colon PP.<+> PP.pretty addr2
+                ]
+      Aarch32RelaDynUnsupported ->
+        PP.pretty "AArch32 binaries containing .rela.dyn sections are not currently supported"
+      UnsupportedRelocation relTypeName ->
+        PP.pretty "Simulation encountered a read from an unsupported relocation type: " <> PP.pretty relTypeName
+
+

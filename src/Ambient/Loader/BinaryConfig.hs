@@ -45,6 +45,20 @@ data BinaryConfig arch binFmt = BinaryConfig {
   -- their corresponding function names. See @Note [PLT Stub Names]@ in
   -- "Ambient.ELF.Loader.PLTStubDetector".
 
+  , bcGlobalVarAddrs :: Map.Map ALV.VersionedGlobalVarName (DMM.MemWord (DMC.ArchAddrWidth arch))
+  -- ^ Maps the names of exported global variables in each binary to their
+  -- addresses.  This is used to compute relocations in dynamically linked
+  -- programs.
+
+  , bcUnsuportedRelocations :: Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) String
+  -- ^ A mapping of unsupported relocations.  Maps addresses to the names of
+  -- unsupported relocation types.  This allows the verifier to simulate
+  -- programs containing unsupported relocation types and throw an error only
+  -- if one of those relocations is read from.  This is a mapping to strings
+  -- instead of relocation types because holding relocations in this map
+  -- introduces IsRelocationType constraints that are difficult to fulfill
+  -- when a function takes this underlying map but no binaries are loaded
+  -- (such as when running crucible syntax override tests).
   }
 
 -- | A loaded binary, along with the file path from which it was loaded and

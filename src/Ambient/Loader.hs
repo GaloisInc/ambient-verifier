@@ -16,6 +16,7 @@ import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.List.NonEmpty as NEL
+import qualified Data.Map.Strict as Map
 import           Data.Parameterized.Some ( Some(..) )
 import           Data.Proxy ( Proxy(..) )
 import qualified Data.Text as DT
@@ -54,9 +55,11 @@ import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.X86_64.Linux as AFXL
 import qualified Ambient.FunctionOverride.AArch32.Linux as AFAL
 import qualified Ambient.Loader.BinaryConfig as ALB
-import qualified Ambient.Loader.ELF.FunctionSymbols as ALEF
+import qualified Ambient.Loader.ELF.Symbols as ALES
+import qualified Ambient.Loader.ELF.Symbols.AArch32 as ALESA
 import qualified Ambient.Loader.ELF.PLTStubDetector as ALEP
 import qualified Ambient.Loader.LoadOptions as ALL
+import qualified Ambient.Loader.Versioning as ALV
 import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.AArch32.Linux as AMAL
 import qualified Ambient.Memory.X86_64.Linux as AMXL
@@ -85,7 +88,8 @@ readSharedObjects dir = do
 -- want to change that in the future (either to another fixed value or to make
 -- it configurable)
 withBinary
-  :: ( CMC.MonadThrow m
+  :: forall m sym a
+   . ( CMC.MonadThrow m
      , MonadIO m
      )
   => FilePath
@@ -146,9 +150,15 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
           case mArchVals of
             Just archVals -> do
               bins <- loadBinaries options ehi hdrMachine hdrClass sharedObjectBytes
-              let binConf = mkElfBinConf AA.X86_64Linux
-                               (Proxy @DE.X86_64_RelocationType)
-                               soFilePaths bins
+              binConf <- mkElfBinConf AA.X86_64Linux
+                                      (Proxy @DE.X86_64_RelocationType)
+                                      soFilePaths bins
+                                      -- NOTE: We do not currently support
+                                      -- relocations on X86 so we pass in empty
+                                      -- maps for the relocation structures
+                                      -- (see ticket #98).
+                                      Map.empty
+                                      Map.empty
               -- Here we capture all of the necessary constraints required by the
               -- callback and pass them down along with the architecture info
               k DMX.x86_64_linux_info
@@ -170,9 +180,13 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
           case DMS.archVals (Proxy @Macaw.AArch32.ARM) (Just extOverride) of
             Just archVals -> do
               bins <- loadBinaries options ehi hdrMachine hdrClass sharedObjectBytes
-              let binConf = mkElfBinConf AA.AArch32Linux
-                                         (Proxy @DE.ARM32_RelocationType)
-                                         soFilePaths bins
+              unsupportedRels <- liftIO $ ALESA.elfAarch32UnsupportedRels bins
+              dynGlobSymMap <- liftIO $ ALES.elfDynamicGlobalSymbolMap bins
+              binConf <- mkElfBinConf AA.AArch32Linux
+                                      (Proxy @DE.ARM32_RelocationType)
+                                      soFilePaths bins
+                                      dynGlobSymMap
+                                      unsupportedRels
               k Macaw.AArch32.arm_linux_info
                 archVals
                 ASAL.aarch32LinuxSyscallABI
@@ -187,15 +201,22 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
     Left _ -> throwDecodeFailure name bytes
   where
     -- Load the main binary and any shared objects
+    loadBinaries
+      :: (DMB.BinaryLoader arch (DE.ElfHeaderInfo w))
+      => MML.LoadOptions
+      -> DE.ElfHeaderInfo w
+      -> DE.ElfMachine
+      -> DE.ElfClass w
+      -> [(FilePath, BS.ByteString)]
+      -> m (NEV.NonEmptyVector (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)))
     loadBinaries options ehi hdrMachine hdrClass sharedObjectBytes = do
       lb <- DMB.loadBinary options ehi
       sos <- DTW.itraverse (loadSharedObject hdrMachine hdrClass)
                            sharedObjectBytes
       pure $ NEV.fromNonEmpty $ lb NEL.:| sos
 
-    loadSharedObject :: forall arch m w
-                      . ( DMB.BinaryLoader arch (DE.ElfHeaderInfo w)
-                        , CMC.MonadThrow m )
+    loadSharedObject :: forall arch w
+                      . ( DMB.BinaryLoader arch (DE.ElfHeaderInfo w) )
                      => DE.ElfMachine
                      -> DE.ElfClass w
                      -> Int
@@ -234,23 +255,31 @@ withBinary name bytes sharedObjectDir hdlAlloc _sym k = do
       -- ^ The paths of the loaded shared libraries
       NEV.NonEmptyVector (DMB.LoadedBinary arch binFmt) ->
       -- ^ All loaded binaries, including shared libraries
-      ALB.BinaryConfig arch binFmt
-    mkElfBinConf abi proxyReloc soFilePaths bins =
+      Map.Map ALV.VersionedGlobalVarName (DMM.MemWord (DMC.ArchAddrWidth arch)) ->
+      -- ^ Mapping from exported global variable names to addresses
+      Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) String ->
+      -- ^ Unsupported relocations.  Mapping from addresses to names of
+      -- unsupported relocation types.
+      m (ALB.BinaryConfig arch binFmt)
+    mkElfBinConf abi proxyReloc soFilePaths bins globals unsupportedRels = do
       let loadedBinaryPaths =
             NEV.zipWith
               (\bin path ->
                 ALB.LoadedBinaryPath
                   { ALB.lbpBinary = bin
                   , ALB.lbpPath = path
-                  , ALB.lbpEntryPoints = ALEF.elfEntryPointAddrMap bin
+                  , ALB.lbpEntryPoints = ALES.elfEntryPointAddrMap bin
                   })
               bins
-              (NEV.fromNonEmpty (name NEL.:| soFilePaths)) in
-      ALB.BinaryConfig
+              (NEV.fromNonEmpty (name NEL.:| soFilePaths))
+      dynFuncSymMap <- liftIO $ ALES.elfDynamicFuncSymbolMap bins
+      return ALB.BinaryConfig
         { ALB.bcBinaries = loadedBinaryPaths
-        , ALB.bcMainBinarySymbolMap = ALEF.elfEntryPointSymbolMap (NEV.head bins)
-        , ALB.bcDynamicFuncSymbolMap = ALEF.elfDynamicFuncSymbolMap bins
+        , ALB.bcMainBinarySymbolMap = ALES.elfEntryPointSymbolMap (NEV.head bins)
+        , ALB.bcDynamicFuncSymbolMap = dynFuncSymMap
         , ALB.bcPltStubs = ALEP.pltStubSymbols abi proxyReloc bins
+        , ALB.bcGlobalVarAddrs = globals
+        , ALB.bcUnsuportedRelocations = unsupportedRels
         }
 
     throwDecodeFailure elfName elfBytes =

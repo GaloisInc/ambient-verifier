@@ -6,7 +6,8 @@ module Ambient.Panic (
 
 import qualified Panic as P
 
-data Component = FunctionOverride
+data Component = Extensions
+               | FunctionOverride
                | Memory
                | Loader
                | Override

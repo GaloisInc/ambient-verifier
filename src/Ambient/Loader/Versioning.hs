@@ -3,6 +3,7 @@
 module Ambient.Loader.Versioning
   ( VersionedSymbol(..)
   , VersionedFunctionName
+  , VersionedGlobalVarName
   , eqVersionedSymbolStrict
   , compareVersionedSymbolStrict
   , takeSymbolVersionFileName
@@ -57,6 +58,9 @@ instance PP.Pretty sym => PP.Pretty (VersionedSymbol sym) where
 -- | A versioned 'WF.FunctionName'. This is a common enough instantiation of
 -- 'VersionedSymbol' that we define a specific alias for it.
 type VersionedFunctionName = VersionedSymbol WF.FunctionName
+
+-- | A versioned 'BSC.ByteString' representing a global variable.
+type VersionedGlobalVarName = VersionedSymbol BSC.ByteString
 
 -- | This behaves like the 'Eq' instance for 'VersionedSymbol', except that two
 -- 'BinSym.VersionedSymbol's are considered distinct if they have different
