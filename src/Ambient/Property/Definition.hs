@@ -46,8 +46,8 @@ type instance StateName StateID = StateID
 data Transition where
   -- | The program being verified enters the weird machine at the given address
   EnterWeirdMachine :: Word64 -> Transition
-  -- | The program being verified issues an @execve@ system call (which is currently assumed to succeed)
-  IssuesExecveSyscall :: Transition
+  -- | The program being verified issues the named system call
+  IssuesSyscall :: T.Text -> Transition
 
 deriving instance Show Transition
 
@@ -199,6 +199,12 @@ spaceConsumer = TMCL.space TMC.space1 empty empty
 symbol :: TM.Tokens T.Text -> Parser T.Text
 symbol = TMCL.symbol spaceConsumer
 
+identifier :: Parser T.Text
+identifier = do
+  c1 <- TMC.letterChar
+  cs <- TM.many TMC.alphaNumChar
+  return (T.pack (c1 : cs))
+
 parens :: Parser a -> Parser a
 parens = TM.between (symbol "(") (symbol ")")
 
@@ -208,13 +214,14 @@ parseEnterWM = do
   addr <- parens (symbol "0x" >> TMCL.hexadecimal)
   return (EnterWeirdMachine addr)
 
-parseIssuesExcecveSyscall :: Parser Transition
-parseIssuesExcecveSyscall = do
-  _ <- symbol "IssuesExecveSyscall"
-  return IssuesExecveSyscall
+parseIssuesSyscall :: Parser Transition
+parseIssuesSyscall = do
+  _ <- symbol "IssuesSyscall"
+  name <- parens identifier
+  return (IssuesSyscall name)
 
 parseEventString :: Parser Transition
-parseEventString = TM.try parseEnterWM <|> parseIssuesExcecveSyscall
+parseEventString = TM.try parseEnterWM <|> parseIssuesSyscall
 
 parseEvent
   :: (CMC.MonadThrow m)

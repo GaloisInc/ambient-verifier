@@ -151,10 +151,14 @@ x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
                 , AS.syscallMapping = Map.fromList
                     [ (0, AS.SomeSyscall (ASO.buildReadOverride fs memVar))
                     , (1, AS.SomeSyscall (ASO.buildWriteOverride fs memVar))
-                    , (2, AS.SomeSyscall (ASO.buildOpenOverride fs memVar))
+                    , (2, AS.SomeSyscall (ASO.buildOpenOverride properties fs memVar))
                     , (3, AS.SomeSyscall (ASO.buildCloseOverride fs memVar))
                     , (59, AS.SomeSyscall (ASO.buildExecveOverride properties))
                     , (60, AS.SomeSyscall ASO.exitOverride)
+                    -- FIXME: This no-op override is for tracking purposes
+                    -- only.  It should be replaced with a more faithful
+                    -- override at some point.
+                    , (83, AS.SomeSyscall (ASO.buildNoOpMkdirOverride properties))
                     , (110, AS.SomeSyscall ASO.getppidOverride)
                     ]
                 }

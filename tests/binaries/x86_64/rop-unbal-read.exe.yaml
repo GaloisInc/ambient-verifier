@@ -15,7 +15,7 @@ statechart:
           The Weird Machine has been entered by clobbering the return address
         transitions:
           - target: DidExec
-            event: IssuesExecveSyscall
+            event: IssuesSyscall(execve)
       - name: DidExec
         description: |
           The ROP attack has completed

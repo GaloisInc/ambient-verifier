@@ -7,6 +7,7 @@
 module Ambient.Syscall.Overrides
   ( buildExecveOverride
   , callExecve
+  , buildNoOpMkdirOverride
   , exitOverride
   , callExit
   , getppidOverride
@@ -26,6 +27,7 @@ import qualified Data.BitVector.Sized as BVS
 import qualified Data.Foldable as F
 import qualified Data.Parameterized.Context as Ctx
 import           Data.String ( fromString )
+import qualified Data.Text as DT
 
 import           Data.Macaw.X86.Symbolic ()
 import qualified Lang.Crucible.Backend as LCB
@@ -41,10 +43,11 @@ import qualified Ambient.EventTrace as AE
 import qualified Ambient.Property.Definition as APD
 import           Ambient.Syscall
 
-matchCallExecveEvent :: APD.Transition -> Bool
-matchCallExecveEvent t =
+-- | Returns 'True' if the transition is for the named system call
+matchSyscallEvent :: DT.Text -> APD.Transition -> Bool
+matchSyscallEvent expected t =
   case t of
-    APD.IssuesExecveSyscall -> True
+    APD.IssuesSyscall name | name == expected -> True
     _ -> False
 
 -- | Override for the 'execve' system call.  Currently this override records
@@ -62,7 +65,7 @@ callExecve props bak = do
   let sym = LCB.backendGetSym bak
   F.forM_ (AE.properties props) $ \(prop, traceGlobal) -> do
     t0 <- LCS.readGlobal traceGlobal
-    t1 <- liftIO $ AE.recordEvent matchCallExecveEvent sym prop t0
+    t1 <- liftIO $ AE.recordEvent (matchSyscallEvent (DT.pack "execve")) sym prop t0
     LCS.writeGlobal traceGlobal t1
   loc <- liftIO $ WI.getCurrentProgramLoc sym
   liftIO $ LCB.abortExecBecause $ LCB.EarlyExit loc
@@ -247,12 +250,40 @@ buildWriteOverride fs memVar = Syscall {
       \bak args -> Ctx.uncurryAssignment (callWrite fs memVar bak) args
   }
 
+-- | A no-op override for the mkdir(2) system call.  This override ignores any
+-- arguments and always returns 0 for success.  It is intended to be used only
+-- to track invocations of mkdir syscalls.
+callNoOpMkdir :: ( LCB.IsSymBackend sym bak
+                 , LCLM.HasPtrWidth w )
+              => AE.Properties
+              -> bak
+              -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callNoOpMkdir props bak = do
+  let sym = LCB.backendGetSym bak
+  F.forM_ (AE.properties props) $ \(prop, traceGlobal) -> do
+    t0 <- LCS.readGlobal traceGlobal
+    t1 <- liftIO $ AE.recordEvent (matchSyscallEvent (DT.pack "mkdir")) sym prop t0
+    LCS.writeGlobal traceGlobal t1
+  zeroBv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.zero ?ptrWidth)
+  liftIO $ bvToPtr sym zeroBv ?ptrWidth
+
+buildNoOpMkdirOverride :: LCLM.HasPtrWidth w
+                    => AE.Properties
+                    -> Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
+buildNoOpMkdirOverride props = Syscall {
+    syscallName = fromString "mkdir"
+  , syscallArgTypes = Ctx.empty
+  , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
+  , syscallOverride = \bak _args -> callNoOpMkdir props bak
+}
+
 -- | Override for the open(2) system call
 callOpen :: ( LCLM.HasLLVMAnn sym
             , LCB.IsSymBackend sym bak
             , LCLM.HasPtrWidth w
             )
-         => LCLS.LLVMFileSystem w
+         => AE.Properties
+         -> LCLS.LLVMFileSystem w
          -> LCS.GlobalVar LCLM.Mem
          -> bak
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
@@ -260,11 +291,16 @@ callOpen :: ( LCLM.HasLLVMAnn sym
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ Flags to use when opening file
          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callOpen fs memVar bak pathname flags = do
+callOpen props fs memVar bak pathname flags = do
   let sym = LCB.backendGetSym bak
   let ?memOpts = overrideMemOptions
   -- Drop upper 32 bits from flags to create a 32 bit flags int
   flagsInt <- liftIO $ ptrToBv32 bak ?ptrWidth flags
+
+  F.forM_ (AE.properties props) $ \(prop, traceGlobal) -> do
+    t0 <- LCS.readGlobal traceGlobal
+    t1 <- liftIO $ AE.recordEvent (matchSyscallEvent (DT.pack "open")) sym prop t0
+    LCS.writeGlobal traceGlobal t1
 
   -- Use llvm override for open
   resBv <- LCLS.callOpenFile bak memVar fs pathname flagsInt
@@ -275,7 +311,8 @@ callOpen fs memVar bak pathname flags = do
 buildOpenOverride :: ( LCLM.HasLLVMAnn sym
                      , LCLM.HasPtrWidth w
                      )
-                  => LCLS.LLVMFileSystem w
+                  => AE.Properties
+                  -> LCLS.LLVMFileSystem w
                   -> LCS.GlobalVar LCLM.Mem
                   -> Syscall p
                             sym
@@ -283,13 +320,13 @@ buildOpenOverride :: ( LCLM.HasLLVMAnn sym
                                           Ctx.::> LCLM.LLVMPointerType w)
                             ext
                             (LCLM.LLVMPointerType w)
-buildOpenOverride fs memVar = Syscall {
+buildOpenOverride props fs memVar = Syscall {
     syscallName = fromString "open"
   , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
                                 Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
   , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
   , syscallOverride =
-      \bak args -> Ctx.uncurryAssignment (callOpen fs memVar bak) args
+      \bak args -> Ctx.uncurryAssignment (callOpen props fs memVar bak) args
   }
 
 -- | Override for the write(2) system call

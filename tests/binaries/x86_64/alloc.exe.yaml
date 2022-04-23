@@ -9,7 +9,7 @@ statechart:
           Execution before the out of bounds write
         transitions:
           - target: DidExec
-            event: IssuesExecveSyscall
+            event: IssuesSyscall(execve)
       - name: DidExec
         description: |
           Control flow compromised

@@ -1,5 +1,5 @@
 statechart:
-  name: ROP
+  name: ROPViaRead
   root state:
     name: Root
     initial: NormalExecution
@@ -14,8 +14,15 @@ statechart:
         description: |
           The Weird Machine has been entered by clobbering the return address
         transitions:
+          # Uncomment this transition to observe a policy violation failure
+          #
+          # - target: PolicyViolation
+          #   event: IssuesSyscall(mkdir)
           - target: DidExec
             event: IssuesSyscall(execve)
+      - name: PolicyViolation
+        description: |
+          Something in the payload caused the intended policy to be violated
       - name: DidExec
         description: |
           The ROP attack has completed

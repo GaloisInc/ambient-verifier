@@ -178,7 +178,7 @@ aarch32LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
                   [ (1, AS.SomeSyscall ASO.exitOverride)
                   , (3, AS.SomeSyscall (ASO.buildReadOverride fs memVar))
                   , (4, AS.SomeSyscall (ASO.buildWriteOverride fs memVar))
-                  , (5, AS.SomeSyscall (ASO.buildOpenOverride fs memVar))
+                  , (5, AS.SomeSyscall (ASO.buildOpenOverride properties fs memVar))
                   , (6, AS.SomeSyscall (ASO.buildCloseOverride fs memVar))
                   , (11, AS.SomeSyscall (ASO.buildExecveOverride properties))
                   , (64, AS.SomeSyscall ASO.getppidOverride)
