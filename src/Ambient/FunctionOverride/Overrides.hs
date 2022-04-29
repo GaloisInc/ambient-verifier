@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -17,6 +18,10 @@ module Ambient.FunctionOverride.Overrides
   , callMemcpy
   , buildMemsetOverride
   , callMemset
+  , buildShmgetOverride
+  , callShmget
+  , shmatOverride
+  , callShmat
     -- * Networking-related overrides
   , networkOverrides
   , buildAcceptOverride
@@ -38,7 +43,7 @@ module Ambient.FunctionOverride.Overrides
   , hackyBumpCalloc
   ) where
 
-import           Control.Lens ( (%=) )
+import           Control.Lens ( (%=), (.=), (+=), use )
 import qualified Control.Lens as Lens
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( liftIO )
@@ -66,6 +71,7 @@ import qualified What4.Protocol.Online as WPO
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import           Ambient.FunctionOverride
+import qualified Ambient.Memory.SharedMemory as AMS
 import           Ambient.Override
 import qualified Ambient.Panic as AP
 import qualified Ambient.Syscall.Overrides as ASO
@@ -214,6 +220,175 @@ callMemset bak mvar (LCS.regValue -> dest) val (LCS.regValue -> sz) =
      szBV <- LCLM.projectLLVM_bv bak sz
      mem' <- LCLM.doMemset bak w mem dest (LCS.regValue valBV) szBV
      pure ((), mem')
+
+-- | Override for the @shmat@ function.  This override only supports calls
+-- where @shmaddr@ is @NULL@.  That is, it doesn't support calls where the
+-- caller specifies which address the shared memory segment should be mapped
+-- to.  This override also ignores the @shmflg@ argument and always maps the
+-- memory as read/write.
+callShmat :: forall sym scope st fs w solver arch m p ext r args ret
+           . ( sym ~ WE.ExprBuilder scope st fs
+             , LCB.IsSymInterface sym
+             , LCLM.HasPtrWidth w
+             , LCLM.HasLLVMAnn sym
+             , WPO.OnlineSolver solver
+             , p ~ AExt.AmbientSimulatorState sym arch
+             , w ~ DMC.ArchAddrWidth arch
+             , m ~ LCS.OverrideSim p sym ext r args ret
+             )
+          => LCBO.OnlineBackend solver scope st fs
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+          -> m (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callShmat bak shmid shmaddr _shmflg = do
+  let sym = LCB.backendGetSym bak
+
+  -- Check that shmaddr is NULL.
+  nullCond <- liftIO $ LCLM.ptrIsNull sym ?ptrWidth (LCS.regValue shmaddr)
+  liftIO $ LCB.assert bak nullCond (LCS.AssertFailureSimError
+                                   "Call to shmat() with non-null shmaddr"
+                                   "")
+
+  -- Extract ID and lookup in shared memory state
+  (shmIdSymBv, resolveEffect) <- liftIO $
+        LCLM.projectLLVM_bv bak (LCS.regValue shmid)
+    >>= AVC.resolveSymBV bak ?ptrWidth
+  updateBoundsRefined resolveEffect
+  shmIdBv <- maybe (CMC.throwM AE.SymbolicSharedMemorySegmentId)
+                   pure
+                   (WI.asBV shmIdSymBv)
+
+  shmState <- use (LCS.stateContext . LCS.cruciblePersonality . AExt.sharedMemoryState)
+  let lookupId = AMS.SharedMemoryId $ BVS.asUnsigned shmIdBv
+  case AMS.sharedMemorySegmentAt lookupId shmState of
+    Nothing -> liftIO $ LCB.addFailedAssertion bak $
+       LCS.AssertFailureSimError ("Nonexistent shared memory ID: " ++ show lookupId)
+                                 ""
+    Just segment -> pure segment
+  where
+    -- Update the metric tracking the number of symbolic bitvector bounds
+    -- refined
+    updateBoundsRefined :: AVC.ResolveSymBVEffect -> m ()
+    updateBoundsRefined resolveEffect =
+      case resolveEffect of
+        AVC.Concretized -> pure ()
+        AVC.UnchangedBounds -> pure ()
+        AVC.RefinedBounds ->
+            LCS.stateContext
+          . LCS.cruciblePersonality
+          . AExt.simulationStats
+          . AExt.lensNumBoundsRefined += 1
+
+
+
+shmatOverride :: ( LCLM.HasLLVMAnn sym
+                 , LCLM.HasPtrWidth w
+                 , p ~ AExt.AmbientSimulatorState sym arch
+                 , w ~ DMC.ArchAddrWidth arch
+                 )
+              => FunctionOverride p
+                                  sym
+                                  (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                                Ctx.::> LCLM.LLVMPointerType w
+                                                Ctx.::> LCLM.LLVMPointerType w)
+                                  ext
+                                  (LCLM.LLVMPointerType w)
+shmatOverride = FunctionOverride {
+    functionName = "shmat"
+  , functionGlobals = []
+  , functionArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
+                                Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
+                                Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
+  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
+  , functionOverride = \bak args -> Ctx.uncurryAssignment (callShmat bak) args
+  }
+
+-- | Override for the @shmget@ function.  It has the following caveats that may
+-- need to be addressed in the future for a more faithful override:
+--
+-- * @key@ must be @IPC_PRIVATE@.
+-- * @size@ is not rounded to a multiple of @PAGE_SIZE@ like it is in the real
+--   implementation.
+-- * @shmflag@ is ignored.  This is because:
+--   * @key == IPC_PRIVATE@ implies that a shared memory segment is being
+--     created regardless of whether the @IPC_CREAT@ flag is set.
+--   * @key == IPC_PRIVATE@ always satisfies @IPC_EXCL@.
+--   * @SHM_NORESERVE@ is irrelevant because we don't model swap space.
+--   * The remaining flags concern page sizes and rounding modes, but this
+--     override does not faithfully model the rounding behavior of @shmget@
+-- * The shared memory IDs that this function returns start at 1 and increment
+--   by 1 at each call.  This may differ from the real method of allocating
+--   shared memory IDs.
+callShmget :: ( LCB.IsSymBackend sym bak
+              , LCLM.HasPtrWidth w
+              , LCLM.HasLLVMAnn sym
+              , p ~ AExt.AmbientSimulatorState sym arch
+              , w ~ DMC.ArchAddrWidth arch
+              )
+           => LCS.GlobalVar LCLM.Mem
+           -> bak
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callShmget mvar bak key size _shmflag = do
+  let ?memOpts = overrideMemOptions
+  let sym = LCB.backendGetSym bak
+
+  -- Extract and check that key is zero
+  keyBv <- liftIO $ LCLM.projectLLVM_bv bak (LCS.regValue key)
+  cond <- liftIO $ WI.bvEq sym keyBv =<< WI.bvLit sym ?ptrWidth (BVS.zero ?ptrWidth)
+  liftIO $ LCB.assert bak cond (LCS.AssertFailureSimError
+                                "Call to shmget() with non-zero key"
+                                "")
+
+  -- Allocate shared memory segment
+  sizeBv <- liftIO $ LCLM.projectLLVM_bv bak (LCS.regValue size)
+  let displayString = "<shared memory segment>"
+  LCS.modifyGlobal mvar $ \mem -> do
+    (segment, mem') <- liftIO $ LCLM.doMalloc bak
+                                              LCLM.HeapAlloc
+                                              LCLM.Mutable
+                                              displayString
+                                              mem
+                                              sizeBv
+                                              LCLD.noAlignment
+
+    -- Store segment in the shared memory state and get an ID
+    shmState <- use (LCS.stateContext . LCS.cruciblePersonality . AExt.sharedMemoryState)
+    let (AMS.SharedMemoryId shmId, shmState') =
+          AMS.newSharedMemorySegment segment shmState
+    LCS.stateContext . LCS.cruciblePersonality . AExt.sharedMemoryState .= shmState'
+
+    -- Convert ID to a BV
+    shmIdBv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.mkBV ?ptrWidth shmId)
+    shmIdPtr <- liftIO $ LCLM.llvmPointer_bv sym shmIdBv
+    return (shmIdPtr, mem')
+
+buildShmgetOverride :: ( LCLM.HasLLVMAnn sym
+                       , LCLM.HasPtrWidth w
+                       , p ~ AExt.AmbientSimulatorState sym arch
+                       , w ~ DMC.ArchAddrWidth arch
+                       )
+                  => LCS.GlobalVar LCLM.Mem
+                  -> FunctionOverride p
+                                      sym
+                                      (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                                    Ctx.::> LCLM.LLVMPointerType w
+                                                    Ctx.::> LCLM.LLVMPointerType w)
+                                      ext
+                                      (LCLM.LLVMPointerType w)
+buildShmgetOverride memVar = FunctionOverride {
+    functionName = "shmget"
+  , functionGlobals = []
+  , functionArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
+                                 Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
+                                 Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
+  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
+  , functionOverride =
+      \bak args -> Ctx.uncurryAssignment (callShmget memVar bak) args
+  }
 
 -------------------------------------------------------------------------------
 -- Networking overrides

@@ -15,6 +15,7 @@ module Ambient.Extensions
   , AmbientSimulatorState(..)
   , incrementSimStat
   , lensNumOvsApplied
+  , lensNumBoundsRefined
   , AmbientSimulationStats(..)
   , emptyAmbientSimulatorState
   , functionOvHandles
@@ -25,6 +26,7 @@ module Ambient.Extensions
   , serverSocketFDs
   , simulationStats
   , overrideLookupFunctionHandle
+  , sharedMemoryState
   ) where
 
 import qualified Control.Exception as X
@@ -70,6 +72,7 @@ import qualified What4.Protocol.Online as WPO
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions.Memory as AEM
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.Memory.SharedMemory as AMS
 import qualified Ambient.Syscall as ASy
 import qualified Ambient.Verifier.Concretize as AVC
 
@@ -654,6 +657,8 @@ data AmbientSimulatorState sym arch = AmbientSimulatorState
     -- lookup with one that will disassemble the function address and use a
     -- more relaxed code discovery classifier to handle gadgets that may
     -- unbalance the stack (which prevents Macaw from detecting them properly).
+  , _sharedMemoryState :: AMS.AmbientSharedMemoryState sym (DMC.ArchAddrWidth arch)
+  -- ^ Manages shared memory allocated during simulation.
   }
 
 -- | An initial value for 'AmbientSimulatorState'.
@@ -667,6 +672,7 @@ emptyAmbientSimulatorState = AmbientSimulatorState
   , _serverSocketFDs = Map.empty
   , _simulationStats = emptyAmbientSimulationStats
   , _overrideLookupFunctionHandle = Nothing
+  , _sharedMemoryState = AMS.emptyAmbientSharedMemoryState
   }
 
 functionOvHandles :: Lens' (AmbientSimulatorState sym arch)
@@ -708,6 +714,12 @@ overrideLookupFunctionHandle
 overrideLookupFunctionHandle =
   lens _overrideLookupFunctionHandle
        (\s v -> s { _overrideLookupFunctionHandle = v })
+
+sharedMemoryState
+  :: Lens' (AmbientSimulatorState sym arch)
+           (AMS.AmbientSharedMemoryState sym (DMC.ArchAddrWidth arch))
+sharedMemoryState =
+  lens _sharedMemoryState (\s v -> s { _sharedMemoryState = v })
 
 {-
 Note [Lazily registering overrides]

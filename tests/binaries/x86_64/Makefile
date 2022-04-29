@@ -158,6 +158,9 @@ lookup-scope/liblookup-scope-b.so: lookup-scope/lookup-scope-b.c
 lookup-scope/lookup-scope.exe: lookup-scope/lookup-scope.c lookup-scope/liblookup-scope-a.so lookup-scope/liblookup-scope-b.so ambient_assert.o
 	$(CC) -nostdlib -Llookup-scope/ -I./ lookup-scope/lookup-scope.c ambient_assert.o -llookup-scope-a -llookup-scope-b -o $@
 
+shm.exe: shm.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static -no-pie $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

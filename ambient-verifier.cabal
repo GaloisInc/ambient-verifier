@@ -69,6 +69,7 @@ library
                       Ambient.Loader.LoadOptions,
                       Ambient.Loader.Versioning,
                       Ambient.Memory,
+                      Ambient.Memory.SharedMemory,
                       Ambient.Memory.AArch32.Linux,
                       Ambient.Memory.X86_64.Linux,
                       Ambient.Override,

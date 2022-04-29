@@ -136,6 +136,8 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs _bumpEndVar memVar o
   let ?ptrWidth = PN.knownNat @32 in
   let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride memVar)
                      , AF.SomeFunctionOverride (AFO.buildMemsetOverride memVar)
+                     , AF.SomeFunctionOverride (AFO.buildShmgetOverride memVar)
+                     , AF.SomeFunctionOverride AFO.shmatOverride
                      ] in
   let customKernelOvs =
         -- The addresses are taken from

@@ -121,6 +121,8 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs bumpEndVar memVar ovs kernelO
   let ?ptrWidth = PN.knownNat @64 in
   let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride memVar)
                      , AF.SomeFunctionOverride (AFO.buildMemsetOverride memVar)
+                     , AF.SomeFunctionOverride (AFO.buildShmgetOverride memVar)
+                     , AF.SomeFunctionOverride AFO.shmatOverride
                      ] in
   -- Hacky overrides
   --

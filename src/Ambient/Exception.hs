@@ -104,6 +104,8 @@ data AmbientException where
   ElfMultipleDynamicHeaders :: FilePath -> AmbientException
   -- | Encountered a shared library that is not dynamically linked.
   ElfNonDynamicSharedLib :: FilePath -> AmbientException
+  -- | Tried to retrieve a shared memory segment with a symbolic ID
+  SymbolicSharedMemorySegmentId :: AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -238,3 +240,5 @@ instance PP.Pretty AmbientException where
                 ]
       ElfNonDynamicSharedLib fp ->
         PP.pretty "The shared library" PP.<+> PP.pretty fp PP.<+> PP.pretty "is not dynamically linked"
+      SymbolicSharedMemorySegmentId ->
+        PP.pretty "Attempted to retrieve a shared memory segment using a symbolic ID."
