@@ -24,6 +24,7 @@ import           Control.Monad.IO.Class ( MonadIO(..) )
 import qualified Control.Monad.State.Strict as CMS
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
+import qualified Data.Foldable as F
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe )
@@ -63,12 +64,14 @@ import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.LLVM.MemType as LCLMT
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
 import qualified Lang.Crucible.SymIO as LCSy
 import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Expr as WE
+import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
 import qualified What4.Symbol as WSym
@@ -79,6 +82,7 @@ import qualified Ambient.Discovery as ADi
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import qualified Ambient.Extensions.Memory as AEM
+import qualified Ambient.EventTrace as AET
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader.BinaryConfig as ALB
@@ -194,15 +198,21 @@ lookupFunction :: forall sym bak arch binFmt p ext w scope solver st fs args ret
    -- ^ Function call ABI specification for 'arch'
    -> LCF.HandleAllocator
    -> DMA.ArchitectureInfo arch
+   -> AET.Properties
+   -- ^ The properties to be checked, along with their corresponding global traces
    -> DMS.LookupFunctionHandle p sym arch
-lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo =
-  DMS.LookupFunctionHandle $ \state _mem regs -> do
+lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
+  DMS.LookupFunctionHandle $ \state0 _mem regs -> do
     -- Extract instruction pointer value and look the address up in
     -- 'addressToFnHandle'
     funcAddr <- fromIntegral <$> extractIP bak archVals regs
-    lookupHandle funcAddr state
+    (hdl, state1) <- lookupHandle funcAddr state0
+    state2 <- recordFunctionEvent sym (LCF.handleName hdl) props state1
+    pure (hdl, state2)
 
   where
+    sym = LCB.backendGetSym bak
+
     symArchFns :: DMS.MacawSymbolicArchFunctions arch
     symArchFns = DMS.archFunctions archVals
 
@@ -445,6 +455,52 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo =
 
     panic :: [String] -> a
     panic = AP.panic AP.SymbolicExecution "lookupFunction"
+
+-- | Record a function property transition.
+recordFunctionEvent ::
+  forall p sym ext rtp blocks r ctx.
+  WI.IsExprBuilder sym =>
+  sym ->
+  WF.FunctionName ->
+  AET.Properties ->
+  LCS.CrucibleState p sym ext rtp blocks r ctx ->
+  IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
+recordFunctionEvent sym fnName props state = do
+  F.foldlM (\state' (prop, traceGlobal) ->
+             do let t0 = readGlobal traceGlobal state'
+                t1 <- AET.recordEvent (matchFunctionEvent fnName) sym prop t0
+                pure $ writeGlobal traceGlobal t1 state')
+           state (AET.properties props)
+  where
+    readGlobal ::
+      forall tp.
+      LCS.GlobalVar tp ->
+      LCS.CrucibleState p sym ext rtp blocks r ctx ->
+      LCS.RegValue sym tp
+    readGlobal gv st = do
+      let globals = st ^. LCSE.stateTree . LCSE.actFrame . LCS.gpGlobals
+      case LCSG.lookupGlobal gv globals of
+        Just v  -> v
+        Nothing -> AP.panic AP.SymbolicExecution "recordFunctionEvent"
+                     [ "Failed to find global variable: "
+                       ++ show (LCCC.globalName gv) ]
+
+    writeGlobal ::
+      forall tp.
+      LCS.GlobalVar tp ->
+      LCS.RegValue sym tp ->
+      LCS.CrucibleState p sym ext rtp blocks r ctx ->
+      LCS.CrucibleState p sym ext rtp blocks r ctx
+    writeGlobal gv rv st =
+      over (LCSE.stateTree . LCSE.actFrame . LCS.gpGlobals)
+           (LCSG.insertGlobal gv rv)
+           st
+
+    matchFunctionEvent :: WF.FunctionName -> APD.Transition -> Bool
+    matchFunctionEvent expected t =
+      case t of
+        APD.InvokesFunction name | name == expected -> True
+        _ -> False
 
 -- | This function builds a function handle for an override and inserts it into
 -- a state's function bindings
@@ -1013,7 +1069,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction logAction bak archVals binConf functionABI halloc archInfo) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem) (ALB.bcUnsuportedRelocations binConf) (imMemPtrTable initialMem)
+    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction logAction bak archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem) (ALB.bcUnsuportedRelocations binConf) (imMemPtrTable initialMem)
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
                                        LCF.emptyHandleMap

@@ -1,0 +1,16 @@
+statechart:
+  name: FunctionTransition
+  root state:
+    name: Root
+    initial: NormalExecution
+    states:
+      - name: NormalExecution
+        description: |
+          Execution before reaching f()
+        transitions:
+          - target: FInvoked
+            event: InvokesFunction(f)
+      - name: FInvoked
+        description: |
+          The f() function has been invoked
+        type: final

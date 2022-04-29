@@ -34,6 +34,8 @@ import qualified Text.Megaparsec as TM
 import qualified Text.Megaparsec.Char as TMC
 import qualified Text.Megaparsec.Char.Lexer as TMCL
 
+import qualified What4.FunctionName as WF
+
 import qualified Ambient.Panic as AP
 
 newtype StateID = StateID { stateID :: Integer }
@@ -48,6 +50,12 @@ data Transition where
   EnterWeirdMachine :: Word64 -> Transition
   -- | The program being verified issues the named system call
   IssuesSyscall :: T.Text -> Transition
+  -- | The program being verifier invokes the named function. The function name
+  -- is determined by @Ambient.Lift.discoveredFunName@, which chooses the
+  -- function symbol name if it can find it and, failing that, falls back on
+  -- the function address, formatted as @0xNNNNN...@. In the future, we may
+  -- wish to make this event finer-grained.
+  InvokesFunction :: WF.FunctionName -> Transition
 
 deriving instance Show Transition
 
@@ -220,8 +228,16 @@ parseIssuesSyscall = do
   name <- parens identifier
   return (IssuesSyscall name)
 
+parseInvokesFunction :: Parser Transition
+parseInvokesFunction = do
+  _ <- symbol "InvokesFunction"
+  name <- parens identifier
+  pure $ InvokesFunction $ WF.functionNameFromText name
+
 parseEventString :: Parser Transition
-parseEventString = TM.try parseEnterWM <|> parseIssuesSyscall
+parseEventString = TM.try parseEnterWM
+               <|> TM.try parseIssuesSyscall
+               <|> parseInvokesFunction
 
 parseEvent
   :: (CMC.MonadThrow m)
