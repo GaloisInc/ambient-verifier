@@ -1,7 +1,8 @@
 -- | Functions and data types for managing shared memory state
 module Ambient.Memory.SharedMemory
   ( AmbientSharedMemoryState
-  , SharedMemoryId(..)
+  , SharedMemoryId
+  , asInteger
   , emptyAmbientSharedMemoryState
   , newSharedMemorySegment
   , sharedMemorySegmentAt
@@ -11,7 +12,7 @@ import qualified Data.Map.Strict as Map
 
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 
-newtype SharedMemoryId = SharedMemoryId Integer
+newtype SharedMemoryId = SharedMemoryId { asInteger :: Integer }
   deriving ( Eq, Ord, Show )
 
 -- | Holds the state of shared memory.  This data type is meant to be opaque
@@ -31,13 +32,12 @@ emptyAmbientSharedMemoryState =
                            }
 
 -- | Given an ID and a shared memory state, get a pointer to the shared memory
--- segment at the ID.  Throws an exception if the memory segment cannot be
--- found.
-sharedMemorySegmentAt :: SharedMemoryId
+-- segment at the ID (if any).
+sharedMemorySegmentAt :: Integer
                       -> AmbientSharedMemoryState sym w
                       -> Maybe (LCLM.LLVMPtr sym w)
 sharedMemorySegmentAt shmid shmState =
-  Map.lookup shmid (sharedMemorySegments shmState)
+  Map.lookup (SharedMemoryId shmid) (sharedMemorySegments shmState)
 
 -- | Given a pointer to a shared memory allocation and a shared memory state,
 -- allocate a shared memory ID and insert the pointer into the shared memory

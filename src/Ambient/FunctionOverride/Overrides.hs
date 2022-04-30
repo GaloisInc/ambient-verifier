@@ -260,7 +260,7 @@ callShmat bak shmid shmaddr _shmflg = do
                    (WI.asBV shmIdSymBv)
 
   shmState <- use (LCS.stateContext . LCS.cruciblePersonality . AExt.sharedMemoryState)
-  let lookupId = AMS.SharedMemoryId $ BVS.asUnsigned shmIdBv
+  let lookupId = BVS.asUnsigned shmIdBv
   case AMS.sharedMemorySegmentAt lookupId shmState of
     Nothing -> liftIO $ LCB.addFailedAssertion bak $
        LCS.AssertFailureSimError ("Nonexistent shared memory ID: " ++ show lookupId)
@@ -357,12 +357,12 @@ callShmget mvar bak key size _shmflag = do
 
     -- Store segment in the shared memory state and get an ID
     shmState <- use (LCS.stateContext . LCS.cruciblePersonality . AExt.sharedMemoryState)
-    let (AMS.SharedMemoryId shmId, shmState') =
+    let (shmId, shmState') =
           AMS.newSharedMemorySegment segment shmState
     LCS.stateContext . LCS.cruciblePersonality . AExt.sharedMemoryState .= shmState'
 
     -- Convert ID to a BV
-    shmIdBv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.mkBV ?ptrWidth shmId)
+    shmIdBv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.mkBV ?ptrWidth (AMS.asInteger shmId))
     shmIdPtr <- liftIO $ LCLM.llvmPointer_bv sym shmIdBv
     return (shmIdPtr, mem')
 
