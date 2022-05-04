@@ -1,6 +1,8 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 
+#include "ambient_assert.h"
+
 /**
  * This test contains a buffer overrun resulting from a `read` syscall which
  * causes a change in control flow that the verifier detects with the weird
@@ -27,7 +29,9 @@ void safe_process(const data* d) {
 
 void process_data(const data* d) {
   if (d->trusted) {
-    // This will enter the Weird Machine, which generates 1 successful goal.
+    // This will enter the Weird Machine.  The verifier is able to discharge
+    // the proof that the weird machine is hit without the SMT solver, so this
+    // generates no goals.
     unsafe_process(d);
   } else {
     safe_process(d);
@@ -38,11 +42,12 @@ int main(void) {
   data d;
   d.trusted = 0;
 
-  // Off-by-one read overflows into d.trusted. This generates 1 failing goal,
-  // the latter of which is due to a failure to classify a tail call in glibc's
-  // __syscall_error function. Thankfully, this doesn't impact the verifier's
-  // ability to discover the Weird Machine in unsafe_process.
-  syscall(SYS_read, 0, d.buf, 5);
+  // Off-by-one read overflows into d.trusted.
+  int num_read = syscall(SYS_read, 0, d.buf, 5);
+
+  // Assert that 5 bytes were read.  This is to ensure that the verifier
+  // properly handles the return values from system calls.
+  ambient_assert(num_read == 5);
 
   process_data(&d);
 }

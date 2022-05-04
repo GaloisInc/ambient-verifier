@@ -2,11 +2,11 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 
+#include "ambient_assert.h"
+
 /*
  * This is a smoke test that the `open` and `close` syscalls are connected and
- * can be strung together with a `read`.  Without a way to assert the contents
- * of memory it's hard to imagine a more rigorous test.  Once we have a way to
- * add custom assertions we should also improve this test.
+ * can be strung together with a `read`.
  */
 
 int main(void) {
@@ -15,6 +15,13 @@ int main(void) {
   long fd = syscall(SYS_open, path, O_RDONLY);
   if (fd >= 0) {
     long read = syscall(SYS_read, fd, &c, 1);
+
+    // Assert that the correct byte was read from the concrete file
+    ambient_assert(c == 'A');
+
+    // Assert that 1 byte was read.  This is to ensure that the verifier
+    // properly handles the return values from system calls.
+    ambient_assert(read == 1);
     syscall(SYS_close, fd);
   }
   return (int)c;

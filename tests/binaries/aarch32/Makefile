@@ -31,8 +31,8 @@ rop-unbal.exe: rop-unbal.c
 rop-read.exe: rop-read.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@
 
-read.exe: read.c
-	$(CC) -nostartfiles -static -no-pie $< -o $@
+read.exe: read.c ambient_assert.o
+	$(CC) -nostartfiles -static -no-pie $^ -o $@
 
 write.exe: write.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@

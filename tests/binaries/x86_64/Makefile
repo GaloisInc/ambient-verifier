@@ -37,8 +37,8 @@ read.exe: read.c
 write.exe: write.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@
 
-open-close.exe: open-close.c
-	$(CC) -nostartfiles -static -no-pie $< -o $@
+open-close.exe: open-close.c ambient_assert.o
+	$(CC) -nostartfiles -static -no-pie $^ -o $@
 
 read-musl.exe: read-musl.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@

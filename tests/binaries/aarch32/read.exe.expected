@@ -1,3 +1,4 @@
-successful: 1
-failed: 1
+successful: 0
+failed: 0
 fsRoot: tests/filesystems/read
+overrideDir: tests/overrides/
