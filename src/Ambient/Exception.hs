@@ -169,10 +169,10 @@ instance PP.Pretty AmbientException where
       ConcretizationFailedSymbolic loc target ->
         PP.pretty "Attempted to make" PP.<+> concretizationTargetCall target PP.<+>
         PP.pretty "with non-concrete" PP.<+> concretizationTargetDescription target PP.<+> PP.pretty "at" PP.<+>
-        PP.viaShow loc
+        PP.pretty (WP.plSourceLoc loc)
       ConcretizationFailedUnknown loc target ->
         PP.pretty "Solving" PP.<+> concretizationTargetDescription target PP.<+>
-        PP.pretty "yielded UNKNOWN at" PP.<+> PP.viaShow loc
+        PP.pretty "yielded UNKNOWN at" PP.<+> PP.pretty (WP.plSourceLoc loc)
       SolverUnknownFunctionAddress ->
         PP.pretty "Solving function address yielded UNKNOWN"
       UnsupportedSyscallNumber syscallNum ->

@@ -41,6 +41,7 @@ import qualified Data.Vector.NonEmpty as NEV
 import           GHC.TypeNats ( KnownNat, type (<=) )
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lumberjack as LJ
+import qualified Prettyprinter as PP
 import qualified System.IO as IO
 
 import qualified Data.Macaw.Architecture.Info as DMA
@@ -70,12 +71,13 @@ import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
 import qualified Lang.Crucible.SymIO as LCSy
 import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.BaseTypes as WT
 import qualified What4.Expr as WE
 import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
+import qualified What4.ProgramLoc as WP
 import qualified What4.Protocol.Online as WPO
 import qualified What4.Symbol as WSym
-import qualified What4.BaseTypes as WT
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Discovery as ADi
@@ -676,7 +678,7 @@ resolveConcreteStackVal bak _ target stackVal = do
       CMC.throwM $ AE.ConcretizationFailedUnknown loc target
     Left AVC.UnsatInitialAssumptions ->
       AP.panic AP.SymbolicExecution "resolverConcreteStackVal"
-        ["Initial assumptions are unsatisfiable at " ++ show loc]
+        ["Initial assumptions are unsatisfiable at " ++ show (PP.pretty (WP.plSourceLoc loc))]
     Left AVC.MultipleModels ->
       CMC.throwM $ AE.ConcretizationFailedSymbolic loc target
     Right stackVal' ->

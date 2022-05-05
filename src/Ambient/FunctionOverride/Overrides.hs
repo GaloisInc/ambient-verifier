@@ -52,6 +52,7 @@ import qualified Data.ByteString.Char8 as BS
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Text as T
+import qualified Prettyprinter as PP
 import qualified System.FilePath as FP
 
 import qualified Data.Macaw.CFG as DMC
@@ -67,6 +68,7 @@ import qualified Lang.Crucible.Types as LCT
 import qualified What4.Expr as WE
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
+import qualified What4.ProgramLoc as WP
 
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
@@ -1011,7 +1013,7 @@ networkConstantBV bak fnName fnArg w symBV = do
       CMC.throwM $ AE.ConcretizationFailedUnknown loc target
     Left AVC.UnsatInitialAssumptions ->
       AP.panic AP.FunctionOverride "constantBV"
-        ["Initial assumptions are unsatisfiable at " ++ show loc]
+        ["Initial assumptions are unsatisfiable at " ++ show (PP.pretty (WP.plSourceLoc loc))]
     Left AVC.MultipleModels ->
       CMC.throwM $ AE.ConcretizationFailedSymbolic loc target
   where
