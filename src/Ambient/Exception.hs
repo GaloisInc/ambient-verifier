@@ -45,8 +45,6 @@ data AmbientException where
   ConcretizationFailedUnknown :: WP.ProgramLoc -> ConcretizationTarget -> AmbientException
   -- | There is no model for this syscall number
   UnsupportedSyscallNumber :: Integer -> AmbientException
-  -- | A symbolic function address could not be resolved as concrete
-  SymbolicFunctionAddress :: AmbientException
   -- | The solver returned @UNKNOWN@ when trying to resolve a function address
   SolverUnknownFunctionAddress :: AmbientException
   -- | Symbolic execution timed out, and no result is available
@@ -175,8 +173,6 @@ instance PP.Pretty AmbientException where
       ConcretizationFailedUnknown loc target ->
         PP.pretty "Solving" PP.<+> concretizationTargetDescription target PP.<+>
         PP.pretty "yielded UNKNOWN at" PP.<+> PP.viaShow loc
-      SymbolicFunctionAddress ->
-        PP.pretty "Attempted to call function with non-concrete address"
       SolverUnknownFunctionAddress ->
         PP.pretty "Solving function address yielded UNKNOWN"
       UnsupportedSyscallNumber syscallNum ->
