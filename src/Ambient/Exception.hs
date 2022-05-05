@@ -19,6 +19,7 @@ import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.Syntax.ExprParse as LCSE
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.FunctionName as WF
+import qualified What4.ProgramLoc as WP
 
 import qualified Ambient.Loader.Versioning as ALV
 
@@ -39,9 +40,9 @@ data AmbientException where
   -- | The requested solver and float mode representation is not supported
   UnsupportedSolverCombination :: String -> String -> AmbientException
   -- | A symbolic value could not be resolved as concrete
-  ConcretizationFailedSymbolic :: ConcretizationTarget -> AmbientException
+  ConcretizationFailedSymbolic :: WP.ProgramLoc -> ConcretizationTarget -> AmbientException
   -- | The solver returned @UNKNOWN@ when trying to resolve a value as concrete
-  ConcretizationFailedUnknown :: ConcretizationTarget -> AmbientException
+  ConcretizationFailedUnknown :: WP.ProgramLoc -> ConcretizationTarget -> AmbientException
   -- | There is no model for this syscall number
   UnsupportedSyscallNumber :: Integer -> AmbientException
   -- | A symbolic function address could not be resolved as concrete
@@ -167,12 +168,13 @@ instance PP.Pretty AmbientException where
         PP.pretty "Function " <> PP.pretty (BSC.unpack fname) <> PP.pretty " was expected, but not found, at address " <> PP.pretty addr
       UnsupportedSolverCombination solver fm ->
         PP.pretty "The " <> PP.pretty solver <> PP.pretty " SMT solver does not support the " <> PP.pretty fm <> PP.pretty " floating point mode"
-      ConcretizationFailedSymbolic target ->
+      ConcretizationFailedSymbolic loc target ->
         PP.pretty "Attempted to make" PP.<+> concretizationTargetCall target PP.<+>
-        PP.pretty "with non-concrete" PP.<+> concretizationTargetDescription target
-      ConcretizationFailedUnknown target ->
+        PP.pretty "with non-concrete" PP.<+> concretizationTargetDescription target PP.<+> PP.pretty "at" PP.<+>
+        PP.viaShow loc
+      ConcretizationFailedUnknown loc target ->
         PP.pretty "Solving" PP.<+> concretizationTargetDescription target PP.<+>
-        PP.pretty "yielded UNKNOWN"
+        PP.pretty "yielded UNKNOWN at" PP.<+> PP.viaShow loc
       SymbolicFunctionAddress ->
         PP.pretty "Attempted to call function with non-concrete address"
       SolverUnknownFunctionAddress ->

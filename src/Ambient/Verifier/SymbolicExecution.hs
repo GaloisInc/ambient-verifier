@@ -667,15 +667,18 @@ resolveConcreteStackVal ::
   -> WI.SymBV sym (DMC.ArchAddrWidth arch)
   -> IO Integer
 resolveConcreteStackVal bak _ target stackVal = do
+  let sym = LCB.backendGetSym bak
+  loc <- WI.getCurrentProgramLoc sym
+
   res <- AVC.resolveSymBVAs bak WT.knownNat stackVal
   case res of
     Left AVC.SolverUnknown ->
-      CMC.throwM $ AE.ConcretizationFailedUnknown target
+      CMC.throwM $ AE.ConcretizationFailedUnknown loc target
     Left AVC.UnsatInitialAssumptions ->
       AP.panic AP.SymbolicExecution "resolverConcreteStackVal"
-        ["Initial assumptions are unsatisfiable"]
+        ["Initial assumptions are unsatisfiable at " ++ show loc]
     Left AVC.MultipleModels ->
-      CMC.throwM $ AE.ConcretizationFailedSymbolic target
+      CMC.throwM $ AE.ConcretizationFailedSymbolic loc target
     Right stackVal' ->
       pure $ BVS.asUnsigned stackVal'
 

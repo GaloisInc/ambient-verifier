@@ -998,6 +998,9 @@ networkConstantBV ::
      -- ^ The symbolic bitvector.
   -> IO (BVS.BV w)
 networkConstantBV bak fnName fnArg w symBV = do
+  let sym = LCB.backendGetSym bak
+  loc <- WI.getCurrentProgramLoc sym
+
   -- NB: It's not enough to just use asBV here, as it's possible for these
   -- values to get spilled onto the stack. We need the power of an online
   -- solver connection in the general case.
@@ -1005,12 +1008,12 @@ networkConstantBV bak fnName fnArg w symBV = do
   case res of
     Right bv -> pure bv
     Left AVC.SolverUnknown ->
-      CMC.throwM $ AE.ConcretizationFailedUnknown target
+      CMC.throwM $ AE.ConcretizationFailedUnknown loc target
     Left AVC.UnsatInitialAssumptions ->
       AP.panic AP.FunctionOverride "constantBV"
-        ["Initial assumptions are unsatisfiable"]
+        ["Initial assumptions are unsatisfiable at " ++ show loc]
     Left AVC.MultipleModels ->
-      CMC.throwM $ AE.ConcretizationFailedSymbolic target
+      CMC.throwM $ AE.ConcretizationFailedSymbolic loc target
   where
     target = AE.NetworkFunction fnName fnArg
 
