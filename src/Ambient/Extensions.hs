@@ -48,6 +48,7 @@ import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe, isNothing )
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.Map as MapF
+import           Data.Parameterized.Some ( Some )
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as DV
 import           Data.Word ( Word8 )
@@ -751,7 +752,7 @@ data AmbientSimulatorState sym arch = AmbientSimulatorState
     -- ^ The regions of memory which we have populated with symbolic bytes in
     -- the 'AEM.MemPtrTable' backing global memory.
     -- See @Note [Lazy memory initialization@ in "Ambient.Extensions.Memory".
-  , _serverSocketFDs :: Map.Map Integer AF.ServerSocketInfo
+  , _serverSocketFDs :: Map.Map Integer (Some AF.ServerSocketInfo)
     -- ^ A map from registered socket file descriptors to their corresponding
     -- metadata. See @Note [The networking story]@ in
     -- "Ambient.FunctionOverride.Overrides".
@@ -809,7 +810,7 @@ populatedMemChunks = lens _populatedMemChunks
                           (\s v -> s { _populatedMemChunks = v })
 
 serverSocketFDs :: Lens' (AmbientSimulatorState sym arch)
-                       (Map.Map Integer AF.ServerSocketInfo)
+                       (Map.Map Integer (Some AF.ServerSocketInfo))
 serverSocketFDs = lens _serverSocketFDs
                        (\s v -> s { _serverSocketFDs = v })
 

@@ -143,6 +143,7 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupport
                      , AF.SomeFunctionOverride AFO.shmatOverride
                      , AF.SomeFunctionOverride (AFO.buildSprintfOverride initialMem unsupportedRelocs)
                      ] in
+  let networkOverrides = AFO.networkOverrides fs initialMem unsupportedRelocs in
   let customKernelOvs =
         -- The addresses are taken from
         -- https://github.com/torvalds/linux/blob/5bfc75d92efd494db37f5c4c173d3639d4772966/Documentation/arm/kernel_user_helpers.rst
@@ -158,7 +159,7 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupport
                  , AF.functionNameMapping =
                      Map.fromList [ (AF.functionName fo, sfo)
                                   | sfo@(AF.SomeFunctionOverride fo) <-
-                                      memOverrides ++ AFO.networkOverrides fs memVar ++ ovs
+                                      memOverrides ++ networkOverrides ++ ovs
                                   ]
                  , AF.functionKernelAddrMapping =
                      Map.union (Map.fromList customKernelOvs) kernelOvs

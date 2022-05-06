@@ -110,10 +110,16 @@ server-inet.exe: server-inet.c
 server-inet6.exe: server-inet6.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 
+server-unix.exe: server-unix.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
 client-inet.exe: client-inet.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 
 client-inet6.exe: client-inet6.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
+client-unix.exe: client-unix.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 
 infinite-loop.exe: infinite-loop.c

@@ -50,10 +50,13 @@ import qualified Control.Lens as Lens
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( liftIO )
 import qualified Data.BitVector.Sized as BVS
-import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
+import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Text as T
+import           Data.Word ( Word16 )
 import qualified Prettyprinter as PP
 import qualified System.FilePath as FP
 
@@ -76,6 +79,7 @@ import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import           Ambient.FunctionOverride
 import           Ambient.FunctionOverride.Overrides.Printf
+import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.SharedMemory as AMS
 import           Ambient.Override
 import qualified Ambient.Panic as AP
@@ -428,20 +432,33 @@ clients, this file is used for network communication, so
 server, and `send`ing/`write`ing to this file simulates sending a message to
 the server.
 
-When a program invokes accept(sockfd, addr, addrlen), the following file will
-be opened:
+When a program invokes accept(sockfd, addr, addrlen), a file will be opened at
+a path depending on the socket domain:
 
-  /network/<domain_macro>/<type_macro>/<port>/<seq_num>
+* If it is an AF_UNIX socket, the following file will be opened:
 
-Where:
+    <sun_path>/<seq_num>
 
-* <domain_macro> and <type_macro> are the same values as in the socket() case.
-  <port> is the same value that was passed to bind() when assigning a name to
-  the socket. (We'll describe how the verifier looks up these values in a bit.)
+  Where:
 
-* <seq_num> indicates the order in which each call to accept() was made. For
-  example, the first accept() call will be given a <seq_num> of 0, the second
-  accept() call will be given a <seq_num> of 1, etc.
+  * <sun_path> is the value in the `sun_path` field of the `sockaddr_un` struct
+    passed to bind() when binding the socket.
+
+  * <seq_num> indicates the order in which each call to accept() was made. For
+    example, the first accept() call will be given a <seq_num> of 0, the second
+    accept() call will be given a <seq_num> of 1, etc.
+
+* If it is an AF_INET or AF_INET6 socket, the  following file will be opened:
+
+    /network/<domain_macro>/<type_macro>/<port>/<seq_num>
+
+  Where:
+
+  * <domain_macro> and <type_macro> are the same values as in the socket() case.
+    <port> is the same value that was passed to bind() when assigning a name to
+    the socket. (We'll describe how the verifier looks up these values in a bit.)
+
+  * <seq_num> indicates the order in which each call to accept() was made.
 
 These overrides use a crucible-symio LLVMFileSystem under the hood to track
 these files. One limitation of an LLVMFileSystem is that there isn't a simple
@@ -473,11 +490,12 @@ There are a variety of limitations surrounding how this works to be aware of:
   do not anticipate this being an issue in practice.
 
 * Because the names of crucible-symio filepaths must be concrete, a socket's
-  domain, type, and port number must all be concrete, since they all appear in
-  filepath names. Again, we do not anticipate many programs in the wild will
-  try to make this information symbolic. The file descriptor for each socket
-  must also be concrete, but since crucible-symio always allocates concrete
-  file descriptors anyway, this requirement is easily satisfied.
+  domain, type, and path (for AF_UNIX sockets) or port number (for AF_INET{6}
+  sockets) must all be concrete, since they all appear in filepath names.
+  Again, we do not anticipate many programs in the wild will try to make this
+  information symbolic. The file descriptor for each socket must also be
+  concrete, but since crucible-symio always allocates concrete file descriptors
+  anyway, this requirement is easily satisfied.
 
 * The domain value passed to socket() must be listed in the `socketDomainMap`.
   We could, in theory, support other forms of communication, but we do not do so
@@ -495,26 +513,38 @@ There are a variety of limitations surrounding how this works to be aware of:
 * The accept() override, unlike the function it models, completely ignores the
   addr and addrlen arguments. To model accept() more faithfully, it should fill
   in these arguments with information about the peer socket address. See #77.
+
+* The model of AF_UNIX sockets cheats a bit by treating `sun_path` as a
+  directory containing one file per connection within the directory. A faithful
+  implementation would have a single `sun_path` file that manages the
+  connections within that file, but we do not do this currently.
 -}
 
 -- | All of the socket I/O–related overrides, packaged up for your
 -- convenience.
 networkOverrides :: ( LCLM.HasLLVMAnn sym
                     , LCLM.HasPtrWidth w
+                    , DMC.MemWidth w
                     , w ~ DMC.ArchAddrWidth arch
                     )
                  => LCLS.LLVMFileSystem w
-                 -> LCS.GlobalVar LCLM.Mem
+                 -> AM.InitialMemory sym w
+                 -- ^ Initial memory state for symbolic execution
+                 -> Map.Map (DMC.MemWord w) String
+                 -- ^ Mapping from unsupported relocation addresses to the names of the
+                 -- unsupported relocation types.
                  -> [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
-networkOverrides fs memVar =
+networkOverrides fs initialMem unsupportedRelocs =
   [ SomeFunctionOverride (buildAcceptOverride fs)
-  , SomeFunctionOverride (buildBindOverride fs memVar)
+  , SomeFunctionOverride (buildBindOverride fs initialMem unsupportedRelocs)
   , SomeFunctionOverride buildConnectOverride
   , SomeFunctionOverride buildListenOverride
   , SomeFunctionOverride (buildRecvOverride fs memVar)
   , SomeFunctionOverride (buildSendOverride fs memVar)
   , SomeFunctionOverride (buildSocketOverride fs)
   ]
+  where
+    memVar = AM.imMemVar initialMem
 
 buildAcceptOverride :: ( LCLM.HasPtrWidth w
                        , w ~ DMC.ArchAddrWidth arch
@@ -540,12 +570,14 @@ buildAcceptOverride fs = FunctionOverride
 -- file with a unique name, and records this information in the
 -- 'AE.AmbientSimulatorState'. See Note @[The networking story]@ for the full
 -- details.
-callAccept :: ( LCB.IsSymBackend sym bak
+callAccept :: forall sym bak arch w p solver scope st fs ext r args ret
+            . ( LCB.IsSymBackend sym bak
               , sym ~ WE.ExprBuilder scope st fs
               , bak ~ LCBO.OnlineBackend solver scope st fs
               , WPO.OnlineSolver solver
               , LCLM.HasPtrWidth w
               , w ~ DMC.ArchAddrWidth arch
+              , p ~ AExt.AmbientSimulatorState sym arch
               )
            => LCLS.LLVMFileSystem w
            -> bak
@@ -555,86 +587,157 @@ callAccept :: ( LCB.IsSymBackend sym bak
            -> LCS.OverrideSim (AExt.AmbientSimulatorState sym arch) sym ext r args ret
                               (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callAccept fs bak sockfd _addr _addrlen = do
-  let sym = LCB.backendGetSym bak
   sockfdInt <- liftIO $ networkConstantBVPtrToInteger bak "accept" AE.FDArgument (LCS.regValue sockfd)
   serverSocketFDs <- Lens.use (LCS.stateContext . LCS.cruciblePersonality . AExt.serverSocketFDs)
-  case Map.lookup sockfdInt serverSocketFDs of
-    Just (ServerSocketInfo { serverSocketPort = Just sockPort
-                           , serverSocketFilePath = sockFilePath
-                           , serverSocketNextConnection = sockNextConn
-                           }) -> do
-      let connectionFilePath = FP.takeDirectory sockFilePath FP.</>
-                               show sockPort FP.</> show sockNextConn
-      connectionFileLit <- liftIO $ WI.stringLit sym $ WI.Char8Literal $ BS.pack connectionFilePath
-      fd <- LCSy.openFile (LCLS.llvmFileSystem fs) connectionFileLit $ \res -> do
-        case res of
-          Left LCSy.FileNotFound -> returnIOError
-          Right fileHandle -> do
-            LCS.stateContext . LCS.cruciblePersonality . AExt.serverSocketFDs %=
-              Map.adjust (\ssi -> ssi{serverSocketNextConnection = sockNextConn + 1})
-                         sockfdInt
-            LCLS.allocateFileDescriptor fs fileHandle
-      liftIO $ bvToPtr sym fd ?ptrWidth
-    _ -> do
-      ec <- returnIOError
-      liftIO $ bvToPtr sym ec ?ptrWidth
+  fd <-
+    case Map.lookup sockfdInt serverSocketFDs of
+      Just (Some ssi@(ServerSocketInfo { serverSocketAddress = Just sockAddr })) -> do
+        let connectionFilePath =
+              case serverSocketDomain ssi of
+                AF_UNIX_Repr  -> afUnixPath sockAddr ssi
+                AF_INET_Repr  -> afInetPath sockAddr ssi
+                AF_INET6_Repr -> afInetPath sockAddr ssi
+        connectionFileLit <- liftIO $ WI.stringLit sym $ WI.Char8Literal $ BSC.pack connectionFilePath
+        LCSy.openFile (LCLS.llvmFileSystem fs) connectionFileLit $ \res -> do
+          case res of
+            Left LCSy.FileNotFound -> returnIOError
+            Right fileHandle -> do
+              let sockNextConn = serverSocketNextConnection ssi
+              LCS.stateContext . LCS.cruciblePersonality . AExt.serverSocketFDs %=
+                Map.insert sockfdInt (Some (ssi{ serverSocketNextConnection = sockNextConn + 1 }))
+              LCLS.allocateFileDescriptor fs fileHandle
+      _ -> returnIOError
+  liftIO $ bvToPtr sym fd ?ptrWidth
+  where
+    sym = LCB.backendGetSym bak
+
+    -- AF_UNIX sockets are modeled with files located at <sun_path>/<seq_num>
+    afUnixPath ::
+      BS.ByteString ->
+      ServerSocketInfo AF_UNIX ->
+      FilePath
+    afUnixPath sockPath (ServerSocketInfo
+                           { serverSocketNextConnection = sockNextConn
+                           }) =
+      BSC.unpack sockPath FP.</> show sockNextConn
+
+    -- AF_INET(6) sockets are modeled with files located at
+    -- /network/<domain_macro>/<type_macro>/<port>/<seq_num>
+    --
+    -- NB: while @domain@ is universally quantified here, it only makes sense
+    -- to instantiate it at @AF_INET@ or @AF_INET6@.
+    afInetPath ::
+      forall domain.
+      Word16 ->
+      ServerSocketInfo domain ->
+      FilePath
+    afInetPath sockPort ssi@(ServerSocketInfo
+                               { serverSocketNextConnection = sockNextConn
+                               }) =
+      mkSocketPathPrefix ssi FP.</> show sockPort FP.</> show sockNextConn
+
+-- | Construct a @/network/<domain_macro>/<type_macro>@ file path for a socket.
+-- See @Note [The networking story]@.
+mkSocketPathPrefix :: ServerSocketInfo domain -> FilePath
+mkSocketPathPrefix (ServerSocketInfo
+                      { serverSocketDomain = domainRepr
+                      , serverSocketType = typ
+                      }) =
+  "/network" FP.</> show (fromSocketDomainRepr domainRepr) FP.</> show typ
 
 buildBindOverride :: ( LCLM.HasPtrWidth w
                      , LCLM.HasLLVMAnn sym
+                     , DMC.MemWidth w
                      , w ~ DMC.ArchAddrWidth arch
                      )
                   => LCLS.LLVMFileSystem w
-                  -> LCS.GlobalVar LCLM.Mem
+                  -> AM.InitialMemory sym w
+                  -- ^ Initial memory state for symbolic execution
+                  -> Map.Map (DMC.MemWord w) String
+                  -- ^ Mapping from unsupported relocation addresses to the names of the
+                  -- unsupported relocation types.
                   -> FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
                                       (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                     Ctx.::> LCLM.LLVMPointerType w
                                                     Ctx.::> LCLM.LLVMPointerType w) ext
                                       (LCLM.LLVMPointerType w)
-buildBindOverride fs memVar = FunctionOverride
+buildBindOverride fs initialMem unsupportedRelocs = FunctionOverride
   { functionName = "bind"
   , functionGlobals = []
   , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
                                  Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
                                  Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
   , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callBind fs memVar bak) args
+  , functionOverride = \bak args -> Ctx.uncurryAssignment (callBind fs initialMem unsupportedRelocs bak) args
   }
 
 -- | Override for the @bind@ function. This function reads the port number from
 -- the @addr@ struct, ensures that it is concrete, and records it for later
 -- calls to @accept()@. See Note @[The networking story]@ for the full details.
-callBind :: ( LCB.IsSymBackend sym bak
+callBind :: forall sym bak arch w p solver scope st fs ext r args ret
+          . ( LCB.IsSymBackend sym bak
             , sym ~ WE.ExprBuilder scope st fs
             , bak ~ LCBO.OnlineBackend solver scope st fs
             , WPO.OnlineSolver solver
             , LCLM.HasLLVMAnn sym
             , LCLM.HasPtrWidth w
+            , DMC.MemWidth w
             , w ~ DMC.ArchAddrWidth arch
+            , p ~ AExt.AmbientSimulatorState sym arch
             )
          => LCLS.LLVMFileSystem w
-         -> LCS.GlobalVar LCLM.Mem
+         -> AM.InitialMemory sym w
+         -- ^ Initial memory state for symbolic execution
+         -> Map.Map (DMC.MemWord w) String
+         -- ^ Mapping from unsupported relocation addresses to the names of the
+         -- unsupported relocation types.
          -> bak
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-         -> LCS.OverrideSim (AExt.AmbientSimulatorState sym arch) sym ext r args ret
+         -> LCS.OverrideSim p sym ext r args ret
                             (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callBind _fs memVar bak sockfd addr _addrlen = do
-  let sym = LCB.backendGetSym bak
+callBind _fs initialMem unsupportedRelocs bak sockfd addr _addrlen = do
   sockfdInt <- liftIO $ networkConstantBVPtrToInteger bak "bind" AE.FDArgument (LCS.regValue sockfd)
   serverSocketFDs <- Lens.use (LCS.stateContext . LCS.cruciblePersonality . AExt.serverSocketFDs)
-  if Map.member sockfdInt serverSocketFDs
-    then do mem <- LCS.readGlobal memVar
-            portBV <- liftIO $ loadSockaddrInPort bak mem (LCS.regValue addr)
-            portInt <- liftIO $ fmap BVS.asUnsigned
-                              $ networkConstantBV bak "bind" AE.PortArgument (WI.knownNat @16) portBV
-            LCS.stateContext . LCS.cruciblePersonality . AExt.serverSocketFDs %=
-              Map.adjust (\ssi -> ssi{ serverSocketPort = Just (fromInteger portInt) })
-                         sockfdInt
-            ec <- returnIOSuccess
-            liftIO $ bvToPtr sym ec ?ptrWidth
-    else do ec <- returnIOError
-            liftIO $ bvToPtr sym ec ?ptrWidth
+  ec <- case Map.lookup sockfdInt serverSocketFDs of
+          Just (Some ssi) -> do
+            () <- case serverSocketDomain ssi of
+                    AF_UNIX_Repr  -> bindUnix sockfdInt ssi
+                    AF_INET_Repr  -> bindInet sockfdInt ssi
+                    AF_INET6_Repr -> bindInet sockfdInt ssi
+            returnIOSuccess
+          Nothing -> returnIOError
+  liftIO $ bvToPtr sym ec ?ptrWidth
+  where
+    sym = LCB.backendGetSym bak
+    memVar = AM.imMemVar initialMem
+
+    -- For AF_UNIX sockets, we bind the socket to a path name.
+    bindUnix ::
+      Integer ->
+      ServerSocketInfo AF_UNIX ->
+      LCS.OverrideSim p sym ext r args ret ()
+    bindUnix sockfdInt ssi = do
+      mem <- LCS.readGlobal memVar
+      portPath <- loadSockaddrUnPath bak mem initialMem unsupportedRelocs (LCS.regValue addr)
+      LCS.stateContext . LCS.cruciblePersonality . AExt.serverSocketFDs %=
+        Map.insert sockfdInt (Some (ssi{ serverSocketAddress = Just portPath }))
+
+    -- For AF_INET(6) sockets, we bind the socket to a port number.
+    bindInet ::
+      forall domain.
+      (SocketAddress domain ~ Word16) =>
+      Integer ->
+      ServerSocketInfo domain ->
+      LCS.OverrideSim p sym ext r args ret ()
+    bindInet sockfdInt ssi = do
+      mem <- LCS.readGlobal memVar
+      portBV <- liftIO $ loadSockaddrInPort bak mem (LCS.regValue addr)
+      portInt <- liftIO $ fmap BVS.asUnsigned
+                        $ networkConstantBV bak "bind" AE.PortArgument (WI.knownNat @16) portBV
+      LCS.stateContext . LCS.cruciblePersonality . AExt.serverSocketFDs %=
+        Map.insert sockfdInt (Some (ssi{ serverSocketAddress = Just (fromInteger portInt) }))
 
 -- | This function digs through the memory in a pointer to a @sockaddr_in@
 -- struct (for @AF_INET@ connections) or a @sockaddr_in6@ struct (for
@@ -699,6 +802,52 @@ loadSockaddrInPort bak mem sockaddrInPtr = do
   v <- LCLM.doLoad bak mem sockaddrInPortPtr (LCLM.bitvectorType inPortTLenBytes)
                    (LCLM.LLVMPointerRepr inPortTLenBits) LCLD.noAlignment
   LCLM.projectLLVM_bv bak v
+
+-- | This function digs through the memory in a pointer to a @sockaddr_un@
+-- struct and loads the @sun_path@ out of it, which is the only information
+-- that we care about in the verifier.
+loadSockaddrUnPath ::
+     ( LCB.IsSymBackend sym bak
+     , LCLM.HasLLVMAnn sym
+     , LCLM.HasPtrWidth w
+     , DMC.MemWidth w
+     , w ~ DMC.ArchAddrWidth arch
+     , p ~ AExt.AmbientSimulatorState sym arch
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , WPO.OnlineSolver solver
+     )
+  => bak
+  -> LCLM.MemImpl sym
+  -> AM.InitialMemory sym w
+  -> Map.Map (DMC.MemWord w) String
+  -> LCLM.LLVMPtr sym w
+  -> LCS.OverrideSim p sym ext r args ret BS.ByteString
+loadSockaddrUnPath bak mem initialMem unsupportedRelocs sockaddrUnPtr = do
+  let sym = LCB.backendGetSym bak
+  let -- See the comments above @saFamilyTLenBytes@ in 'loadSockaddrInPort'
+      -- for why we use 2 here.
+      saFamilyTLenBytes = BVS.mkBV ?ptrWidth 2
+  bvSaFamilyTLenBytes <- liftIO $ WI.bvLit sym ?ptrWidth saFamilyTLenBytes
+  let ?memOpts = overrideMemOptions
+  -- Here is the definition of @sockaddr_un@:
+  --
+  -- @
+  -- struct sockaddr_un {
+  --     sa_family_t sun_family;               /* AF_UNIX */
+  --     char        sun_path[108];            /* Pathname */
+  -- };
+  -- @
+  --
+  -- Just as with @sockaddr_in@, the information we care about is the second
+  -- field, which follows a field of type @sa_family_t@. Therefore, we use the
+  -- size of @sa_family_t@ to compute the offset.
+  sockaddrUnPathPtr <- liftIO $ LCLM.doPtrAddOffset bak mem sockaddrUnPtr bvSaFamilyTLenBytes
+  let sockaddrUnPathReg = LCS.RegEntry { LCS.regType = LCLM.PtrRepr, LCS.regValue = sockaddrUnPathPtr }
+  -- Note that the maximum size of @sun_path@ is 108 characters, which is why
+  -- we pass @Just 108@ here.
+  unPathBytes <- AExt.loadString bak mem initialMem unsupportedRelocs sockaddrUnPathReg (Just 108)
+  pure $ BS.pack unPathBytes
 
 buildConnectOverride :: ( LCLM.HasPtrWidth w
                         , w ~ DMC.ArchAddrWidth arch
@@ -915,20 +1064,27 @@ callSocket :: ( LCB.IsSymBackend sym bak
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.OverrideSim (AExt.AmbientSimulatorState sym arch) sym ext r args ret
                               (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callSocket fs bak domain typ _protocol = do
+callSocket fs bak domainReg typeReg _protocol = do
   let sym = LCB.backendGetSym bak
-  domainInt <- liftIO $ networkConstantBVPtrToInteger bak "socket" AE.DomainArgument (LCS.regValue domain)
-  domainText <-
+  domainInt <- liftIO $ networkConstantBVPtrToInteger bak "socket" AE.DomainArgument (LCS.regValue domainReg)
+  domain <-
     case Map.lookup domainInt socketDomainMap of
       Just d  -> pure d
       Nothing -> CMC.throwM $ AE.UnsupportedSocketArgument AE.DomainArgument domainInt
-  typeInt <- liftIO $ networkConstantBVPtrToInteger bak "socket" AE.TypeArgument (LCS.regValue typ)
-  typeText <-
+  Some domainRepr <- pure $ toSocketDomainRepr domain
+  typeInt <- liftIO $ networkConstantBVPtrToInteger bak "socket" AE.TypeArgument (LCS.regValue typeReg)
+  typ <-
     case Map.lookup typeInt socketTypeMap of
       Just t  -> pure t
       Nothing -> CMC.throwM $ AE.UnsupportedSocketArgument AE.TypeArgument typeInt
-  let socketFileStr = "/network" FP.</> T.unpack domainText FP.</> T.unpack typeText FP.</> "socket"
-  socketFileLit <- liftIO $ WI.stringLit sym $ WI.Char8Literal $ BS.pack socketFileStr
+  let ssi = ServerSocketInfo
+              { serverSocketDomain = domainRepr
+              , serverSocketType = typ
+              , serverSocketAddress = Nothing
+              , serverSocketNextConnection = 0
+              }
+  let socketFileStr = mkSocketPathPrefix ssi FP.</> "socket"
+  socketFileLit <- liftIO $ WI.stringLit sym $ WI.Char8Literal $ BSC.pack socketFileStr
   fd <- LCSy.openFile (LCLS.llvmFileSystem fs) socketFileLit $ \res -> do
     case res of
       Left LCSy.FileNotFound -> returnIOError
@@ -939,11 +1095,7 @@ callSocket fs bak domain typ _protocol = do
           Nothing -> AP.panic AP.FunctionOverride "callSocket"
                               ["allocateFileDescriptor should return a concrete FD"]
         LCS.stateContext . LCS.cruciblePersonality . AExt.serverSocketFDs %=
-          Map.insert (BVS.asUnsigned fdBV)
-                     (ServerSocketInfo { serverSocketFilePath = socketFileStr
-                                       , serverSocketPort = Nothing
-                                       , serverSocketNextConnection = 0
-                                       })
+          Map.insert (BVS.asUnsigned fdBV) (Some ssi)
         pure fd
   liftIO $ bvToPtr sym fd ?ptrWidth
 
@@ -957,10 +1109,11 @@ callSocket fs bak domain typ _protocol = do
 -- supports, so we have opted to hard-code the values for the time being. We
 -- should eventually move towards a design that avoids this
 -- hard-coding—see #75.
-socketDomainMap :: Map.Map Integer T.Text
+socketDomainMap :: Map.Map Integer SocketDomain
 socketDomainMap = Map.fromList
-  [ (2,  "AF_INET")
-  , (10, "AF_INET6")
+  [ (1,  AF_UNIX)
+  , (2,  AF_INET)
+  , (10, AF_INET6)
   ]
 
 -- | A map of socket types that the verifier supports. The keys are the
@@ -973,11 +1126,11 @@ socketDomainMap = Map.fromList
 -- supports, so we have opted to hard-code the values for the time being. We
 -- should eventually move towards a design that avoids this
 -- hard-coding—see #75.
-socketTypeMap :: Map.Map Integer T.Text
+socketTypeMap :: Map.Map Integer SocketType
 socketTypeMap = Map.fromList
-  [ (1, "SOCK_STREAM")
-  , (2, "SOCK_DGRAM")
-  , (5, "SOCK_SEQPACKET")
+  [ (1, SOCK_STREAM)
+  , (2, SOCK_DGRAM)
+  , (5, SOCK_SEQPACKET)
   ]
 
 -- | Concretize a symbolic bitvector representing the argument to a

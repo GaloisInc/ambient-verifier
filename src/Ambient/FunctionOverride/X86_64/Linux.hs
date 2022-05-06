@@ -134,7 +134,8 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs 
   -- TODO: Remove these (see #19)
   let hackyOverrides = [ AF.SomeFunctionOverride (AFO.buildHackyBumpMallocOverride bumpEndVar)
                        , AF.SomeFunctionOverride (AFO.buildHackyBumpCallocOverride bumpEndVar memVar)
-                       ]
+                       ] in
+  let networkOverrides = AFO.networkOverrides fs initialMem unsupportedRelocs
   in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
                     , AF.functionMainArgumentRegisters = (DMXR.RDI, DMXR.RSI)
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
@@ -142,7 +143,7 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs 
                       Map.fromList [ (AF.functionName fo, sfo)
                                    | sfo@(AF.SomeFunctionOverride fo) <-
                                        memOverrides ++ hackyOverrides ++
-                                       AFO.networkOverrides fs memVar ++ ovs
+                                       networkOverrides ++ ovs
                                    ]
                     , AF.functionKernelAddrMapping = kernelOvs
                     }
