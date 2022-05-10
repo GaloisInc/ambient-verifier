@@ -21,7 +21,7 @@ module Ambient.FunctionOverride.Extension (
   ) where
 
 import           Control.Applicative ( empty )
-import           Control.Monad ( void )
+import           Control.Monad ( void, unless )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import           Control.Monad.State.Class ( MonadState )
@@ -39,6 +39,7 @@ import qualified Data.Text.IO as DTI
 import qualified Data.Vector.NonEmpty as NEV
 import           GHC.TypeNats ( KnownNat, type (<=) )
 import qualified Lumberjack as LJ
+import qualified System.Directory as SD
 import qualified System.FilePath as SF
 import qualified System.FilePath.Glob as SFG
 import qualified System.IO as IO
@@ -92,6 +93,18 @@ allTypeAliases = [minBound .. maxBound]
 -- | Lookup function from a 'TypeAlias' to the underlying crucible type it
 -- represents.
 newtype TypeLookup = TypeLookup (TypeAlias -> (Some LCT.TypeRepr))
+
+-- | Check if overrides directory exists. If it does, return
+-- a list of the crucible syntax files in the overrides directory.
+globSyntaxOverrides 
+  :: FilePath 
+  -> IO [FilePath]
+globSyntaxOverrides dirPath = do
+  dirExists <- SD.doesDirectoryExist dirPath
+  unless dirExists $ do
+    CMC.throwM (AE.CrucibleOverrideDirectoryNotFound dirPath)
+  SFG.glob (dirPath SF.</> "function" SF.</> "*.cbl")
+
 
 -- | Load a single crucible syntax override.  This function returns an optional
 -- tuple containing:
@@ -164,7 +177,8 @@ runOverrideTests :: forall ext s sym bak arch w solver scope st fs
                  -- ^ ParserHooks for the desired syntax extension
                  -> IO ()
 runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
-  paths <- SFG.glob (dirPath SF.</> "function" SF.</> "*.cbl")
+  -- Check if dirPath exists
+  paths <- globSyntaxOverrides dirPath
   mapM_ go paths
   where
     sym = LCB.backendGetSym bak
@@ -249,7 +263,8 @@ loadCrucibleSyntaxOverrides :: LCCE.IsSyntaxExtension ext
                             -> IO [AF.SomeFunctionOverride p sym ext]
                             -- ^ A list of loaded overrides
 loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
-  paths <- SFG.glob (dirPath SF.</> "function" SF.</> "*.cbl")
+  -- Check if dirPath exists
+  paths <- globSyntaxOverrides dirPath
   mapM go paths
   where
     go path = do

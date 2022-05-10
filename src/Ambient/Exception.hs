@@ -57,6 +57,8 @@ data AmbientException where
   CrucibleSyntaxExprParseFailure :: LCSC.ExprErr s -> AmbientException
   -- | Could not find a function in a crucible syntax file
   CrucibleSyntaxFunctionNotFound :: String -> FilePath -> AmbientException
+  -- | The provided crucible syntax directory doesn't exist
+  CrucibleOverrideDirectoryNotFound :: FilePath -> AmbientException
   -- | Global variable declared with an unsupported type
   UnsuportedGlobalVariableType :: String -> LCT.TypeRepr t -> AmbientException
   -- | Crucible syntax test function has an illegal type signature
@@ -190,6 +192,8 @@ instance PP.Pretty AmbientException where
             _ -> PP.pretty (show err)
       CrucibleSyntaxFunctionNotFound name path ->
         PP.pretty "Expected to find a function named '" <> PP.pretty name <> PP.pretty "' in '" <> PP.pretty path <> PP.pretty "'"
+      CrucibleOverrideDirectoryNotFound path ->
+        PP.pretty "Crucible syntax override directory not found: " <> PP.pretty path
       UnsuportedGlobalVariableType name tp ->
         PP.pretty "Unable to construct symbolic value for global variable '" <> PP.pretty name <> PP.pretty "' with type '" <> PP.pretty tp <> PP.pretty "'"
       IllegalCrucibleSyntaxTestSignature path fnName ->
