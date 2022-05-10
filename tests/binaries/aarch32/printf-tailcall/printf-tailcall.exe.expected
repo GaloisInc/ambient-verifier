@@ -1,0 +1,3 @@
+successful: 0
+failed: 0
+overrideDir: tests/binaries/aarch32/printf-tailcall/printf-override/

@@ -146,6 +146,9 @@ lookup-scope/lookup-scope.exe: lookup-scope/lookup-scope.c lookup-scope/liblooku
 shm.exe: shm.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie $^ -o $@
 
+printf-tailcall/printf-tailcall.exe: printf-tailcall/printf-tailcall.c
+	$(MUSL_CC) -O2 -nostartfiles -no-pie $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 
