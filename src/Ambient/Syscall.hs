@@ -22,13 +22,17 @@ import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.Expr as WE
 import qualified What4.FunctionName as WF
+import qualified What4.Protocol.Online as WPO
 
+import qualified Ambient.Memory as AM
 import qualified Ambient.EventTrace as AE
 
 
@@ -46,8 +50,12 @@ data Syscall p sym args ext ret =
           , syscallReturnType :: LCT.TypeRepr ret
           -- ^ Return type of the syscall
           , syscallOverride
-              :: forall bak
-               . LCB.IsSymBackend sym bak
+              :: forall bak solver scope st fs
+               . ( LCB.IsSymBackend sym bak
+                 , sym ~ WE.ExprBuilder scope st fs
+                 , bak ~ LCBO.OnlineBackend solver scope st fs
+                 , WPO.OnlineSolver solver
+                 )
               => bak
               -> Ctx.Assignment (LCS.RegEntry sym) args
               -- Arguments to syscall
@@ -165,8 +173,10 @@ data SyscallABI arch sym p =
 newtype BuildSyscallABI arch sym p = BuildSyscallABI (
     LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
     -- File system to use in syscalls
-    -> LCS.GlobalVar LCLM.Mem
-    -- MemVar for the execution
+    -> AM.InitialMemory sym (DMC.ArchAddrWidth arch)
+    -> Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) String
+    -- ^ Mapping from unsupported relocation addresses to the names of the
+    -- unsupported relocation types.
     -> AE.Properties
     -- The properties to be checked, along with their corresponding global traces
     -> SyscallABI arch sym p

@@ -65,7 +65,7 @@ listOverrides logAction pinst = do
       (fs, globals0, LCLS.SomeOverrideSim _initFSOverride) <- liftIO $
         LCLS.initialLLVMFileSystem hdlAlloc sym WI.knownRepr fileContents [] (AM.imGlobals initialMem)
       (wmConfig, _globals1) <- liftIO $ AVW.initWMConfig sym hdlAlloc globals0 (AV.piProperties pinst)
-      let syscallABI = buildSyscallABI fs (AM.imMemVar initialMem) (AVW.wmProperties wmConfig)
+      let syscallABI = buildSyscallABI fs initialMem Map.empty (AVW.wmProperties wmConfig)
       let functionABI = buildFunctionABI fs initialMem Map.empty functionOvs Map.empty
 
       let ?recordLLVMAnnotation = \_ _ _ -> return ()

@@ -1032,7 +1032,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   (wmConfig, globals1) <- liftIO $ AVW.initWMConfig sym halloc globals0 (secProperties seConf)
 
   let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
-  let syscallABI = buildSyscallABI fs (AM.imMemVar initialMem) (AVW.wmProperties wmConfig)
+  let syscallABI = buildSyscallABI fs initialMem (ALB.bcUnsuportedRelocations binConf) (AVW.wmProperties wmConfig)
   let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
   let functionABI = buildFunctionABI fs initialMem (ALB.bcUnsuportedRelocations binConf) (fcFunctionOverrides fnConf) Map.empty
 

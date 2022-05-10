@@ -28,6 +28,8 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Types as LCT
 
+import qualified Ambient.Extensions as AE
+import qualified Ambient.Memory as AM
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Syscall as AS
@@ -168,9 +170,10 @@ aarch32LinuxSyscallReturnRegisters ovTy ovSim argsRepr args retRepr
     r0 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
     r1 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
 
-aarch32LinuxSyscallABI :: AS.BuildSyscallABI DMA.ARM sym p
-aarch32LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
+aarch32LinuxSyscallABI :: AS.BuildSyscallABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
+aarch32LinuxSyscallABI = AS.BuildSyscallABI $ \fs initialMem unsupportedRelocs properties ->
   let ?ptrWidth = PN.knownNat @32 in
+  let memVar = AM.imMemVar initialMem in
   AS.SyscallABI { AS.syscallArgumentRegisters = aarch32LinuxSyscallArgumentRegisters
                 , AS.syscallNumberRegister = aarch32LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = aarch32LinuxSyscallReturnRegisters
@@ -178,7 +181,7 @@ aarch32LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
                   [ (1, AS.SomeSyscall ASO.exitOverride)
                   , (3, AS.SomeSyscall (ASO.buildReadOverride fs memVar))
                   , (4, AS.SomeSyscall (ASO.buildWriteOverride fs memVar))
-                  , (5, AS.SomeSyscall (ASO.buildOpenOverride properties fs memVar))
+                  , (5, AS.SomeSyscall (ASO.buildOpenOverride properties fs initialMem unsupportedRelocs))
                   , (6, AS.SomeSyscall (ASO.buildCloseOverride fs memVar))
                   , (11, AS.SomeSyscall (ASO.buildExecveOverride properties))
                   , (64, AS.SomeSyscall ASO.getppidOverride)

@@ -164,6 +164,9 @@ lookup-scope/lookup-scope.exe: lookup-scope/lookup-scope.c lookup-scope/liblooku
 shm.exe: shm.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie $^ -o $@
 
+lazy-string-load.exe: lazy-string-load.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

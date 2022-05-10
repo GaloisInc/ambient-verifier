@@ -25,21 +25,29 @@ module Ambient.Syscall.Overrides
 import           Control.Monad.IO.Class ( liftIO )
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.Foldable as F
+import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import           Data.String ( fromString )
 import qualified Data.Text as DT
 
+import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.SimError as LCSS
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.Expr as WE
 import qualified What4.Interface as WI
+import qualified What4.Protocol.Online as WPO
 
 import           Ambient.Override
 import qualified Ambient.EventTrace as AE
+import qualified Ambient.Extensions as AExt
+import           Ambient.FunctionOverride.Overrides.SymIO as AFOS
+import qualified Ambient.Memory as AM
 import qualified Ambient.Property.Definition as APD
 import           Ambient.Syscall
 
@@ -281,17 +289,27 @@ buildNoOpMkdirOverride props = Syscall {
 callOpen :: ( LCLM.HasLLVMAnn sym
             , LCB.IsSymBackend sym bak
             , LCLM.HasPtrWidth w
+            , sym ~ WE.ExprBuilder scope st fs
+            , bak ~ LCBO.OnlineBackend solver scope st fs
+            , p ~ AExt.AmbientSimulatorState sym arch
+            , DMC.MemWidth w
+            , w ~ DMC.ArchAddrWidth arch
+            , WPO.OnlineSolver solver
             )
          => AE.Properties
          -> LCLS.LLVMFileSystem w
-         -> LCS.GlobalVar LCLM.Mem
+         -> AM.InitialMemory sym w
+         -- ^ Initial memory state for symbolic execution
+         -> Map.Map (DMC.MemWord w) String
+         -- ^ Mapping from unsupported relocation addresses to the names of the
+         -- unsupported relocation types.
          -> bak
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ File path to open
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ Flags to use when opening file
          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callOpen props fs memVar bak pathname flags = do
+callOpen props fs initialMem unsupportedRelocs bak pathname flags = do
   let sym = LCB.backendGetSym bak
   let ?memOpts = overrideMemOptions
   -- Drop upper 32 bits from flags to create a 32 bit flags int
@@ -303,30 +321,37 @@ callOpen props fs memVar bak pathname flags = do
     LCS.writeGlobal traceGlobal t1
 
   -- Use llvm override for open
-  resBv <- LCLS.callOpenFile bak memVar fs pathname flagsInt
+  resBv <- AFOS.callOpenFile bak initialMem unsupportedRelocs fs pathname flagsInt
 
   -- Pad result out to 64 bit pointer
   liftIO $ bvToPtr sym resBv ?ptrWidth
 
 buildOpenOverride :: ( LCLM.HasLLVMAnn sym
                      , LCLM.HasPtrWidth w
+                     , p ~ AExt.AmbientSimulatorState sym arch
+                     , DMC.MemWidth w
+                     , w ~ DMC.ArchAddrWidth arch
                      )
                   => AE.Properties
                   -> LCLS.LLVMFileSystem w
-                  -> LCS.GlobalVar LCLM.Mem
+                  -> AM.InitialMemory sym w
+                  -- ^ Initial memory state for symbolic execution
+                  -> Map.Map (DMC.MemWord w) String
+                  -- ^ Mapping from unsupported relocation addresses to the names of the
+                  -- unsupported relocation types.
                   -> Syscall p
                             sym
                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                           Ctx.::> LCLM.LLVMPointerType w)
                             ext
                             (LCLM.LLVMPointerType w)
-buildOpenOverride props fs memVar = Syscall {
+buildOpenOverride props fs initialMem unsupportedRelocs = Syscall {
     syscallName = fromString "open"
   , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
                                 Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
   , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
   , syscallOverride =
-      \bak args -> Ctx.uncurryAssignment (callOpen props fs memVar bak) args
+      \bak args -> Ctx.uncurryAssignment (callOpen props fs initialMem unsupportedRelocs bak) args
   }
 
 -- | Override for the write(2) system call

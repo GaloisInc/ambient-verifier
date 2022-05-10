@@ -21,6 +21,8 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Interface as WI
 
+import qualified Ambient.Extensions as AE
+import qualified Ambient.Memory as AM
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Syscall as AS
@@ -142,16 +144,17 @@ x86_64LinuxSyscallReturnRegisters ovTyp ovSim atps argRegs rtps
              [ "Unexpected shape of return registers: " ++ show rtps ]
 
 -- | An ABI for Linux syscalls on x86_64 processors
-x86_64LinuxSyscallABI :: AS.BuildSyscallABI DMX.X86_64 sym p
-x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs memVar properties ->
+x86_64LinuxSyscallABI :: AS.BuildSyscallABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
+x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs initialMem unsupportedRelocs properties ->
   let ?ptrWidth = PN.knownNat @64 in
+  let memVar = AM.imMemVar initialMem in
   AS.SyscallABI { AS.syscallArgumentRegisters = x86_64LinuxSyscallArgumentRegisters
                 , AS.syscallNumberRegister = x86_64LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = x86_64LinuxSyscallReturnRegisters
                 , AS.syscallMapping = Map.fromList
                     [ (0, AS.SomeSyscall (ASO.buildReadOverride fs memVar))
                     , (1, AS.SomeSyscall (ASO.buildWriteOverride fs memVar))
-                    , (2, AS.SomeSyscall (ASO.buildOpenOverride properties fs memVar))
+                    , (2, AS.SomeSyscall (ASO.buildOpenOverride properties fs initialMem unsupportedRelocs))
                     , (3, AS.SomeSyscall (ASO.buildCloseOverride fs memVar))
                     , (59, AS.SomeSyscall (ASO.buildExecveOverride properties))
                     , (60, AS.SomeSyscall ASO.exitOverride)
