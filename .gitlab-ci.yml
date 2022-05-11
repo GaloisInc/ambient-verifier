@@ -105,7 +105,7 @@ artifactory-cleanup:
       # nuclear approach of running `docker system prune`. Since we rebuild the
       # entire Docker image on each run anyway, this is probably an acceptable
       # compromise to make.
-    - docker system prune
+    - docker system prune --force
     - docker logout $CI_REGISTRY
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
