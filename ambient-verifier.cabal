@@ -85,6 +85,8 @@ library
                       Ambient.Syscall.Overrides,
                       Ambient.Syscall.AArch32.Linux,
                       Ambient.Syscall.X86_64.Linux,
+                      Ambient.Syscall.Names.X86_64.Linux,
+                      Ambient.Syscall.Names.AArch32.Linux,
                       Ambient.Timeout,
                       Ambient.Verifier,
                       Ambient.Verifier.Concretize,
