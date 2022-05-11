@@ -94,6 +94,18 @@ artifactory-cleanup:
       optional: true
   script:
     - docker rmi $CI_REGISTRY/$DOCKER_TAG || true
+      # Even running `docker rmi` isn't enough to clear all of the files that
+      # Docker builds up when building images. While the gitlab-runner
+      # provides a clear-docker-cache script that should, in theory, fit this
+      # need (see
+      # https://docs.gitlab.com/runner/executors/docker.html#clearing-docker-cache),
+      # in practice it doesn't appear to actually remove anything that
+      # `docker rmi` doesn't already remove. To make absolute sure that Docker
+      # isn't slowly eating up disk space after each build, we employ the
+      # nuclear approach of running `docker system prune`. Since we rebuild the
+      # entire Docker image on each run anyway, this is probably an acceptable
+      # compromise to make.
+    - docker system prune
     - docker logout $CI_REGISTRY
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
