@@ -38,6 +38,11 @@ import qualified Ambient.Verifier.SymbolicExecution as AVS
 
 -- | List all of the overrides that are registered for verifying a binary,
 -- without actually verifying the binary.
+
+-- It's surprisingly complicated to implement this, primarily by virtue of the
+-- fact that we have to construct all of the arguments needed for
+-- 'buildFunctionABI' and 'buildSyscallABI'. Issue #131 explores the
+-- possibility of refactoring things to make this simpler to implement.
 listOverrides :: LJ.LogAction IO AD.Diagnostic
               -> AV.ProgramInstance
               -> IO ()
