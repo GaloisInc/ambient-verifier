@@ -33,7 +33,6 @@ import           Ambient.Override.List.Types
 import qualified Ambient.Solver as AS
 import qualified Ambient.Syscall as ASy
 import qualified Ambient.Verifier as AV
-import qualified Ambient.Verifier.WMM as AVW
 import qualified Ambient.Verifier.SymbolicExecution as AVS
 
 -- | List all of the overrides that are registered for verifying a binary,
@@ -67,10 +66,9 @@ listOverrides logAction pinst = do
           Nothing -> return LCSy.emptyInitialFileSystemContents
           Just fsRoot -> LCSL.loadInitialFiles sym fsRoot
       let ?ptrWidth = WI.knownNat @(DMC.ArchAddrWidth arch)
-      (fs, globals0, LCLS.SomeOverrideSim _initFSOverride) <- liftIO $
+      (fs, _, LCLS.SomeOverrideSim _initFSOverride) <- liftIO $
         LCLS.initialLLVMFileSystem hdlAlloc sym WI.knownRepr fileContents [] (AM.imGlobals initialMem)
-      (wmConfig, _globals1) <- liftIO $ AVW.initWMConfig sym hdlAlloc globals0 (AV.piProperties pinst)
-      let syscallABI = buildSyscallABI fs initialMem Map.empty (AVW.wmProperties wmConfig)
+      let syscallABI = buildSyscallABI fs initialMem Map.empty
       let functionABI = buildFunctionABI fs initialMem Map.empty functionOvs Map.empty
 
       let ?recordLLVMAnnotation = \_ _ _ -> return ()

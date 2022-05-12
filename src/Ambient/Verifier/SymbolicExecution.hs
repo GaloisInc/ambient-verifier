@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -24,6 +25,7 @@ import qualified Control.Monad.State.Strict as CMS
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
 import qualified Data.Foldable as F
+import qualified Data.IntMap as IM
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe )
@@ -457,6 +459,24 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
     panic :: [String] -> a
     panic = AP.panic AP.SymbolicExecution "lookupFunction"
 
+-- | Record a syscall transition
+recordSyscallEvent ::
+  forall p sym ext rtp blocks r ctx.
+  WI.IsExprBuilder sym =>
+  sym ->
+  DT.Text ->
+  AET.Properties ->
+  LCS.CrucibleState p sym ext rtp blocks r ctx ->
+  IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
+recordSyscallEvent sym syscallName = recordEvent (matchSyscallEvent syscallName) sym
+  where
+    -- | Returns 'True' if the transition is for the named system call
+    matchSyscallEvent :: DT.Text -> APD.Transition -> Bool
+    matchSyscallEvent expected t =
+      case t of
+        APD.IssuesSyscall name | name == expected -> True
+        _ -> False
+
 -- | Record a function property transition.
 recordFunctionEvent ::
   forall p sym ext rtp blocks r ctx.
@@ -466,10 +486,27 @@ recordFunctionEvent ::
   AET.Properties ->
   LCS.CrucibleState p sym ext rtp blocks r ctx ->
   IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
-recordFunctionEvent sym fnName props state = do
+recordFunctionEvent sym fnName = recordEvent (matchFunctionEvent fnName) sym
+  where
+    matchFunctionEvent :: WF.FunctionName -> APD.Transition -> Bool
+    matchFunctionEvent expected t =
+      case t of
+        APD.InvokesFunction name | name == expected -> True
+        _ -> False
+
+-- | Record a transition
+recordEvent ::
+  forall p sym ext rtp blocks r ctx.
+  WI.IsExprBuilder sym =>
+  (APD.Transition -> Bool) ->
+  sym ->
+  AET.Properties ->
+  LCS.CrucibleState p sym ext rtp blocks r ctx ->
+  IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
+recordEvent event sym props state = do
   F.foldlM (\state' (prop, traceGlobal) ->
              do let t0 = readGlobal traceGlobal state'
-                t1 <- AET.recordEvent (matchFunctionEvent fnName) sym prop t0
+                t1 <- AET.recordEvent event sym prop t0
                 pure $ writeGlobal traceGlobal t1 state')
            state (AET.properties props)
   where
@@ -496,12 +533,6 @@ recordFunctionEvent sym fnName props state = do
       over (LCSE.stateTree . LCSE.actFrame . LCS.gpGlobals)
            (LCSG.insertGlobal gv rv)
            st
-
-    matchFunctionEvent :: WF.FunctionName -> APD.Transition -> Bool
-    matchFunctionEvent expected t =
-      case t of
-        APD.InvokesFunction name | name == expected -> True
-        _ -> False
 
 -- | This function builds a function handle for an override and inserts it into
 -- a state's function bindings
@@ -558,18 +589,29 @@ lookupSyscall
   -> ASy.SyscallABI arch sym p
   -- ^ System call ABI specification for 'arch'
   -> LCF.HandleAllocator
+  -> AET.Properties
   -> DMS.LookupSyscallHandle p sym arch
-lookupSyscall bak abi hdlAlloc =
-  DMS.LookupSyscallHandle $ \(atps :: LCT.CtxRepr atps) (rtps :: LCT.CtxRepr rtps) state reg -> do
+lookupSyscall bak abi hdlAlloc props =
+  DMS.LookupSyscallHandle $ \(atps :: LCT.CtxRepr atps) (rtps :: LCT.CtxRepr rtps) state0 reg -> do
     -- Extract system call number from register state
     syscallReg <- liftIO $ ASy.syscallNumberRegister abi bak atps reg
     let regVal = LCS.regValue syscallReg
     syscallNum <- resolveConcreteStackVal bak (Proxy @arch) AE.SyscallNumber regVal
 
+    let syscallName = fromMaybe 
+          (AP.panic AP.SymbolicExecution "lookupSyscall"
+            ["Unknown syscall with code " ++ show syscallNum])
+            (IM.lookup (fromIntegral syscallNum) (ASy.syscallCodeMapping abi))
+
     -- Look for override associated with system call number, registering it if
     -- it has not already been so.
-    lazilyRegisterHandle state atps rtps syscallNum
+    (hndl, state1) <- lazilyRegisterHandle state0 atps rtps syscallNum syscallName
+
+    -- Record syscall event
+    state2 <- liftIO $ recordSyscallEvent sym syscallName props state1
+    pure (hndl, state2)
   where
+    sym = LCB.backendGetSym bak
     -- This function abstracts over a common pattern when dealing with lazily
     -- registering overrides (see Note [Lazily registering overrides] in
     -- A.Extensions):
@@ -583,27 +625,29 @@ lookupSyscall bak abi hdlAlloc =
                          -> LCT.CtxRepr atps
                          -> LCT.CtxRepr rtps
                          -> Integer
+                         -> DT.Text
                          -> IO ( LCF.FnHandle atps (LCT.StructType rtps)
                                , LCS.CrucibleState p sym ext rtp blocks r ctx
                                )
-    lazilyRegisterHandle state atps rtps syscallNum = do
+    lazilyRegisterHandle state atps rtps syscallNum syscallName = do
       let syscallNumRepr = ASy.SyscallNumRepr atps rtps syscallNum
       case MapF.lookup syscallNumRepr (state ^. LCS.stateContext . LCS.cruciblePersonality . AExt.syscallOvHandles) of
         Just (ASy.SyscallFnHandle handle) ->
           pure (handle, state)
         Nothing ->
-          applyOverride state syscallNumRepr
+          applyOverride state syscallNumRepr syscallName
 
     -- Apply a user-supplied override for the syscall, throwing an exception if
     -- an override cannot be found.
     applyOverride :: forall atps rtps rtp blocks r ctx
                    . LCS.CrucibleState p sym ext rtp blocks r ctx
                   -> ASy.SyscallNumRepr '(atps, rtps)
+                  -> DT.Text
                   -> IO ( LCF.FnHandle atps (LCT.StructType rtps)
                         , LCS.CrucibleState p sym ext rtp blocks r ctx
                         )
-    applyOverride state syscallNumRepr@(ASy.SyscallNumRepr atps rtps syscallNum) =
-      case Map.lookup syscallNum (ASy.syscallMapping abi) of
+    applyOverride state syscallNumRepr@(ASy.SyscallNumRepr atps rtps syscallNum) syscallName =
+      case Map.lookup syscallName (ASy.syscallOverrideMapping abi) of
         Just (ASy.SomeSyscall syscall) -> do
           (handle, state') <- mkAndBindOverride state atps rtps syscall
           let state'' = over (LCS.stateContext . LCS.cruciblePersonality . AExt.syscallOvHandles)
@@ -1032,7 +1076,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   (wmConfig, globals1) <- liftIO $ AVW.initWMConfig sym halloc globals0 (secProperties seConf)
 
   let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
-  let syscallABI = buildSyscallABI fs initialMem (ALB.bcUnsuportedRelocations binConf) (AVW.wmProperties wmConfig)
+  let syscallABI = buildSyscallABI fs initialMem (ALB.bcUnsuportedRelocations binConf)
   let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
   let functionABI = buildFunctionABI fs initialMem (ALB.bcUnsuportedRelocations binConf) (fcFunctionOverrides fnConf) Map.empty
 
@@ -1053,7 +1097,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc) (ALB.bcUnsuportedRelocations binConf)
+    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig)) (ALB.bcUnsuportedRelocations binConf)
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
                                        LCF.emptyHandleMap

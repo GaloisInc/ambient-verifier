@@ -16,6 +16,8 @@ module Ambient.Syscall (
 
 import qualified Data.Kind as Kind
 import qualified Data.Map.Strict as Map
+import qualified Data.IntMap as IM
+import qualified Data.Text as DT
 import qualified Data.Parameterized.Classes as PC
 import qualified Data.Parameterized.Context as Ctx
 
@@ -33,7 +35,6 @@ import qualified What4.FunctionName as WF
 import qualified What4.Protocol.Online as WPO
 
 import qualified Ambient.Memory as AM
-import qualified Ambient.EventTrace as AE
 
 
 -------------------------------------------------------------------------------
@@ -160,12 +161,16 @@ data SyscallABI arch sym p =
      -- OverrideSim action with return type matching system return register
      -- type
 
-    -- A mapping from syscall numbers to overrides
-  , syscallMapping
+    -- A mapping from syscall names to overrides
+  , syscallOverrideMapping
      :: forall ext
       . ( LCB.IsSymInterface sym
         , LCLM.HasLLVMAnn sym )
-     => Map.Map Integer (SomeSyscall p sym ext)
+     => Map.Map DT.Text (SomeSyscall p sym ext)
+  
+    -- A mapping from syscall numbers to names
+  , syscallCodeMapping
+    :: IM.IntMap DT.Text
   }
 
 -- A function to construct a SyscallABI with file system and memory access, as
@@ -177,8 +182,6 @@ newtype BuildSyscallABI arch sym p = BuildSyscallABI (
     -> Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) String
     -- ^ Mapping from unsupported relocation addresses to the names of the
     -- unsupported relocation types.
-    -> AE.Properties
-    -- The properties to be checked, along with their corresponding global traces
     -> SyscallABI arch sym p
   )
 

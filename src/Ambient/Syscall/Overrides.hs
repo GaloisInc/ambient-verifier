@@ -24,11 +24,9 @@ module Ambient.Syscall.Overrides
 
 import           Control.Monad.IO.Class ( liftIO )
 import qualified Data.BitVector.Sized as BVS
-import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import           Data.String ( fromString )
-import qualified Data.Text as DT
 
 import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
@@ -44,19 +42,10 @@ import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
 
 import           Ambient.Override
-import qualified Ambient.EventTrace as AE
 import qualified Ambient.Extensions as AExt
 import           Ambient.FunctionOverride.Overrides.SymIO as AFOS
 import qualified Ambient.Memory as AM
-import qualified Ambient.Property.Definition as APD
 import           Ambient.Syscall
-
--- | Returns 'True' if the transition is for the named system call
-matchSyscallEvent :: DT.Text -> APD.Transition -> Bool
-matchSyscallEvent expected t =
-  case t of
-    APD.IssuesSyscall name | name == expected -> True
-    _ -> False
 
 -- | Override for the 'execve' system call.  Currently this override records
 -- that it was invoked through the 'hitExec' global, then aborts.
@@ -66,26 +55,20 @@ matchSyscallEvent expected t =
 callExecve :: ( LCB.IsSymBackend sym bak
               , LCLM.HasPtrWidth w
               )
-           => AE.Properties
-           -> bak
+           => bak
            -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callExecve props bak = do
+callExecve bak = do
   let sym = LCB.backendGetSym bak
-  F.forM_ (AE.properties props) $ \(prop, traceGlobal) -> do
-    t0 <- LCS.readGlobal traceGlobal
-    t1 <- liftIO $ AE.recordEvent (matchSyscallEvent (DT.pack "execve")) sym prop t0
-    LCS.writeGlobal traceGlobal t1
   loc <- liftIO $ WI.getCurrentProgramLoc sym
   liftIO $ LCB.abortExecBecause $ LCB.EarlyExit loc
 
 buildExecveOverride :: LCLM.HasPtrWidth w
-                    => AE.Properties
-                    -> Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
-buildExecveOverride props = Syscall {
+                    => Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
+buildExecveOverride = Syscall {
     syscallName = fromString "execve"
   , syscallArgTypes = Ctx.empty
   , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , syscallOverride = \bak _args -> callExecve props bak
+  , syscallOverride = \bak _args -> callExecve bak
 }
 
 -- | Override for the 'exit' system call.
@@ -263,26 +246,20 @@ buildWriteOverride fs memVar = Syscall {
 -- to track invocations of mkdir syscalls.
 callNoOpMkdir :: ( LCB.IsSymBackend sym bak
                  , LCLM.HasPtrWidth w )
-              => AE.Properties
-              -> bak
+              => bak
               -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callNoOpMkdir props bak = do
+callNoOpMkdir bak = do
   let sym = LCB.backendGetSym bak
-  F.forM_ (AE.properties props) $ \(prop, traceGlobal) -> do
-    t0 <- LCS.readGlobal traceGlobal
-    t1 <- liftIO $ AE.recordEvent (matchSyscallEvent (DT.pack "mkdir")) sym prop t0
-    LCS.writeGlobal traceGlobal t1
   zeroBv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.zero ?ptrWidth)
   liftIO $ bvToPtr sym zeroBv ?ptrWidth
 
 buildNoOpMkdirOverride :: LCLM.HasPtrWidth w
-                    => AE.Properties
-                    -> Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
-buildNoOpMkdirOverride props = Syscall {
+                    => Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
+buildNoOpMkdirOverride = Syscall {
     syscallName = fromString "mkdir"
   , syscallArgTypes = Ctx.empty
   , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , syscallOverride = \bak _args -> callNoOpMkdir props bak
+  , syscallOverride = \bak _args -> callNoOpMkdir bak
 }
 
 -- | Override for the open(2) system call
@@ -296,8 +273,7 @@ callOpen :: ( LCLM.HasLLVMAnn sym
             , w ~ DMC.ArchAddrWidth arch
             , WPO.OnlineSolver solver
             )
-         => AE.Properties
-         -> LCLS.LLVMFileSystem w
+         => LCLS.LLVMFileSystem w
          -> AM.InitialMemory sym w
          -- ^ Initial memory state for symbolic execution
          -> Map.Map (DMC.MemWord w) String
@@ -309,16 +285,11 @@ callOpen :: ( LCLM.HasLLVMAnn sym
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -- ^ Flags to use when opening file
          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callOpen props fs initialMem unsupportedRelocs bak pathname flags = do
+callOpen fs initialMem unsupportedRelocs bak pathname flags = do
   let sym = LCB.backendGetSym bak
   let ?memOpts = overrideMemOptions
   -- Drop upper 32 bits from flags to create a 32 bit flags int
   flagsInt <- liftIO $ ptrToBv32 bak ?ptrWidth flags
-
-  F.forM_ (AE.properties props) $ \(prop, traceGlobal) -> do
-    t0 <- LCS.readGlobal traceGlobal
-    t1 <- liftIO $ AE.recordEvent (matchSyscallEvent (DT.pack "open")) sym prop t0
-    LCS.writeGlobal traceGlobal t1
 
   -- Use llvm override for open
   resBv <- AFOS.callOpenFile bak initialMem unsupportedRelocs fs pathname flagsInt
@@ -332,8 +303,7 @@ buildOpenOverride :: ( LCLM.HasLLVMAnn sym
                      , DMC.MemWidth w
                      , w ~ DMC.ArchAddrWidth arch
                      )
-                  => AE.Properties
-                  -> LCLS.LLVMFileSystem w
+                  => LCLS.LLVMFileSystem w
                   -> AM.InitialMemory sym w
                   -- ^ Initial memory state for symbolic execution
                   -> Map.Map (DMC.MemWord w) String
@@ -345,13 +315,13 @@ buildOpenOverride :: ( LCLM.HasLLVMAnn sym
                                           Ctx.::> LCLM.LLVMPointerType w)
                             ext
                             (LCLM.LLVMPointerType w)
-buildOpenOverride props fs initialMem unsupportedRelocs = Syscall {
+buildOpenOverride fs initialMem unsupportedRelocs = Syscall {
     syscallName = fromString "open"
   , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
                                 Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
   , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
   , syscallOverride =
-      \bak args -> Ctx.uncurryAssignment (callOpen props fs initialMem unsupportedRelocs bak) args
+      \bak args -> Ctx.uncurryAssignment (callOpen fs initialMem unsupportedRelocs bak) args
   }
 
 -- | Override for the write(2) system call

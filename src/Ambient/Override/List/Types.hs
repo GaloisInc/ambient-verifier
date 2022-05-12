@@ -14,8 +14,8 @@ import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Syscall as ASy
 
 data OverrideLists arch = OverrideLists
-  { syscallOverrides :: [(WF.FunctionName, Integer)]
-    -- ^ Overrides for system calls. Includes the number of each syscall.
+  { syscallOverrides :: [WF.FunctionName]
+    -- ^ Overrides for system calls.
   , functionOverrides :: [WF.FunctionName]
     -- ^ Overrides for typical function calls (with the exception of
     -- kernel-related functions, as recorded in 'kernelFunctionOverrides').
@@ -32,9 +32,9 @@ mkOverrideLists ::
 mkOverrideLists syscallABI functionABI =
   OverrideLists
     { syscallOverrides =
-        map (\(num, ASy.SomeSyscall (ASy.Syscall{ASy.syscallName = name})) ->
-              (name, num))
-            (Map.toList (ASy.syscallMapping syscallABI))
+        map (\(_, ASy.SomeSyscall (ASy.Syscall{ASy.syscallName = name})) ->
+              name)
+            (Map.toList (ASy.syscallOverrideMapping syscallABI))
     , functionOverrides =
         map (\(_, AF.SomeFunctionOverride (AF.FunctionOverride{AF.functionName = name})) ->
               name)

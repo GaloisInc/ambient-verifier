@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -26,6 +27,7 @@ import qualified Ambient.Memory as AM
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Syscall as AS
+import qualified Ambient.Syscall.Names.X86_64.Linux as SN
 import qualified Ambient.Syscall.Overrides as ASO
 
 type SyscallRegsType = Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType 64
@@ -145,25 +147,26 @@ x86_64LinuxSyscallReturnRegisters ovTyp ovSim atps argRegs rtps
 
 -- | An ABI for Linux syscalls on x86_64 processors
 x86_64LinuxSyscallABI :: AS.BuildSyscallABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
-x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs initialMem unsupportedRelocs properties ->
+x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs initialMem unsupportedRelocs ->
   let ?ptrWidth = PN.knownNat @64 in
   let memVar = AM.imMemVar initialMem in
   AS.SyscallABI { AS.syscallArgumentRegisters = x86_64LinuxSyscallArgumentRegisters
                 , AS.syscallNumberRegister = x86_64LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = x86_64LinuxSyscallReturnRegisters
-                , AS.syscallMapping = Map.fromList
-                    [ (0, AS.SomeSyscall (ASO.buildReadOverride fs memVar))
-                    , (1, AS.SomeSyscall (ASO.buildWriteOverride fs memVar))
-                    , (2, AS.SomeSyscall (ASO.buildOpenOverride properties fs initialMem unsupportedRelocs))
-                    , (3, AS.SomeSyscall (ASO.buildCloseOverride fs memVar))
-                    , (59, AS.SomeSyscall (ASO.buildExecveOverride properties))
-                    , (60, AS.SomeSyscall ASO.exitOverride)
+                , AS.syscallOverrideMapping = Map.fromList
+                    [ ("read", AS.SomeSyscall (ASO.buildReadOverride fs memVar))
+                    , ("write", AS.SomeSyscall (ASO.buildWriteOverride fs memVar))
+                    , ("open", AS.SomeSyscall (ASO.buildOpenOverride fs initialMem unsupportedRelocs))
+                    , ("close", AS.SomeSyscall (ASO.buildCloseOverride fs memVar))
+                    , ("execve", AS.SomeSyscall ASO.buildExecveOverride)
+                    , ("exit", AS.SomeSyscall ASO.exitOverride)
                     -- FIXME: This no-op override is for tracking purposes
                     -- only.  It should be replaced with a more faithful
                     -- override at some point.
-                    , (83, AS.SomeSyscall (ASO.buildNoOpMkdirOverride properties))
-                    , (110, AS.SomeSyscall ASO.getppidOverride)
+                    , ("mkdir", AS.SomeSyscall ASO.buildNoOpMkdirOverride)
+                    , ("getppid", AS.SomeSyscall ASO.getppidOverride)
                     ]
+                , AS.syscallCodeMapping = SN.syscallMap
                 }
 
 -- | Extract the value of a given register from the x86_64 argument register

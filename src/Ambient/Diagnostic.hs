@@ -131,10 +131,8 @@ instance PP.Pretty Diagnostic where
                                           }) ->
         PP.vcat
           [ overridesHeader "Syscall overrides"
-            <> foldMap (\(name, num) ->
-                         PP.pretty "- " <> PP.pretty name <>
-                         PP.pretty " (syscall number " <> PP.pretty num <>
-                         PP.pretty ")" <> PP.line)
+            <> foldMap (\name ->
+                         PP.pretty "- " <> PP.pretty name <> PP.line)
                        syscallOverrides
 
           , overridesHeader "Function overrides"
