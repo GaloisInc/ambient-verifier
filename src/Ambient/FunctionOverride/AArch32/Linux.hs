@@ -39,6 +39,7 @@ import qualified Ambient.Extensions as AE
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.Overrides as AFO
+import qualified Ambient.Memory as AM
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 
@@ -128,16 +129,19 @@ callKUserGetTLSOverride _bak tlsGlob = do
     Just tlsPtr -> pure tlsPtr
 
 aarch32LinuxFunctionABI ::
-     LCCC.GlobalVar (LCLM.LLVMPointerType 32)
+     (?memOpts :: LCLM.MemOptions)
+  => LCCC.GlobalVar (LCLM.LLVMPointerType 32)
      -- ^ Global variable for TLS
   -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
-aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs _bumpEndVar memVar ovs kernelOvs ->
+aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs ovs kernelOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @32 in
+  let memVar = AM.imMemVar initialMem in
   let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride memVar)
                      , AF.SomeFunctionOverride (AFO.buildMemsetOverride memVar)
                      , AF.SomeFunctionOverride (AFO.buildShmgetOverride memVar)
                      , AF.SomeFunctionOverride AFO.shmatOverride
+                     , AF.SomeFunctionOverride (AFO.buildSprintfOverride initialMem unsupportedRelocs)
                      ] in
   let customKernelOvs =
         -- The addresses are taken from

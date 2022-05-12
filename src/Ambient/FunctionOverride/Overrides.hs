@@ -22,6 +22,8 @@ module Ambient.FunctionOverride.Overrides
   , callShmget
   , shmatOverride
   , callShmat
+  -- * Printf-related overrides
+  , module Ambient.FunctionOverride.Overrides.Printf
     -- * Networking-related overrides
   , networkOverrides
   , buildAcceptOverride
@@ -73,6 +75,7 @@ import qualified What4.ProgramLoc as WP
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import           Ambient.FunctionOverride
+import           Ambient.FunctionOverride.Overrides.Printf
 import qualified Ambient.Memory.SharedMemory as AMS
 import           Ambient.Override
 import qualified Ambient.Panic as AP

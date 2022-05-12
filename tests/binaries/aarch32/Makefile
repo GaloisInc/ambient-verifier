@@ -149,6 +149,9 @@ shm.exe: shm.c ambient_assert.o
 printf-tailcall/printf-tailcall.exe: printf-tailcall/printf-tailcall.c
 	$(MUSL_CC) -O2 -nostartfiles -no-pie $< -o $@
 
+sprintf.exe: sprintf.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

@@ -12,6 +12,8 @@
 -- | Defines verifier-specific extensions for Macaw's simulation functionality.
 module Ambient.Extensions
   ( ambientExtensions
+  , readMem
+  , loadString
   , AmbientSimulatorState(..)
   , incrementSimStat
   , lensNumOvsApplied
@@ -33,6 +35,7 @@ import qualified Control.Exception as X
 import           Control.Lens ( Lens', (^.), lens, over, (&), (+~))
 import           Control.Monad ( when )
 import           Control.Monad.IO.Class ( MonadIO(liftIO) )
+import qualified Control.Monad.State as CMS
 import qualified Data.Aeson as DA
 import qualified Data.BitVector.Sized as BV
 import qualified Data.Foldable as F
@@ -47,7 +50,9 @@ import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.Map as MapF
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as DV
+import           Data.Word ( Word8 )
 import           GHC.Generics ( Generic )
+import qualified GHC.Stack as GHC
 import           Text.Printf ( printf )
 
 import qualified Data.Macaw.CFG as DMC
@@ -72,6 +77,7 @@ import qualified What4.Protocol.Online as WPO
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions.Memory as AEM
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.SharedMemory as AMS
 import qualified Ambient.Syscall as ASy
 import qualified Ambient.Verifier.Concretize as AVC
@@ -89,26 +95,133 @@ ambientExtensions ::
      )
   => bak
   -> DMS.MacawArchEvalFn (AmbientSimulatorState sym arch) sym LCLM.Mem arch
-  -> LCS.GlobalVar LCLM.Mem
-  -> DMS.GlobalMap sym LCLM.Mem w
+  -> AM.InitialMemory sym w
+  -- ^ Initial memory state for symbolic execution
   -> DMS.LookupFunctionHandle (AmbientSimulatorState sym arch) sym arch
   -- ^ A function to translate virtual addresses into function handles
   -- dynamically during symbolic execution
   -> DMS.LookupSyscallHandle (AmbientSimulatorState sym arch) sym arch
   -- ^ A function to examine the machine state to determine which system call
   -- should be invoked; returns the function handle to invoke
-  -> DMS.MkGlobalPointerValidityAssertion sym w
-  -- ^ A function to make memory validity predicates
   -> Map.Map (DMM.MemWord w) String
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
-  -> AEM.MemPtrTable sym (DMC.ArchAddrWidth arch)
-  -- ^ The global memory
   -> LCSE.ExtensionImpl (AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)
-ambientExtensions bak f mvar globs lookupH lookupSyscall toMemPred unsupportedRelocs mpt =
-  (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred)
-    { LCSE.extensionExec = execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred unsupportedRelocs mpt
+ambientExtensions bak f initialMem lookupH lookupSyscall unsupportedRelocs =
+  (DMS.macawExtensions f (AM.imMemVar initialMem) (AM.imGlobalMap initialMem) lookupH lookupSyscall (AM.imValidityCheck initialMem))
+    { LCSE.extensionExec = execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedRelocs
     }
+
+-- | Read memory through a pointer
+readMem :: forall sym scope st fs bak solver arch p w ext rtp f args ty.
+     ( LCB.IsSymInterface sym
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , WPO.OnlineSolver solver
+     , LCLM.HasLLVMAnn sym
+     , p ~ AmbientSimulatorState sym arch
+     , w ~ DMC.ArchAddrWidth arch
+     , ?memOpts :: LCLM.MemOptions
+     )
+  => bak
+  -> LCLM.MemImpl sym
+  -> AM.InitialMemory sym w
+  -- ^ Initial memory state for symbolic execution
+  -> Map.Map (DMM.MemWord w) String
+  -- ^ Mapping from unsupported relocation addresses to the names of the
+  -- unsupported relocation types.
+  -> LCS.SimState p sym ext rtp f args
+  -> DMM.AddrWidthRepr w
+  -> DMC.MemRepr ty
+  -- ^ Info about read (endianness, size)
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -- ^ Pointer to read from
+  -> IO ( LCS.RegValue sym (DMS.ToCrucibleType ty)
+        , LCS.SimState p sym ext rtp f args )
+readMem bak memImpl initialMem unsupportedRelocs st addrWidth memRep ptr0 =
+  DMM.addrWidthClass addrWidth $ do
+    let mpt = AM.imMemPtrTable initialMem
+    let sym = LCB.backendGetSym bak
+    ptr1 <- DMSMO.tryGlobPtr bak memImpl (AM.imGlobalMap initialMem) (LCS.regValue ptr0)
+    (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
+    assertRelocSupported ptr2 unsupportedRelocs
+    case concreteImmutableGlobalRead memRep ptr2 mpt of
+      Just bytes -> do
+        readVal <- AEM.readBytesAsRegValue sym memRep bytes
+        let st' = incrementSimStat lensNumReads st
+        pure (readVal, st')
+      Nothing -> do
+        st1 <- lazilyPopulateGlobalMemArr bak mpt ptr2 st
+        let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerRead
+        mGlobalPtrValid <- (AM.imValidityCheck initialMem) sym puse Nothing ptr0
+        case mGlobalPtrValid of
+          Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
+          Nothing -> return ()
+        readVal <- DMSMO.doReadMem bak memImpl addrWidth memRep ptr2
+        let st2 = updateReads readVal memRep (updateBoundsRefined resolveEffect st1)
+        return (readVal,st2)
+
+-- | Load a null-terminated string from the memory.
+--
+-- The pointer to read from must be concrete and nonnull.  Moreover,
+-- we require all the characters in the string to be concrete.
+-- Otherwise it is very difficult to tell when the string has
+-- terminated.  If a maximum number of characters is provided, no more
+-- than that number of charcters will be read.  In either case,
+-- 'loadString' will stop reading if it encounters a null-terminator.
+--
+-- NOTE: The only difference between this function and the version defined in
+-- Crucible is that this function uses the Ambient @readMem@ function to load
+-- through the string pointer.
+loadString
+  :: forall sym bak w p ext r args ret m arch scope st fs solver
+   . ( LCB.IsSymBackend sym bak
+     , LCLM.HasPtrWidth w
+     , LCLM.HasLLVMAnn sym
+     , ?memOpts :: LCLM.MemOptions
+     , GHC.HasCallStack
+     , DMC.MemWidth w
+     , w ~ DMC.ArchAddrWidth arch
+     , p ~ AmbientSimulatorState sym arch
+     , m ~ LCS.OverrideSim p sym ext r args ret
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , WPO.OnlineSolver solver
+     )
+  => bak
+  -> LCLM.MemImpl sym
+  -- ^ memory to read from
+  -> AM.InitialMemory sym w
+  -- ^ Initial memory state for symbolic execution
+  -> Map.Map (DMC.MemWord w) String
+  -- ^ Mapping from unsupported relocation addresses to the names of the
+  -- unsupported relocation types.
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -- ^ pointer to string value
+  -> Maybe Int
+  -- ^ maximum characters to read
+  -> m [Word8]
+loadString bak memImpl initialMem unsupportedRelocs = go id
+ where
+  sym = LCB.backendGetSym bak
+
+  go :: ([Word8] -> [Word8]) -> LCS.RegEntry sym (LCLM.LLVMPointerType w) -> Maybe Int -> m [Word8]
+  go f _ (Just 0) = return $ f []
+  go f p maxChars = do
+     let readInfo = DMC.BVMemRepr (WI.knownNat @1) DMC.LittleEndian
+     st <- CMS.get
+     (v, st') <- liftIO $ readMem bak memImpl initialMem unsupportedRelocs st (DMC.addrWidthRepr ?ptrWidth) readInfo p
+     CMS.put st'
+     x <- liftIO $ LCLM.projectLLVM_bv bak v
+     case BV.asUnsigned <$> WI.asBV x of
+       Just 0 -> return $ f []
+       Just c -> do
+           let c' :: Word8 = toEnum $ fromInteger c
+           p' <- liftIO $ LCLM.doPtrAddOffset bak memImpl (LCS.regValue p) =<< WI.bvLit sym LCLM.PtrWidth (BV.one LCLM.PtrWidth)
+           go (f . (c':)) (LCS.RegEntry (LCLM.LLVMPointerRepr ?ptrWidth) p') (fmap (\n -> n - 1) maxChars)
+       Nothing ->
+         liftIO $ LCB.addFailedAssertion bak
+            $ LCS.Unsupported GHC.callStack "Symbolic value encountered when loading a string"
 
 -- | This evaluates a Macaw statement extension in the simulator.
 execAmbientStmtExtension :: forall sym scope st fs bak solver arch p w.
@@ -124,55 +237,34 @@ execAmbientStmtExtension :: forall sym scope st fs bak solver arch p w.
      )
   => bak
   -> DMS.MacawArchEvalFn p sym LCLM.Mem arch
-  -> LCS.GlobalVar LCLM.Mem
-  -> DMS.GlobalMap sym LCLM.Mem w
+  -> AM.InitialMemory sym w
+  -- ^ Initial memory state for symbolic execution
   -> DMS.LookupFunctionHandle p sym arch
   -- ^ A function to turn machine addresses into Crucible function
   -- handles (which can also perform lazy CFG creation)
   -> DMS.LookupSyscallHandle p sym arch
   -- ^ A function to examine the machine state to determine which system call
   -- should be invoked; returns the function handle to invoke
-  -> DMS.MkGlobalPointerValidityAssertion sym w
-  -- ^ A function to make memory validity predicates
   -> Map.Map (DMM.MemWord w) String
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
-  -> AEM.MemPtrTable sym (DMC.ArchAddrWidth arch)
-  -- ^ The global memory
   -> DMSB.MacawEvalStmtFunc (DMS.MacawStmtExtension arch) p sym (DMS.MacawExt arch)
-execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred unsupportedRelocs mpt s0 st =
+execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedRelocs s0 st =
   -- NB: Most of this code is copied directly from the 'execMacawStmtExtension'
   -- function in macaw-symbolic. One notable difference is the use of
   -- 'AVC.resolveSingletonPointer' to attempt to concrete the pointer being
   -- read from—or, the pointer being written to—in cases relating to
   -- reading or writing memory, respectively.
   case s0 of
-    DMS.MacawReadMem addrWidth memRep ptr0 -> DMM.addrWidthClass addrWidth $ do
-      mem <- DMSMO.getMem st mvar
-      ptr1 <- DMSMO.tryGlobPtr bak mem globs (LCS.regValue ptr0)
-      (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
-      assertRelocSupported ptr2
-      case concreteImmutableGlobalRead memRep ptr2 of
-        Just bytes -> do
-          readVal <- AEM.readBytesAsRegValue sym memRep bytes
-          let st' = incrementSimStat lensNumReads st
-          pure (readVal, st')
-        Nothing -> do
-          st1 <- lazilyPopulateGlobalMemArr bak mpt ptr2 st
-          let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerRead
-          mGlobalPtrValid <- toMemPred sym puse Nothing ptr0
-          case mGlobalPtrValid of
-            Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
-            Nothing -> return ()
-          readVal <- DMSMO.doReadMem bak mem addrWidth memRep ptr2
-          let st2 = updateReads readVal memRep (updateBoundsRefined resolveEffect st1)
-          return (readVal,st2)
+    DMS.MacawReadMem addrWidth memRep ptr0 -> do
+      memImpl <- DMSMO.getMem st mvar
+      readMem bak memImpl initialMem unsupportedRelocs st addrWidth memRep ptr0
     DMS.MacawCondReadMem addrWidth memRep cond ptr0 condFalseValue -> DMM.addrWidthClass addrWidth $ do
-      mem <- DMSMO.getMem st mvar
-      ptr1 <- DMSMO.tryGlobPtr bak mem globs (LCS.regValue ptr0)
+      memImpl <- DMSMO.getMem st mvar
+      ptr1 <- DMSMO.tryGlobPtr bak memImpl globs (LCS.regValue ptr0)
       (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
-      assertRelocSupported ptr2
-      case concreteImmutableGlobalRead memRep ptr2 of
+      assertRelocSupported ptr2 unsupportedRelocs
+      case concreteImmutableGlobalRead memRep ptr2 mpt of
         Just bytes -> do
           readVal <- AEM.readBytesAsRegValue sym memRep bytes
           readVal' <- muxMemReprValue sym memRep (LCS.regValue cond) readVal (LCS.regValue condFalseValue)
@@ -185,12 +277,12 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred unsupp
           case mGlobalPtrValid of
             Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
             Nothing -> return ()
-          readVal <- DMSMO.doCondReadMem bak mem addrWidth memRep (LCS.regValue cond) ptr2 (LCS.regValue condFalseValue)
+          readVal <- DMSMO.doCondReadMem bak memImpl addrWidth memRep (LCS.regValue cond) ptr2 (LCS.regValue condFalseValue)
           let st2 = updateReads readVal memRep (updateBoundsRefined resolveEffect st1)
           return (readVal,st2)
     DMS.MacawWriteMem addrWidth memRep ptr0 v -> DMM.addrWidthClass addrWidth $ do
-      mem <- DMSMO.getMem st mvar
-      ptr1 <- DMSMO.tryGlobPtr bak mem globs (LCS.regValue ptr0)
+      memImpl <- DMSMO.getMem st mvar
+      ptr1 <- DMSMO.tryGlobPtr bak memImpl globs (LCS.regValue ptr0)
       (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
       st1 <- lazilyPopulateGlobalMemArr bak mpt ptr2 st
       let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerWrite
@@ -198,12 +290,12 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred unsupp
       case mGlobalPtrValid of
         Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
         Nothing -> return ()
-      mem1 <- DMSMO.doWriteMem bak mem addrWidth memRep ptr2 (LCS.regValue v)
+      mem1 <- DMSMO.doWriteMem bak memImpl addrWidth memRep ptr2 (LCS.regValue v)
       let st2 = updateBoundsRefined resolveEffect st1
       pure ((), DMSMO.setMem st2 mvar mem1)
     DMS.MacawCondWriteMem addrWidth memRep cond ptr0 v -> DMM.addrWidthClass addrWidth $ do
-      mem <- DMSMO.getMem st mvar
-      ptr1 <- DMSMO.tryGlobPtr bak mem globs (LCS.regValue ptr0)
+      memImpl <- DMSMO.getMem st mvar
+      ptr1 <- DMSMO.tryGlobPtr bak memImpl globs (LCS.regValue ptr0)
       (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
       st1 <- lazilyPopulateGlobalMemArr bak mpt ptr2 st
       let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerWrite
@@ -211,7 +303,7 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred unsupp
       case mGlobalPtrValid of
         Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
         Nothing -> return ()
-      mem1 <- DMSMO.doCondWriteMem bak mem addrWidth memRep (LCS.regValue cond) ptr2 (LCS.regValue v)
+      mem1 <- DMSMO.doCondWriteMem bak memImpl addrWidth memRep (LCS.regValue cond) ptr2 (LCS.regValue v)
       let st2 = updateBoundsRefined resolveEffect st1
       pure ((), DMSMO.setMem st2 mvar mem1)
     _ ->
@@ -222,112 +314,128 @@ execAmbientStmtExtension bak f mvar globs lookupH lookupSyscall toMemPred unsupp
       LCSE.extensionExec (DMS.macawExtensions f mvar globs lookupFnH lookupSyscall toMemPred) s0 st
   where
     sym = LCB.backendGetSym bak
-    memPtrBlk = LCLMP.llvmPointerBlock (AEM.memPtr mpt)
+    mvar = AM.imMemVar initialMem
+    globs = AM.imGlobalMap initialMem
+    toMemPred = AM.imValidityCheck initialMem
+    mpt = AM.imMemPtrTable initialMem
 
-    -- Return @Just bytes@ if we can be absolutely sure that this is a concrete
-    -- read from a contiguous region of immutable, global memory, where @bytes@
-    -- are the bytes backing the global memory. Return @Nothing@ otherwise.
-    -- See @Note [Lazy memory initialization]@ in Ambient.Extensions.Memory.
-    concreteImmutableGlobalRead ::
-      DMC.MemRepr ty ->
-      LCLM.LLVMPtr sym w ->
-      Maybe [WI.SymBV sym 8]
-    concreteImmutableGlobalRead memRep ptr
-      | -- First, check that the pointer being read from is concrete.
-        Just ptrBlkNat <- WI.asNat ptrBlk
-      , Just addrBV    <- WI.asBV ptrOff
-
-        -- Next, check that the pointer block is the same as the block of the
-        -- pointer backing global memory.
-      , Just memPtrBlkNat <- WI.asNat memPtrBlk
-      , ptrBlkNat == memPtrBlkNat
-
-        -- Next, check that we are attempting to read from a contiguous region
-        -- of memory.
-      , let addr = fromInteger $ BV.asUnsigned addrBV
-      , Just (addrBaseInterval, smc) <-
-          combineChunksIfContiguous $ IM.toAscList $
-          AEM.memPtrTable mpt `IM.containing` addr
-
-        -- Next, check that the memory is immutable.
-      , AEM.smcMutability smc == LCLM.Immutable
-
-        -- Finally, check that the region of memory is large enough to cover
-        -- the number of bytes we are attempting to read.
-      , let addrOffset = fromIntegral $ addr - IMI.lowerBound addrBaseInterval
-      , numBytes <= (length (AEM.smcBytes smc) - addrOffset)
-      = let bytes = Seq.take numBytes $
-                    Seq.drop addrOffset $
-                    AEM.smcBytes smc in
-        Just $ F.toList bytes
-
-      | otherwise
-      = Nothing
-      where
-        numBytes = fromIntegral $ DMC.memReprBytes memRep
-        (ptrBlk, ptrOff) = LCLM.llvmPointerView ptr
-
-    -- Update the metric tracking the number of symbolic bitvector bounds
-    -- refined
-    updateBoundsRefined :: AVC.ResolveSymBVEffect
-                        -- ^ Effect resolving SymBV had on underlying bitvector
-                        -> LCS.CrucibleState p sym ext rtp blocks r ctx
-                        -- ^ State to update
-                        -> LCS.CrucibleState p sym ext rtp blocks r ctx
-    updateBoundsRefined resolveEffect state =
-      case resolveEffect of
-        AVC.Concretized -> state
-        AVC.UnchangedBounds -> state
-        AVC.RefinedBounds -> incrementSimStat lensNumBoundsRefined state
-
-    -- Update the metrics tracking the total number of reads and number of
-    -- symbolic reads
-    updateReads :: LCS.RegValue sym (DMS.ToCrucibleType ty)
-                -- ^ Value returned by a read
-                -> DMC.MemRepr ty
-                -- ^ Type of the read value
-                -> LCS.CrucibleState p sym ext rtp blocks r ctx
-                -- ^ State to update
-                -> LCS.CrucibleState p sym ext rtp blocks r ctx
-    updateReads readVal memRep state =
-      let state' = incrementSimStat lensNumReads state in
-      if readIsSymbolic memRep readVal
-      then incrementSimStat lensNumSymbolicReads state'
-      else state'
-
+-- Update the metrics tracking the total number of reads and number of
+-- symbolic reads
+updateReads :: forall sym ty p ext rtp f args arch
+             . ( p ~ AmbientSimulatorState sym arch
+               , LCB.IsSymInterface sym )
+            => LCS.RegValue sym (DMS.ToCrucibleType ty)
+            -- ^ Value returned by a read
+            -> DMC.MemRepr ty
+            -- ^ Type of the read value
+            -> LCS.SimState p sym ext rtp f args
+            -- ^ State to update
+            -> LCS.SimState p sym ext rtp f args
+updateReads readVal memRep state =
+  let state' = incrementSimStat lensNumReads state in
+  if readIsSymbolic memRep readVal
+  then incrementSimStat lensNumSymbolicReads state'
+  else state'
+  where
     -- Returns True iff the memory read is at least partly symbolic
-    readIsSymbolic :: DMC.MemRepr ty
-                   -> LCS.RegValue sym (DMS.ToCrucibleType ty)
+    readIsSymbolic :: DMC.MemRepr ty'
+                   -> LCS.RegValue sym (DMS.ToCrucibleType ty')
                    -> Bool
-    readIsSymbolic memRep readVal =
-      case memRep of
+    readIsSymbolic memRep' readVal' =
+      case memRep' of
         DMC.BVMemRepr{} ->
           -- Check whether value is symbolic
-          let (LCLM.LLVMPointer base bv) = readVal in
+          let (LCLM.LLVMPointer base bv) = readVal' in
           isNothing (WI.asNat base) || isNothing (WI.asBV bv)
-        DMC.FloatMemRepr{} -> isNothing (WI.asConcrete readVal)
+        DMC.FloatMemRepr{} -> isNothing (WI.asConcrete readVal')
         DMC.PackedVecMemRepr _w vecMemRep ->
           -- Recursively look for symbolic values in vector
-          any (readIsSymbolic vecMemRep) readVal
+          any (readIsSymbolic vecMemRep) readVal'
 
-    -- | Check whether a pointer points to a relocation address, and if so,
-    -- assert that the underlying relocation type is supported.  If not, throw
-    -- an UnsupportedRelocation exception.  This is a best effort attempt: if
-    -- the read is symbolic the check is skipped.
-    assertRelocSupported :: LCLM.LLVMPtr sym w -> IO ()
-    assertRelocSupported (LCLM.LLVMPointer _base offset) =
-      case WI.asBV offset of
-        Nothing ->
-          -- Symbolic read.  Cannot check whether this is an unsupported
-          -- relocation.
-          return ()
-        Just bv -> do
-          -- Check whether this read is from an unsupported relocation type.
-          let addr = DMM.memWord (fromIntegral (BV.asUnsigned bv))
-          case Map.lookup addr unsupportedRelocs of
-            Just relTypeName ->
-              X.throwIO $ AE.UnsupportedRelocation relTypeName
-            Nothing -> return ()
+-- Update the metric tracking the number of symbolic bitvector bounds
+-- refined
+updateBoundsRefined :: ( p ~ AmbientSimulatorState sym arch )
+                    => AVC.ResolveSymBVEffect
+                    -- ^ Effect resolving SymBV had on underlying bitvector
+                    -> LCS.SimState p sym ext rtp f args
+                    -- ^ State to update
+                    -> LCS.SimState p sym ext rtp f args
+updateBoundsRefined resolveEffect state =
+  case resolveEffect of
+    AVC.Concretized -> state
+    AVC.UnchangedBounds -> state
+    AVC.RefinedBounds -> incrementSimStat lensNumBoundsRefined state
+
+-- Return @Just bytes@ if we can be absolutely sure that this is a concrete
+-- read from a contiguous region of immutable, global memory, where @bytes@
+-- are the bytes backing the global memory. Return @Nothing@ otherwise.
+-- See @Note [Lazy memory initialization]@ in Ambient.Extensions.Memory.
+concreteImmutableGlobalRead ::
+  (LCB.IsSymInterface sym, DMM.MemWidth w) =>
+  DMC.MemRepr ty ->
+  LCLM.LLVMPtr sym w ->
+  AEM.MemPtrTable sym w ->
+  Maybe [WI.SymBV sym 8]
+concreteImmutableGlobalRead memRep ptr mpt
+  | -- First, check that the pointer being read from is concrete.
+    Just ptrBlkNat <- WI.asNat ptrBlk
+  , Just addrBV    <- WI.asBV ptrOff
+
+    -- Next, check that the pointer block is the same as the block of the
+    -- pointer backing global memory.
+  , Just memPtrBlkNat <- WI.asNat memPtrBlk
+  , ptrBlkNat == memPtrBlkNat
+
+    -- Next, check that we are attempting to read from a contiguous region
+    -- of memory.
+  , let addr = fromInteger $ BV.asUnsigned addrBV
+  , Just (addrBaseInterval, smc) <-
+      combineChunksIfContiguous $ IM.toAscList $
+      AEM.memPtrTable mpt `IM.containing` addr
+
+    -- Next, check that the memory is immutable.
+  , AEM.smcMutability smc == LCLM.Immutable
+
+    -- Finally, check that the region of memory is large enough to cover
+    -- the number of bytes we are attempting to read.
+  , let addrOffset = fromIntegral $ addr - IMI.lowerBound addrBaseInterval
+  , numBytes <= (length (AEM.smcBytes smc) - addrOffset)
+  = let bytes = Seq.take numBytes $
+                Seq.drop addrOffset $
+                AEM.smcBytes smc in
+    Just $ F.toList bytes
+
+  | otherwise
+  = Nothing
+  where
+    numBytes = fromIntegral $ DMC.memReprBytes memRep
+    (ptrBlk, ptrOff) = LCLM.llvmPointerView ptr
+    memPtrBlk = LCLMP.llvmPointerBlock (AEM.memPtr mpt)
+
+
+-- | Check whether a pointer points to a relocation address, and if so,
+-- assert that the underlying relocation type is supported.  If not, throw
+-- an UnsupportedRelocation exception.  This is a best effort attempt: if
+-- the read is symbolic the check is skipped.
+assertRelocSupported :: (LCB.IsSymInterface sym, DMM.MemWidth w)
+                     => LCLM.LLVMPtr sym w
+                     -> Map.Map (DMM.MemWord w) String
+                     -- ^ Mapping from unsupported relocation addresses to the
+                     -- names of the unsupported relocation types.
+                     -> IO ()
+assertRelocSupported (LCLM.LLVMPointer _base offset) unsupportedRelocs =
+  case WI.asBV offset of
+    Nothing ->
+      -- Symbolic read.  Cannot check whether this is an unsupported
+      -- relocation.
+      return ()
+    Just bv -> do
+      -- Check whether this read is from an unsupported relocation type.
+      let addr = DMM.memWord (fromIntegral (BV.asUnsigned bv))
+      case Map.lookup addr unsupportedRelocs of
+        Just relTypeName ->
+          X.throwIO $ AE.UnsupportedRelocation relTypeName
+        Nothing -> return ()
 
 -- | Given a Boolean condition and two symbolic values associated with
 -- a Macaw type, return a value denoting the first value if condition
@@ -368,7 +476,7 @@ muxMemReprValue sym memRep cond x y =
 -- that backs global memory. See @Note [Lazy memory initialization]@ in
 -- "Ambient.Extensions.Memory".
 lazilyPopulateGlobalMemArr ::
-  forall sym bak arch w t st fs p ext rtp blocks r ctx.
+  forall sym bak arch w t st fs p ext rtp f args.
   ( LCB.IsSymBackend sym bak
   , sym ~ WEB.ExprBuilder t st fs
   , w ~ DMC.ArchAddrWidth arch
@@ -380,9 +488,9 @@ lazilyPopulateGlobalMemArr ::
   -- ^ The global memory
   LCLM.LLVMPtr sym w ->
   -- ^ The pointer being read from
-  LCS.CrucibleState p sym ext rtp blocks r ctx ->
+  LCS.SimState p sym ext rtp f args ->
   -- ^ State to update if this is a global read
-  IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
+  IO (LCS.SimState p sym ext rtp f args)
 lazilyPopulateGlobalMemArr bak mpt ptr state
   | -- We only wish to populate the array backing global memory if we know for
     -- sure that we are reading from the global pointer. If we're reading from a
@@ -403,7 +511,7 @@ lazilyPopulateGlobalMemArr bak mpt ptr state
     -- of reading from the pointer
     tbl = IM.toAscList $ AEM.memPtrTable mpt `IM.intersecting` ptrOffsetInterval ptr
 
-    chunksL :: Lens' (LCS.CrucibleState p sym ext rtp blocks r ctx)
+    chunksL :: Lens' (LCS.SimState p sym ext rtp f args)
                      (IS.IntervalSet (IMI.Interval (DMM.MemWord w)))
     chunksL = LCS.stateContext . LCS.cruciblePersonality . populatedMemChunks
 
@@ -594,9 +702,9 @@ emptyAmbientSimulationStats =
 incrementSimStat :: ( p ~ AmbientSimulatorState sym arch )
                  => Lens' AmbientSimulationStats Integer
                  -- ^ Accessor for the stat to update
-                 -> LCS.CrucibleState p sym ext rtp blocks r ctx
+                 -> LCS.SimState p sym ext rtp f args
                  -- ^ State holding the 'AmbientSimulationStats' to update
-                 -> LCS.CrucibleState p sym ext rtp blocks r ctx
+                 -> LCS.SimState p sym ext rtp f args
 incrementSimStat statLens state =
   state & LCS.stateContext
         . LCS.cruciblePersonality

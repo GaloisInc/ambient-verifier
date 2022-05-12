@@ -56,6 +56,7 @@ library
                       Ambient.FunctionOverride.ArgumentMapping,
                       Ambient.FunctionOverride.Extension,
                       Ambient.FunctionOverride.Overrides,
+                      Ambient.FunctionOverride.Overrides.Printf,
                       Ambient.FunctionOverride.AArch32.Linux,
                       Ambient.FunctionOverride.X86_64.Linux,
                       Ambient.Lift,

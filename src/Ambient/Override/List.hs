@@ -28,6 +28,7 @@ import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Loader as AL
 import qualified Ambient.Loader.BinaryConfig as ALB
+import qualified Ambient.Memory as AM
 import           Ambient.Override.List.Types
 import qualified Ambient.Solver as AS
 import qualified Ambient.Syscall as ASy
@@ -62,10 +63,10 @@ listOverrides logAction pinst = do
           Just fsRoot -> LCSL.loadInitialFiles sym fsRoot
       let ?ptrWidth = WI.knownNat @(DMC.ArchAddrWidth arch)
       (fs, globals0, LCLS.SomeOverrideSim _initFSOverride) <- liftIO $
-        LCLS.initialLLVMFileSystem hdlAlloc sym WI.knownRepr fileContents [] (AVS.imGlobals initialMem)
+        LCLS.initialLLVMFileSystem hdlAlloc sym WI.knownRepr fileContents [] (AM.imGlobals initialMem)
       (wmConfig, _globals1) <- liftIO $ AVW.initWMConfig sym hdlAlloc globals0 (AV.piProperties pinst)
-      let syscallABI = buildSyscallABI fs (AVS.imMemVar initialMem) (AVW.wmProperties wmConfig)
-      let functionABI = buildFunctionABI fs (AVS.imHeapEndGlob initialMem) (AVS.imMemVar initialMem) functionOvs Map.empty
+      let syscallABI = buildSyscallABI fs (AM.imMemVar initialMem) (AVW.wmProperties wmConfig)
+      let functionABI = buildFunctionABI fs initialMem Map.empty functionOvs Map.empty
 
       let ?recordLLVMAnnotation = \_ _ _ -> return ()
       let ols = mkOverrideLists syscallABI functionABI

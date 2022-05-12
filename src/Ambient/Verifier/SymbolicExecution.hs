@@ -10,7 +10,6 @@ module Ambient.Verifier.SymbolicExecution (
     SymbolicExecutionConfig(..)
   , symbolicallyExecute
   , insertFreshGlobals
-  , InitialMemory(..)
   , initializeMemory
   , FunctionConfig(..)
   , extractIP
@@ -745,26 +744,6 @@ insertFreshGlobals sym globs initialState = foldM go initialState globs
           val <- WI.freshConstant sym (WI.safeSymbol name) bt
           return $ LCSG.insertGlobal glob val state
 
--- | Initial memory state for symbolic execution
-data InitialMemory sym w =
-  InitialMemory { imMemVar :: LCS.GlobalVar LCLM.Mem
-               -- ^ MemVar to use in simulation
-                , imGlobals :: LCSG.SymGlobalState sym
-               -- ^ Initial global variables
-                , imStackBasePtr :: LCLM.LLVMPtr sym w
-               -- ^ Stack memory base pointer
-                , imHeapEndGlob :: LCS.GlobalVar (LCLMP.LLVMPointerType w)
-               -- ^ Pointer to the end of heap memory
-                , imValidityCheck :: DMS.MkGlobalPointerValidityAssertion sym w
-               -- ^ Additional pointer validity checks to enforce
-                , imGlobalMap :: DMS.GlobalMap sym LCLM.Mem w
-               -- ^ Globals used by the macaw translation; note that this is
-               -- separate from the global variable map passed to crucible, as
-               -- it is only used for initializing the macaw extension
-                , imMemPtrTable :: AEM.MemPtrTable sym w
-               -- ^ The global memory
-                }
-
 globalMemoryHooks :: forall w
                    . ( DMM.MemWidth w )
                   => Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
@@ -827,7 +806,7 @@ initializeMemory
   -- ^ A list of additional function overrides to register.
   -> Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
   -- ^ Mapping from shared library global variables to their addresses
-  -> m ( InitialMemory sym w )
+  -> m ( AM.InitialMemory sym w )
 initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobals) functionOvs globals = do
   let sym = LCB.backendGetSym bak
 
@@ -862,14 +841,14 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
                                  | AF.SomeFunctionOverride ov <- functionOvs ]
   globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
 
-  return (InitialMemory { imMemVar = memVar
-                        , imGlobals = globals2
-                        , imStackBasePtr = stackBasePtr
-                        , imHeapEndGlob = heapEndGlob
-                        , imValidityCheck = validityCheck
-                        , imGlobalMap = globalMap
-                        , imMemPtrTable = memPtrTbl
-                        })
+  return (AM.InitialMemory { AM.imMemVar = memVar
+                           , AM.imGlobals = globals2
+                           , AM.imStackBasePtr = stackBasePtr
+                           , AM.imHeapEndGlob = heapEndGlob
+                           , AM.imValidityCheck = validityCheck
+                           , AM.imGlobalMap = globalMap
+                           , AM.imMemPtrTable = memPtrTbl
+                           })
 
 -- | Populate the registers corresponding to @main(argc, argv)@'s arguments
 -- with the user-supplied command line arguments.
@@ -1010,7 +989,7 @@ simulateFunction
   -> DMA.ArchitectureInfo arch
   -> DMS.GenArchVals DMS.LLVMMemory arch
   -> SymbolicExecutionConfig arch sym
-  -> InitialMemory sym w
+  -> AM.InitialMemory sym w
   -> DMC.ArchSegmentOff arch
   -- ^ The address of the entry point function
   -> Maybe FilePath
@@ -1037,7 +1016,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   -- Put the stack pointer in the middle of our allocated stack so that both sides can be addressed
   initialRegs <- liftIO $ DMS.macawAssignToCrucM (mkInitialRegVal symArchFns sym) (DMS.crucGenRegAssignment symArchFns)
   stackInitialOffset <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr stackOffset)
-  sp <- liftIO $ LCLM.ptrAdd sym WI.knownRepr (imStackBasePtr initialMem) stackInitialOffset
+  sp <- liftIO $ LCLM.ptrAdd sym WI.knownRepr (AM.imStackBasePtr initialMem) stackInitialOffset
   let initialRegsEntry = LCS.RegEntry regsRepr initialRegs
   let regsWithStack = DMS.updateReg archVals initialRegsEntry DMC.sp_reg sp
 
@@ -1048,23 +1027,23 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
       Just fsRoot -> LCSL.loadInitialFiles sym fsRoot
   let ?ptrWidth = WI.knownRepr
   (fs, globals0, LCLS.SomeOverrideSim initFSOverride) <- liftIO $
-    LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] (imGlobals initialMem)
+    LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] (AM.imGlobals initialMem)
 
   (wmConfig, globals1) <- liftIO $ AVW.initWMConfig sym halloc globals0 (secProperties seConf)
 
   let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
-  let syscallABI = buildSyscallABI fs (imMemVar initialMem) (AVW.wmProperties wmConfig)
+  let syscallABI = buildSyscallABI fs (AM.imMemVar initialMem) (AVW.wmProperties wmConfig)
   let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
-  let functionABI = buildFunctionABI fs (imHeapEndGlob initialMem) (imMemVar initialMem) (fcFunctionOverrides fnConf) Map.empty
+  let functionABI = buildFunctionABI fs initialMem (ALB.bcUnsuportedRelocations binConf) (fcFunctionOverrides fnConf) Map.empty
 
-  let mem0 = case LCSG.lookupGlobal (imMemVar initialMem) globals1 of
+  let mem0 = case LCSG.lookupGlobal (AM.imMemVar initialMem) globals1 of
                Just mem -> mem
                Nothing  -> AP.panic AP.FunctionOverride "simulateFunction"
                              [ "Failed to find global variable for memory: "
-                               ++ show (LCCC.globalName (imMemVar initialMem)) ]
+                               ++ show (LCCC.globalName (AM.imMemVar initialMem)) ]
   let (mainReg0, mainReg1) = AF.functionMainArgumentRegisters functionABI
   (regsWithMainArgs, mem1) <- liftIO $ initMainArguments bak mem0 archVals mainReg0 mainReg1 cliArgs regsWithStack
-  let globals2 = LCSG.insertGlobal (imMemVar initialMem) mem1 globals1
+  let globals2 = LCSG.insertGlobal (AM.imMemVar initialMem) mem1 globals1
   let arguments = LCS.RegMap (Ctx.singleton regsWithMainArgs)
 
   let mainBinaryPath = ALB.mainLoadedBinaryPath binConf
@@ -1074,7 +1053,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn (imMemVar initialMem) (imGlobalMap initialMem) (lookupFunction logAction bak archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc) (imValidityCheck initialMem) (ALB.bcUnsuportedRelocations binConf) (imMemPtrTable initialMem)
+    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc) (ALB.bcUnsuportedRelocations binConf)
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
                                        LCF.emptyHandleMap
@@ -1093,7 +1072,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
     let executionFeatures = wmm : fmap LCS.genericToExecutionFeature execFeatures
 
     res <- liftIO $ LCS.executeCrucible executionFeatures s0
-    return (imMemVar initialMem, res, wmConfig)
+    return (AM.imMemVar initialMem, res, wmConfig)
 
 -- | Symbolically execute a function
 --

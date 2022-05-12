@@ -33,6 +33,7 @@ import qualified Lang.Crucible.Types as LCT
 import qualified What4.Interface as WI
 
 import qualified Ambient.Extensions as AE
+import qualified Ambient.Memory as AM
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.FunctionOverride as AF
@@ -115,14 +116,18 @@ x86_64LinuxIntegerReturnRegisters bak ovTyp ovSim initRegs =
                             "x86_64LinuxIntegerReturnRegisters"
                             ["Failed to update rax register"]
 
-x86_64LinuxFunctionABI :: AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
-x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs bumpEndVar memVar ovs kernelOvs ->
+x86_64LinuxFunctionABI :: (?memOpts :: LCLM.MemOptions)
+                       => AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
+x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs ovs kernelOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @64 in
+  let bumpEndVar = AM.imHeapEndGlob initialMem in
+  let memVar = AM.imMemVar initialMem in
   let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride memVar)
                      , AF.SomeFunctionOverride (AFO.buildMemsetOverride memVar)
                      , AF.SomeFunctionOverride (AFO.buildShmgetOverride memVar)
                      , AF.SomeFunctionOverride AFO.shmatOverride
+                     , AF.SomeFunctionOverride (AFO.buildSprintfOverride initialMem unsupportedRelocs)
                      ] in
   -- Hacky overrides
   --

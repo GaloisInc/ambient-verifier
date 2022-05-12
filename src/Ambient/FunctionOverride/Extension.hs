@@ -220,13 +220,10 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
             let syscallLookup = DMS.unsupportedSyscalls "Ambient override tests"
             let extImpl = AExt.ambientExtensions bak
                                                  archEvalFn
-                                                 (AVS.imMemVar initMem)
-                                                 (AVS.imGlobalMap initMem)
+                                                 initMem
                                                  fnLookup
                                                  syscallLookup
-                                                 (AVS.imValidityCheck initMem)
                                                  Map.empty
-                                                 (AVS.imMemPtrTable initMem)
             let ctx = LCS.initSimContext bak
                                          LCLI.llvmIntrinsicTypes
                                          halloc
@@ -236,7 +233,7 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
                                          AExt.emptyAmbientSimulatorState
             let simAction = LCS.runOverrideSim LCT.UnitRepr
                                                (LCS.regValue <$> LCS.callFnVal (LCS.HandleFnVal testHdl) LCS.emptyRegMap)
-            globals1 <- AVS.insertFreshGlobals sym ovGlobals (AVS.imGlobals initMem)
+            globals1 <- AVS.insertFreshGlobals sym ovGlobals (AM.imGlobals initMem)
             let s0 = LCS.InitialState ctx
                                       globals1
                                       LCS.defaultAbortHandler

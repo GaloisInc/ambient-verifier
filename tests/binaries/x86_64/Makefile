@@ -58,6 +58,9 @@ non-ptr-width-ov.exe: non-ptr-width-ov.c ambient_assert.o
 global-ov.exe: global-ov.c ambient_assert.o
 	$(CC) -nostartfiles -static $^ -o $@
 
+sprintf.exe: sprintf.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static $^ -o $@
+
 bv-typed-literal-ov.exe: bv-typed-literal-ov.c ambient_assert.o
 	$(CC) -nostdlib -static -no-pie $^ -o $@
 

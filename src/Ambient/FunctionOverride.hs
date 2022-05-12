@@ -31,6 +31,8 @@ import qualified What4.Expr as WE
 import qualified What4.FunctionName as WF
 import qualified What4.Protocol.Online as WPO
 
+import qualified Ambient.Memory as AM
+
 -------------------------------------------------------------------------------
 -- Function Call Overrides
 -------------------------------------------------------------------------------
@@ -138,9 +140,10 @@ data FunctionABI arch sym p =
 newtype BuildFunctionABI arch sym p = BuildFunctionABI (
        LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
     -- File system to use in overrides
-    -> LCS.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth arch))
-    -> LCS.GlobalVar LCLM.Mem
-    -- MemVar for the execution
+    -> AM.InitialMemory sym (DMC.ArchAddrWidth arch)
+    -> Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) String
+    -- ^ Mapping from unsupported relocation addresses to the names of the
+    -- unsupported relocation types.
     -> [ SomeFunctionOverride p sym (DMS.MacawExt arch) ]
     -- Additional overrides
     -> Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch))
