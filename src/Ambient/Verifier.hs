@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -342,14 +343,16 @@ verify logAction pinst timeoutDuration = do
                                                , AVS.secSolver = piSolver pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions
-      functionOvs <- case piOverrideDir pinst of
-        Just dir -> do
-          liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
-        Nothing -> return []
+      AFE.CrucibleSyntaxOverrides{AFE.csoAddressOverrides, AFE.csoNamedOverrides} <-
+        case piOverrideDir pinst of
+          Just dir -> do
+            liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
+          Nothing -> return AFE.emptyCrucibleSyntaxOverrides
       let fnConf = AVS.FunctionConfig {
           AVS.fcBuildSyscallABI = syscallABI
         , AVS.fcBuildFunctionABI = functionABI
-        , AVS.fcFunctionOverrides = functionOvs
+        , AVS.fcFunctionAddrOverrides = csoAddressOverrides
+        , AVS.fcFunctionNamedOverrides = csoNamedOverrides
         }
       (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) binConf fnConf (piCommandLineArguments pinst)
 

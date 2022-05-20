@@ -133,7 +133,7 @@ aarch32LinuxFunctionABI ::
   => LCCC.GlobalVar (LCLM.LLVMPointerType 32)
      -- ^ Global variable for TLS
   -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
-aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs ovs kernelOvs ->
+aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs addrOvs namedOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @32 in
   let memVar = AM.imMemVar initialMem in
@@ -148,7 +148,7 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupport
         -- The addresses are taken from
         -- https://github.com/torvalds/linux/blob/5bfc75d92efd494db37f5c4c173d3639d4772966/Documentation/arm/kernel_user_helpers.rst
         [ -- __kuser_get_tls (See Note [AArch32 and TLS])
-          (0xffff0fe0, AF.SomeFunctionOverride (buildKUserGetTLSOverride tlsGlob))
+          (AF.AddrFromKernel 0xffff0fe0, AF.SomeFunctionOverride (buildKUserGetTLSOverride tlsGlob))
         ] in
   AF.FunctionABI { AF.functionIntegerArgumentRegisters = aarch32LinuxIntegerArgumentRegisters
                  , AF.functionMainArgumentRegisters =
@@ -159,10 +159,10 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupport
                  , AF.functionNameMapping =
                      Map.fromList [ (AF.functionName fo, sfo)
                                   | sfo@(AF.SomeFunctionOverride fo) <-
-                                      memOverrides ++ networkOverrides ++ ovs
+                                      memOverrides ++ networkOverrides ++ namedOvs
                                   ]
-                 , AF.functionKernelAddrMapping =
-                     Map.union (Map.fromList customKernelOvs) kernelOvs
+                 , AF.functionAddrMapping =
+                     Map.union (Map.fromList customKernelOvs) addrOvs
                  }
 
 -- | A lookup function from 'AFE.TypeAlias' to types with the appropriate width

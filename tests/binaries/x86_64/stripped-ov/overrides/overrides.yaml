@@ -1,0 +1,4 @@
+function address overrides:
+  stripped-ov.exe:
+    0x401000: "f"
+    0x401030: "ambient_assert"

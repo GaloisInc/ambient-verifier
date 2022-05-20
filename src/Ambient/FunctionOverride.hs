@@ -7,6 +7,7 @@ module Ambient.FunctionOverride (
     FunctionOverride(..)
   , SomeFunctionOverride(..)
   , FunctionOverrideHandle
+  , FunctionAddrLoc(..)
   , FunctionABI(..)
   , BuildFunctionABI(..)
   ) where
@@ -69,6 +70,28 @@ type FunctionOverrideHandle arch =
     (LCT.EmptyCtx LCT.::> LCT.StructType (DMS.MacawCrucibleRegTypes arch))
     (LCT.StructType (DMS.MacawCrucibleRegTypes arch))
 
+-- | Where is a function's address located?
+data FunctionAddrLoc w
+  = AddrInBinary (DMC.MemWord w) FilePath
+    -- ^ The function address is located in a binary at the given 'FilePath'.
+    --
+    -- By convention, the 'FilePath' is the name of the binary, not its full
+    -- path. This convention is convenient for a couple of reasons:
+    --
+    -- * When displaying the binary via the @list-overrides@ command, it
+    --   results in more compact output.
+    --
+    -- * When specifying function address overrides in an @overrides.yaml@
+    --   file, users need only write down the file name. We could,
+    --   theoretically, require users to write down full paths, but this would
+    --   (1) be more annoying and (2) make the @overrides.yaml@ file less
+    --   portable.
+  | AddrFromKernel (DMC.MemWord w)
+    -- ^ The function address is provided by the kernel itself. See
+    --   @Note [AArch32 and TLS]@ in "Ambient.FunctionOverride.AArch32.Linux"
+    --   for one application of this.
+  deriving (Eq, Ord, Show)
+
 -------------------------------------------------------------------------------
 -- Function Call ABI Specification
 -------------------------------------------------------------------------------
@@ -117,21 +140,28 @@ data FunctionABI arch sym p =
      -- OverrideSim action with return type matching system return register
      -- type
 
+    -- A mapping of function addresses to overrides. This is utilized for two
+    -- purposes:
+    --
+    -- * User-provided overrides at particular addresses, as specified in an
+    --   @overrides.yaml@ file.
+    --
+    -- * Kernel-provided user helpers that are reachable from user space
+    --   at fixed addresses in kernel memory. In particular, see
+    --   Note [AArch32 and TLS] in Ambient.FunctionOverride.AArch32.Linux for
+    --   how this is used to implement TLS for AArch32 binaries.
+    --
+    -- Note that if a function's address has an override in this map, that will
+    -- always take precedence over any overrides for functions of the same name
+    -- in 'functionNameMapping'.
+  , functionAddrMapping
+     :: Map.Map (FunctionAddrLoc (DMC.ArchAddrWidth arch))
+                (SomeFunctionOverride p sym (DMS.MacawExt arch))
+
     -- A mapping from function names to overrides
   , functionNameMapping
      :: (LCB.IsSymInterface sym, LCLM.HasLLVMAnn sym)
      => Map.Map WF.FunctionName (SomeFunctionOverride p sym (DMS.MacawExt arch))
-
-    -- A mapping of function addresses to addresses, which represents
-    -- kernel-provided user helpers that are reachable from user space at fixed
-    -- addresses in kernel memory.
-    --
-    -- One alternative to this design would be to augment the Macaw-loaded
-    -- Memory with the right addresses, but this proves tricky to set up. As a
-    -- result, we simply specify the kernel-provided helpers on the side.
-  , functionKernelAddrMapping
-     :: Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch))
-                (SomeFunctionOverride p sym (DMS.MacawExt arch))
   }
 
 -- A function to construct a FunctionABI with memory access
@@ -142,10 +172,10 @@ newtype BuildFunctionABI arch sym p = BuildFunctionABI (
     -> Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) String
     -- ^ Mapping from unsupported relocation addresses to the names of the
     -- unsupported relocation types.
-    -> [ SomeFunctionOverride p sym (DMS.MacawExt arch) ]
-    -- Additional overrides
-    -> Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch))
+    -> Map.Map (FunctionAddrLoc (DMC.ArchAddrWidth arch))
                (SomeFunctionOverride p sym (DMS.MacawExt arch))
-    -- Overrides for kernel-provided user helpers
+    -- Overrides for functions at particular addresses
+    -> [ SomeFunctionOverride p sym (DMS.MacawExt arch) ]
+    -- Overrides for functions with particular names
     -> FunctionABI arch sym p
   )

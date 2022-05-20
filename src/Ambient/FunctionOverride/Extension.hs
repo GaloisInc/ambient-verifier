@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -16,7 +17,10 @@ module Ambient.FunctionOverride.Extension (
   , extensionParser
   , extensionTypeParser
   , runOverrideTests
+  , CrucibleSyntaxOverrides(..)
+  , emptyCrucibleSyntaxOverrides
   , loadCrucibleSyntaxOverrides
+  , OverrideMapParseError(..)
   , machineCodeParserHooks
   ) where
 
@@ -26,6 +30,10 @@ import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import           Control.Monad.State.Class ( MonadState )
 import           Control.Monad.Writer.Class ( MonadWriter )
+import qualified Data.Aeson as DA
+import qualified Data.Aeson.Key as DAK
+import qualified Data.Aeson.KeyMap as DAKM
+import qualified Data.ByteString as BS
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
@@ -37,6 +45,8 @@ import qualified Data.String as DS
 import qualified Data.Text as DT
 import qualified Data.Text.IO as DTI
 import qualified Data.Vector.NonEmpty as NEV
+import qualified Data.Yaml as DY
+import           Data.Word ( Word64 )
 import           GHC.TypeNats ( KnownNat, type (<=) )
 import qualified Lumberjack as LJ
 import qualified System.Directory as SD
@@ -44,6 +54,7 @@ import qualified System.FilePath as SF
 import qualified System.FilePath.Glob as SFG
 import qualified System.IO as IO
 import qualified Text.Megaparsec as MP
+import           Text.Read ( readMaybe )
 
 import qualified Data.Macaw.Architecture.Info as DMA
 import qualified Data.Macaw.CFG as DMC
@@ -94,16 +105,92 @@ allTypeAliases = [minBound .. maxBound]
 -- represents.
 newtype TypeLookup = TypeLookup (TypeAlias -> (Some LCT.TypeRepr))
 
--- | Check if overrides directory exists. If it does, return
--- a list of the crucible syntax files in the overrides directory.
-globSyntaxOverrides 
-  :: FilePath 
-  -> IO [FilePath]
-globSyntaxOverrides dirPath = do
+-- | The raw, unvalidated contents of a user-specified @--overrides@ directory.
+-- 'CrucibleSyntaxOverrides' is the post-validation counterpart to this data
+-- type.
+data RawSyntaxOverrides = RawSyntaxOverrides
+  { cblFiles :: [FilePath]
+    -- ^ The @.cbl@ files in the @function@ subdirectory.
+  , functionAddressOverrides :: [(FilePath, Word64, WF.FunctionName)]
+    -- ^ The @function address overrides@ map in the @overrides.yaml@ file.
+    --   If there is no @overrides.yaml@ file or if the map is not present,
+    --   this list is empty.
+  }
+
+-- | Errors that can occur when parsing an @overrides.yaml@ file.
+data OverrideMapParseError
+  = ExpectedObject DA.Value
+  | ExpectedString DA.Value
+  | ExpectedAddress DAK.Key
+  deriving (Show)
+
+instance CMC.Exception OverrideMapParseError
+
+-- | Parse the @function address overrides@ map in an @overrides.yaml@ file. If
+-- no such map is present, return an empty list.
+parseOverrideMap ::
+  forall m.
+  CMC.MonadThrow m =>
+  DA.Value ->
+  m [(FilePath, Word64, WF.FunctionName)]
+parseOverrideMap val = do
+  obj <- asObject val
+  case DAKM.lookup "function address overrides" obj of
+    Nothing -> pure []
+    Just ovsVal -> do
+      ovsObj <- asObject ovsVal
+      ovs <-
+        traverse (\(bin, binVal) ->
+                   parseFunctionAddressOverrides (DAK.toString bin) binVal)
+                 (DAKM.toList ovsObj)
+      pure $ concat ovs
+  where
+    parseFunctionAddressOverrides ::
+      FilePath -> DA.Value -> m [(FilePath, Word64, WF.FunctionName)]
+    parseFunctionAddressOverrides bin binVal = do
+      binObj <- asObject binVal
+      traverse (\(addrKey, fun) -> do
+                 addr <- case readMaybe (DAK.toString addrKey) of
+                           Just addr -> pure addr
+                           Nothing -> CMC.throwM $ ExpectedAddress addrKey
+                 funName <- asString fun
+                 pure (bin, addr, WF.functionNameFromText funName))
+               (DAKM.toList binObj)
+
+-- | Assert that a JSON 'DA.Value' is a 'DA.String'. If this is the case,
+-- return the underlying text. Otherwise, throw an exception.
+asString :: CMC.MonadThrow m => DA.Value -> m DT.Text
+asString (DA.String t) = pure t
+asString val           = CMC.throwM $ ExpectedString val
+
+-- | Assert that a JSON 'DA.Value' is an 'DA.Object'. If this is the case,
+-- return the underlying object. Otherwise, throw an exception.
+asObject :: CMC.MonadThrow m => DA.Value -> m DA.Object
+asObject (DA.Object o) = pure o
+asObject val           = CMC.throwM $ ExpectedObject val
+
+-- | Check if the user-specified @--overrides@ directory exists. If it does,
+-- return the contents of the directory as a 'RawSyntaxOverrides' vales.
+findRawSyntaxOverrides
+  :: FilePath
+  -> IO RawSyntaxOverrides
+findRawSyntaxOverrides dirPath = do
   dirExists <- SD.doesDirectoryExist dirPath
   unless dirExists $ do
     CMC.throwM (AE.CrucibleOverrideDirectoryNotFound dirPath)
-  SFG.glob (dirPath SF.</> "function" SF.</> "*.cbl")
+  cbls <- SFG.glob (dirPath SF.</> "function" SF.</> "*.cbl")
+  let overridesYamlPath = dirPath SF.</> "overrides.yaml"
+  overridesYamlExists <- SD.doesFileExist overridesYamlPath
+  funAddrOvs <-
+    if overridesYamlExists
+      then do bytes <- BS.readFile overridesYamlPath
+              val <- DY.decodeThrow bytes
+              parseOverrideMap val
+      else pure []
+  pure $ RawSyntaxOverrides
+           { cblFiles = cbls
+           , functionAddressOverrides = funAddrOvs
+           }
 
 
 -- | Load a single crucible syntax override.  This function returns an optional
@@ -177,9 +264,8 @@ runOverrideTests :: forall ext s sym bak arch w solver scope st fs
                  -- ^ ParserHooks for the desired syntax extension
                  -> IO ()
 runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
-  -- Check if dirPath exists
-  paths <- globSyntaxOverrides dirPath
-  mapM_ go paths
+  RawSyntaxOverrides{cblFiles} <- findRawSyntaxOverrides dirPath
+  mapM_ go cblFiles
   where
     sym = LCB.backendGetSym bak
 
@@ -247,22 +333,58 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
     noopInitGlobals = AM.InitArchSpecificGlobals $ \_ mem ->
       return (mem, LCSG.emptyGlobals)
 
--- | Load all crucible syntax function overrides in an override directory.
+-- | The overrides in a user-specified @--overrides@ directory that have gone
+-- through a light round of validation checks.
+data CrucibleSyntaxOverrides w p sym ext = CrucibleSyntaxOverrides
+  { csoAddressOverrides :: Map.Map (AF.FunctionAddrLoc w)
+                                   (AF.SomeFunctionOverride p sym ext)
+    -- ^ A map of @function address overrides@. These have been checked to
+    --   ensure that every override that appears in the domain of the map
+    --   corresponds to a @.cbl@ file.
+  , csoNamedOverrides :: [AF.SomeFunctionOverride p sym ext]
+    -- ^ An override for each @<name>.cbl@ file. These have been checked to
+    --   ensure that the @.cbl@ file contents are valid and that there are no
+    --   duplicate names.
+  }
+
+-- | An empty collection of 'CrucibleSyntaxOverrides'.
+emptyCrucibleSyntaxOverrides :: CrucibleSyntaxOverrides w p sym ext
+emptyCrucibleSyntaxOverrides = CrucibleSyntaxOverrides
+  { csoAddressOverrides = Map.empty
+  , csoNamedOverrides = []
+  }
+
+-- | Load all crucible syntax function overrides in an @--overrides@ directory.
 -- This function reads all files matching @<dirPath>/function/*.cbl@ and
--- generates FunctionOverrides for them.
-loadCrucibleSyntaxOverrides :: LCCE.IsSyntaxExtension ext
+-- generates 'AF.FunctionOverride's for them. It will also parse and validate
+-- the @overrides.yaml@ file if one is present.
+loadCrucibleSyntaxOverrides :: (LCCE.IsSyntaxExtension ext, DMM.MemWidth w)
                             => FilePath
                             -- ^ Override directory
                             -> Nonce.NonceGenerator IO s
                             -> LCF.HandleAllocator
                             -> LCSC.ParserHooks ext
                             -- ^ ParserHooks for the desired syntax extension
-                            -> IO [AF.SomeFunctionOverride p sym ext]
-                            -- ^ A list of loaded overrides
+                            -> IO (CrucibleSyntaxOverrides w p sym ext)
+                            -- ^ The loaded overrides
 loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
-  -- Check if dirPath exists
-  paths <- globSyntaxOverrides dirPath
-  mapM go paths
+  RawSyntaxOverrides{cblFiles, functionAddressOverrides}
+    <- findRawSyntaxOverrides dirPath
+  namedOvs <- mapM go cblFiles
+  let namedOvsMap = Map.fromList $
+        map (\sov@(AF.SomeFunctionOverride ov) -> (AF.functionName ov, sov))
+            namedOvs
+  funAddrOvs <- traverse (\(bin, addr, funName) ->
+                           let addrMemWord = fromIntegral addr in
+                           case Map.lookup funName namedOvsMap of
+                             Just ov -> pure (AF.AddrInBinary addrMemWord bin, ov)
+                             Nothing -> CMC.throwM $ AE.FunctionAddressOverridesNameNotFound
+                                          bin addrMemWord funName)
+                         functionAddressOverrides
+  pure $ CrucibleSyntaxOverrides
+    { csoAddressOverrides = Map.fromList funAddrOvs
+    , csoNamedOverrides = namedOvs
+    }
   where
     go path = do
       let fnName = SF.takeBaseName path

@@ -108,6 +108,75 @@ Example::
 
 The ``overrides`` directory contains various overrides that we have curated for particular applications.
 
+Directory Conventions
+---------------------
+
+The ``--overrides <DIR>`` option expects the name of a directory ``DIR`` whose
+contents look like: ::
+
+  DIR/
+  ├── function/
+  │   ├── fun1.cbl
+  │   ├── fun2.cbl
+  │   └── ...
+  └── overrides.yaml (optional)
+
+The ``function`` subdirectory contains ``.cbl`` files, where each ``.cbl`` file
+is named after the function that should be overridden. For instance,
+``printf.cbl`` would correspond to an override for the ``printf`` function.
+
+The ``overrides.yaml`` is an optional file that can be present if one desires
+more fine-grained control over which functions in a binary should receive
+particular overrides. The contents of an ``overrides.yaml`` file will look
+like this: ::
+
+  function address overrides:
+    main.exe:
+      0x123: "foo"
+      0x456: "bar"
+      ...
+    libc.so:
+      0x123: "baz"
+      0x456: "quux"
+      ...
+
+Here, ``function address overrides`` specifies an optional mapping from function
+addresses to override names. This can be useful for situations where a function
+in a binary has no corresponding symbol name (for instance, as in stripped
+binaries). A separate mapping is specified for each binary or shared library.
+The name that each address maps to must correspond the name of a ``.cbl`` file
+in the ``function`` subdirectory.
+
+Note that the mapping only cares about the file names of each binary and does
+not care about the parent directories. For example, if the verifer is invoked
+on ``/foo/bar/main.exe``, then the ``overrides.yaml`` only needs to specify
+``main.exe``, not its full path.
+
+Override Precedence
+-------------------
+
+Override names that appear in ``function address overrides`` take precedence
+over other overrides. To illustrate how this works, suppose a user specifies
+``--overrides DIR``, where the contents of ``DIR`` are the following: ::
+
+  DIR/
+  ├── function/
+  │   ├── foo.cbl
+  │   └── bar.cbl
+  └── overrides.yaml
+
+Where the contents of ``overrides.yaml`` are as follows: ::
+
+  function address overrides:
+    main.exe:
+      0x123: "bar"
+
+Now suppose that the verifier encounters a function in ``main.exe`` at address
+``0x123`` named ``foo``. Although there is a ``foo.cbl`` override present, the
+``function address overrides`` mapping also maps the address ``0x123`` to
+``bar``. In such situations, the ``function address overrides`` take higher
+precedence, so the verifier will use the ``bar`` override.
+
 Types
 -----
 

@@ -1,4 +1,5 @@
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 module Ambient.Override.List
@@ -54,13 +55,14 @@ listOverrides logAction pinst = do
         \(archInfo :: DMAI.ArchitectureInfo arch) _archVals
         (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI)
         parserHooks buildGlobals _numBytes binConf -> do
-      functionOvs <- case AV.piOverrideDir pinst of
-        Just dir -> do
-          liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
-        Nothing -> return []
+      AFE.CrucibleSyntaxOverrides{AFE.csoAddressOverrides, AFE.csoNamedOverrides} <-
+        case AV.piOverrideDir pinst of
+          Just dir -> do
+            liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
+          Nothing -> return AFE.emptyCrucibleSyntaxOverrides
       let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
       let ?memOpts = LCLM.defaultMemOptions
-      initialMem <- AVS.initializeMemory bak hdlAlloc archInfo mems buildGlobals functionOvs Map.empty
+      initialMem <- AVS.initializeMemory bak hdlAlloc archInfo mems buildGlobals csoNamedOverrides Map.empty
       fileContents <- liftIO $
         case AV.piFsRoot pinst of
           Nothing -> return LCSy.emptyInitialFileSystemContents
@@ -69,7 +71,7 @@ listOverrides logAction pinst = do
       (fs, _, LCLS.SomeOverrideSim _initFSOverride) <- liftIO $
         LCLS.initialLLVMFileSystem hdlAlloc sym WI.knownRepr fileContents [] (AM.imGlobals initialMem)
       let syscallABI = buildSyscallABI fs initialMem Map.empty
-      let functionABI = buildFunctionABI fs initialMem Map.empty functionOvs Map.empty
+      let functionABI = buildFunctionABI fs initialMem Map.empty csoAddressOverrides csoNamedOverrides
 
       let ?recordLLVMAnnotation = \_ _ _ -> return ()
       let ols = mkOverrideLists syscallABI functionABI

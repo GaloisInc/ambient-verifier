@@ -16,12 +16,14 @@ import qualified Ambient.Syscall as ASy
 data OverrideLists arch = OverrideLists
   { syscallOverrides :: [WF.FunctionName]
     -- ^ Overrides for system calls.
-  , functionOverrides :: [WF.FunctionName]
-    -- ^ Overrides for typical function calls (with the exception of
-    -- kernel-related functions, as recorded in 'kernelFunctionOverrides').
-  , kernelFunctionOverrides :: [(WF.FunctionName, DMC.MemWord (DMC.ArchAddrWidth arch))]
-    -- ^ Overrides for special user-space functions that expose kernel-related
-    -- functionality. Includes the address at which each function lives.
+  , functionAddrOverrides :: [(WF.FunctionName, AF.FunctionAddrLoc (DMC.ArchAddrWidth arch))]
+    -- ^ Overrides for functions at particular addresses. These include both
+    --   user-specified overrides from an @overrides.yaml@ file as well as
+    --   special user-space functions that expose kernel-related functionality.
+    --
+    --   Includes the address at which each function lives.
+  , functionNameOverrides :: [WF.FunctionName]
+    -- ^ Overrides for function calls with particular names.
   } deriving Show
 
 mkOverrideLists ::
@@ -35,12 +37,12 @@ mkOverrideLists syscallABI functionABI =
         map (\(_, ASy.SomeSyscall (ASy.Syscall{ASy.syscallName = name})) ->
               name)
             (Map.toList (ASy.syscallOverrideMapping syscallABI))
-    , functionOverrides =
+    , functionAddrOverrides =
+        map (\(addrLoc, AF.SomeFunctionOverride (AF.FunctionOverride{AF.functionName = name})) ->
+              (name, addrLoc))
+            (Map.toList (AF.functionAddrMapping functionABI))
+    , functionNameOverrides =
         map (\(_, AF.SomeFunctionOverride (AF.FunctionOverride{AF.functionName = name})) ->
               name)
             (Map.toList (AF.functionNameMapping functionABI))
-    , kernelFunctionOverrides =
-        map (\(addr, AF.SomeFunctionOverride (AF.FunctionOverride{AF.functionName = name})) ->
-              (name, addr))
-            (Map.toList (AF.functionKernelAddrMapping functionABI))
     }

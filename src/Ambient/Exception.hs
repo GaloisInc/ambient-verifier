@@ -107,6 +107,10 @@ data AmbientException where
   ElfNonDynamicSharedLib :: FilePath -> AmbientException
   -- | Tried to retrieve a shared memory segment with a symbolic ID
   SymbolicSharedMemorySegmentId :: AmbientException
+  -- | The @function address overrides@ section of an @overrides.yaml@ file
+  -- contained a function name without a corresponding @.cbl@ file.
+  FunctionAddressOverridesNameNotFound ::
+    DMM.MemWidth w => FilePath -> DMM.MemWord w -> WF.FunctionName -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -244,3 +248,10 @@ instance PP.Pretty AmbientException where
         PP.pretty "The shared library" PP.<+> PP.pretty fp PP.<+> PP.pretty "is not dynamically linked"
       SymbolicSharedMemorySegmentId ->
         PP.pretty "Attempted to retrieve a shared memory segment using a symbolic ID."
+      FunctionAddressOverridesNameNotFound binPath addr name ->
+        PP.vcat [ PP.pretty "An 'overrides.yaml' file contains a 'function address overrides'"
+                , PP.pretty "section with a name that does not correspond to a '*.cbl' file."
+                , PP.pretty "- Binary:" PP.<+> PP.pretty binPath
+                , PP.pretty "- Address:" PP.<+> PP.pretty addr
+                , PP.pretty "- Name:" PP.<+> PP.pretty name
+                ]

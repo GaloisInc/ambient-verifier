@@ -118,7 +118,7 @@ x86_64LinuxIntegerReturnRegisters bak ovTyp ovSim initRegs =
 
 x86_64LinuxFunctionABI :: (?memOpts :: LCLM.MemOptions)
                        => AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
-x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs ovs kernelOvs ->
+x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs addrOvs namedOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @64 in
   let bumpEndVar = AM.imHeapEndGlob initialMem in
@@ -143,9 +143,9 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs 
                       Map.fromList [ (AF.functionName fo, sfo)
                                    | sfo@(AF.SomeFunctionOverride fo) <-
                                        memOverrides ++ hackyOverrides ++
-                                       networkOverrides ++ ovs
+                                       networkOverrides ++ namedOvs
                                    ]
-                    , AF.functionKernelAddrMapping = kernelOvs
+                    , AF.functionAddrMapping = addrOvs
                     }
 
 -- | A lookup function from 'AFE.TypeAlias' to types with the appropriate width

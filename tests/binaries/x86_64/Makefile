@@ -140,6 +140,10 @@ stripped-so/stripped-so.exe: stripped-so/stripped-so.c stripped-so/libgetone-str
 	$(CC) -Lstripped-so/ -I./ stripped-so/stripped-so.c -lgetone-stripped -o $@
 	$(STRIP) $@
 
+stripped-ov/stripped-ov.exe: stripped-ov/stripped-ov.c ambient_assert.o
+	$(MUSL_CC) -nostdlib -static -no-pie -I./ $^ -o $@
+	$(STRIP) $@
+
 errno-glibc.exe: errno.c
 	$(CC) -nostartfiles -static -no-pie $< -o $@
 

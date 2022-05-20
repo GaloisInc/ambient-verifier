@@ -1,0 +1,4 @@
+successful: 0
+failed: 0
+overrideDir: tests/binaries/x86_64/stripped-ov/overrides
+entryPointAddr: 0x10090

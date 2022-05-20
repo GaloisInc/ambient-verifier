@@ -21,7 +21,7 @@ module Ambient.Extensions
   , AmbientSimulationStats(..)
   , emptyAmbientSimulatorState
   , functionOvHandles
-  , functionKernelAddrOvHandles
+  , functionAddrOvHandles
   , syscallOvHandles
   , discoveredFunctionHandles
   , populatedMemChunks
@@ -728,10 +728,11 @@ lensNumSymbolicReads = lens numSymbolicReads (\s v -> s { numSymbolicReads = v }
 -- | The state extension for Crucible holding verifier-specific state.
 data AmbientSimulatorState sym arch = AmbientSimulatorState
   { _functionOvHandles :: Map.Map WF.FunctionName (AF.FunctionOverrideHandle arch)
-    -- ^ A map from registered function overrides to their handles.
+    -- ^ A map from registered function override names to their handles.
     -- See @Note [Lazily registering overrides]@.
-  , _functionKernelAddrOvHandles :: Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) (AF.FunctionOverrideHandle arch)
-    -- ^ A map from registered kernel-specific function overrides to their handles.
+  , _functionAddrOvHandles :: Map.Map (AF.FunctionAddrLoc (DMC.ArchAddrWidth arch))
+                                      (AF.FunctionOverrideHandle arch)
+    -- ^ A map from function overrides at particular addresses to their handles.
     -- See @Note [Lazily registering overrides]@.
   , _syscallOvHandles :: MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle
     -- ^ A map from registered syscall overrides to their handles.
@@ -775,7 +776,7 @@ data AmbientSimulatorState sym arch = AmbientSimulatorState
 emptyAmbientSimulatorState :: AmbientSimulatorState sym arch
 emptyAmbientSimulatorState = AmbientSimulatorState
   { _functionOvHandles = Map.empty
-  , _functionKernelAddrOvHandles = Map.empty
+  , _functionAddrOvHandles = Map.empty
   , _syscallOvHandles = MapF.empty
   , _discoveredFunctionHandles = Map.empty
   , _populatedMemChunks = IS.empty
@@ -790,10 +791,11 @@ functionOvHandles :: Lens' (AmbientSimulatorState sym arch)
 functionOvHandles = lens _functionOvHandles
                          (\s v -> s { _functionOvHandles = v })
 
-functionKernelAddrOvHandles :: Lens' (AmbientSimulatorState sym arch)
-                                     (Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) (AF.FunctionOverrideHandle arch))
-functionKernelAddrOvHandles = lens _functionKernelAddrOvHandles
-                                   (\s v -> s { _functionKernelAddrOvHandles = v })
+functionAddrOvHandles :: Lens' (AmbientSimulatorState sym arch)
+                               (Map.Map (AF.FunctionAddrLoc (DMC.ArchAddrWidth arch))
+                                        (AF.FunctionOverrideHandle arch))
+functionAddrOvHandles = lens _functionAddrOvHandles
+                             (\s v -> s { _functionAddrOvHandles = v })
 
 syscallOvHandles :: Lens' (AmbientSimulatorState sym arch)
                           (MapF.MapF ASy.SyscallNumRepr ASy.SyscallFnHandle)

@@ -22,7 +22,7 @@ extra-source-files: CHANGELOG.md
 
 common shared
     build-depends:
-        aeson,
+        aeson >= 2,
         async >= 2 && < 3,
         base >= 4.10 && < 5,
         bytestring,

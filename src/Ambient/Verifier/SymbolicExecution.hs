@@ -43,6 +43,7 @@ import           GHC.TypeNats ( KnownNat, type (<=) )
 import qualified Lang.Crucible.CFG.Core as LCCC
 import qualified Lumberjack as LJ
 import qualified Prettyprinter as PP
+import qualified System.FilePath as SF
 import qualified System.IO as IO
 
 import qualified Data.Macaw.Architecture.Info as DMA
@@ -293,14 +294,16 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
     --         and proceed to (3) with the new address.
     --
     --     If the address does not point to a PLT stub, proceed to (3).
-    -- (3) Look up the function name corresponding to the address. If an
+    -- (3) Check for an user-specified override for the given address in an
+    --     @overrides.yaml@ file. If not found, proceed to (4).
+    -- (4) Look up the function name corresponding to the address. If an
     --     override is registered to that name, dispatch the override.
-    --     Otherwise, proceed to (4).
-    -- (4) Perform incremental code discovery on the function at the address
+    --     Otherwise, proceed to (5).
+    -- (5) Perform incremental code discovery on the function at the address
     --     (see Note [Incremental code discovery] in A.Extensions) and return
     --     the resulting function handle, caching it in the process.
     --
-    -- In each of steps (1)–(4), we check at the beginning to see if the
+    -- In each of steps (1)–(5), we check at the beginning to see if the
     -- function's handle has been registered previously. If so, we just use
     -- that. We only allocate a new function handle if it has not been
     -- registered before.
@@ -314,8 +317,9 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
             )
     lookupHandle funcAddr state =
       -- Step (1)
-      lazilyRegisterHandle state funcAddr AExt.functionKernelAddrOvHandles
-                           (AF.functionKernelAddrMapping abi) $
+      lazilyRegisterHandle state (AF.AddrFromKernel funcAddr)
+                           AExt.functionAddrOvHandles
+                           (AF.functionAddrMapping abi) $
         -- Step (2)
         case Map.lookup funcAddr (ALB.bcPltStubs binConf) of
           -- If 'funcAddr' points to a PLT stub, dispatch an override.
@@ -332,10 +336,10 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
                                  (AF.functionNameMapping abi) $ do
               -- Step (2)(b)
               (funcAddrOff, bin) <- resolvePLTStub pltStubVersym
-              dispatchFuncAddrOff funcAddrOff bin state
+              dispatchFuncAddrOff funcAddr funcAddrOff bin state
           Nothing -> do
             (funcAddrOff, bin) <- resolveFuncAddr funcAddr
-            dispatchFuncAddrOff funcAddrOff bin state
+            dispatchFuncAddrOff funcAddr funcAddrOff bin state
 
     -- Resolve the address that a PLT stub will jump to, also returning the
     -- binary that the address resides in (see
@@ -365,9 +369,10 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
         Nothing -> panic ["Failed to resolve function address: " ++ show funcAddr]
         Just funcAddrOff -> pure (funcAddrOff, loadedBinaryPath)
 
-    -- This corresponds to step (3) in lookupHandle's documentation.
+    -- This corresponds to steps (3) and (4) in lookupHandle's documentation.
     -- Any indirections by way of PLT stubs should be resolved by this point.
     dispatchFuncAddrOff ::
+      DMM.MemWord w ->
       DMM.MemSegmentOff w ->
       -- ^ The address offset
       ALB.LoadedBinaryPath arch binFmt ->
@@ -376,7 +381,15 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
       IO ( LCF.FnHandle args ret
          , LCS.CrucibleState p sym ext rtp blocks r ctx
          )
-    dispatchFuncAddrOff funcAddrOff bin state = do
+    dispatchFuncAddrOff funcAddr funcAddrOff bin state =
+      -- Step (3)
+      --
+      -- Note that we call `takeFileName` on the binary path since the
+      -- @overrides.yaml@ file only cares about the file name, not the full path.
+      lazilyRegisterHandle state (AF.AddrInBinary funcAddr (SF.takeFileName (ALB.lbpPath bin)))
+                           AExt.functionAddrOvHandles
+                           (AF.functionAddrMapping abi) $
+      -- Step (4)
       case Map.lookup funcAddrOff (ALB.lbpEntryPoints bin) of
         Just fnVersym ->
           -- NB: When looking up overrides, we only consult the function name
@@ -394,7 +407,7 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
     -- discovery if the address has not yet been encountered before.
     -- See Note [Incremental code discovery] in A.Extensions.
     --
-    -- This corresponds to step (4) in lookupHandle's docs
+    -- This corresponds to step (5) in lookupHandle's docs
     discoverFuncAddrOff ::
       DMM.MemSegmentOff w ->
       -- ^ The address offset
@@ -598,7 +611,7 @@ lookupSyscall bak abi hdlAlloc props =
     let regVal = LCS.regValue syscallReg
     syscallNum <- resolveConcreteStackVal bak (Proxy @arch) AE.SyscallNumber regVal
 
-    let syscallName = fromMaybe 
+    let syscallName = fromMaybe
           (AP.panic AP.SymbolicExecution "lookupSyscall"
             ["Unknown syscall with code " ++ show syscallNum])
             (IM.lookup (fromIntegral syscallNum) (ASy.syscallCodeMapping abi))
@@ -1005,8 +1018,11 @@ data FunctionConfig arch sym p ext = FunctionConfig {
   -- ^ Function to construct an ABI specification for system calls
   , fcBuildFunctionABI :: AF.BuildFunctionABI arch sym p
   -- ^ Function to construct an ABI specification for function calls
-  , fcFunctionOverrides :: [ AF.SomeFunctionOverride p sym ext ]
-  -- ^ A list of additional function overrides to register
+  , fcFunctionAddrOverrides :: Map.Map (AF.FunctionAddrLoc (DMC.ArchAddrWidth arch))
+                                       (AF.SomeFunctionOverride p sym ext)
+  -- ^ A map of function overrides at particular addresses
+  , fcFunctionNamedOverrides :: [ AF.SomeFunctionOverride p sym ext ]
+  -- ^ A list of additional function overrides to register by name
   }
 
 simulateFunction
@@ -1078,7 +1094,9 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
   let syscallABI = buildSyscallABI fs initialMem (ALB.bcUnsuportedRelocations binConf)
   let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
-  let functionABI = buildFunctionABI fs initialMem (ALB.bcUnsuportedRelocations binConf) (fcFunctionOverrides fnConf) Map.empty
+  let functionABI = buildFunctionABI fs initialMem (ALB.bcUnsuportedRelocations binConf)
+                                     (fcFunctionAddrOverrides fnConf)
+                                     (fcFunctionNamedOverrides fnConf)
 
   let mem0 = case LCSG.lookupGlobal (AM.imMemVar initialMem) globals1 of
                Just mem -> mem
@@ -1176,7 +1194,7 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures e
                                  archInfo
                                  mems
                                  initGlobals
-                                 (fcFunctionOverrides fnConf)
+                                 (fcFunctionNamedOverrides fnConf)
                                  (ALB.bcGlobalVarAddrs binConf)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
   simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs

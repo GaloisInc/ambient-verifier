@@ -31,6 +31,7 @@ import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.Simulator.SimError as LCSS
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 
+import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Override.List.Types as AOLT
 
 data Diagnostic where
@@ -126,8 +127,8 @@ instance PP.Pretty Diagnostic where
         <> PP.pretty "'"
         <> PP.line
       ListingOverrides (AOLT.OverrideLists{ AOLT.syscallOverrides
-                                          , AOLT.functionOverrides
-                                          , AOLT.kernelFunctionOverrides
+                                          , AOLT.functionAddrOverrides
+                                          , AOLT.functionNameOverrides
                                           }) ->
         PP.vcat
           [ overridesHeader "Syscall overrides"
@@ -136,14 +137,20 @@ instance PP.Pretty Diagnostic where
                        syscallOverrides
 
           , overridesHeader "Function overrides"
+            <> foldMap (\(name, addrLoc) ->
+                         PP.pretty "- " <> PP.pretty name PP.<+>
+                         PP.parens (case addrLoc of
+                           AF.AddrInBinary addr binPath ->
+                             PP.pretty "at address" PP.<+> PP.pretty binPath <>
+                             PP.colon <> PP.pretty addr
+                           AF.AddrFromKernel addr ->
+                             PP.pretty "kernel function at address" PP.<+>
+                             PP.pretty addr) <>
+                         PP.line)
+                       functionAddrOverrides
             <> foldMap (\name ->
                          PP.pretty "- " <> PP.pretty name <> PP.line)
-                       functionOverrides
-            <> foldMap (\(name, addr) ->
-                         PP.pretty "- " <> PP.pretty name <>
-                         PP.pretty " (kernel function at address " <> PP.pretty addr <>
-                         PP.pretty ")" <> PP.line)
-                       kernelFunctionOverrides
+                       functionNameOverrides
           ]
     where
       overridesHeader title = PP.vcat
