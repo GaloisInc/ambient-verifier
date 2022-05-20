@@ -1,12 +1,7 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE UndecidableInstances #-}
 
 module Ambient.FunctionOverride (
     FunctionOverride(..)
@@ -14,24 +9,11 @@ module Ambient.FunctionOverride (
   , FunctionOverrideHandle
   , FunctionABI(..)
   , BuildFunctionABI(..)
-  , ServerSocketInfo(..)
-  , SocketDomain(..)
-  , type AF_UNIX
-  , type AF_INET
-  , type AF_INET6
-  , SocketDomainRepr(..)
-  , fromSocketDomainRepr
-  , toSocketDomainRepr
-  , SocketAddress
-  , SocketType(..)
   ) where
 
-import qualified Data.ByteString as BS
-import           Data.Kind ( Type )
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import           Data.Parameterized.Some ( Some(..) )
-import           Data.Word ( Word16 )
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
@@ -167,75 +149,3 @@ newtype BuildFunctionABI arch sym p = BuildFunctionABI (
     -- Overrides for kernel-provided user helpers
     -> FunctionABI arch sym p
   )
-
--------------------------------------------------------------------------------
--- SocketInfo
--------------------------------------------------------------------------------
-
--- See Note [The networking story] for a high-level overview of how these data
--- types are used to model network IO.
-
--- | A collection of metadata about sockets that is useful for server programs
--- (i.e., programs that call @accept()@).
-data ServerSocketInfo (domain :: SocketDomain) = ServerSocketInfo
-  { serverSocketDomain :: SocketDomainRepr domain
-    -- ^ The socket's domain as specified by the first argument to the
-    -- @socket()@ function.
-  , serverSocketType :: SocketType
-    -- ^ The socket's type as specified by the second argument to the
-    -- @socket()@ function.
-  , serverSocketAddress :: Maybe (SocketAddress domain)
-    -- ^ If this socket has been assigned via @bind()@, this is
-    -- @'Just' addr@. If not, this is 'Nothing'. The type of @addr@ depends on
-    -- the socket domain—see the Haddocks for 'SocketAddress'.
-  , serverSocketNextConnection :: Word
-    -- ^ The number to use for the socket file allocated by the next call to
-    -- @accept()@.
-  }
-deriving instance Show (SocketAddress domain) => Show (ServerSocketInfo domain)
-
--- | All of the socket domains that the verifier currently supports. In
--- addition to being used at the value level, this is also used at the type
--- level to compute the type of the 'SocketAddress', which depends on the
--- domain.
-data SocketDomain
-  = AF_UNIX
-  | AF_INET
-  | AF_INET6
-  deriving Show
-
-type AF_UNIX  = 'AF_UNIX
-type AF_INET  = 'AF_INET
-type AF_INET6 = 'AF_INET6
-
--- | A singleton type for 'SocketDomain'.
-data SocketDomainRepr domain where
-  AF_UNIX_Repr  :: SocketDomainRepr AF_UNIX
-  AF_INET_Repr  :: SocketDomainRepr AF_INET
-  AF_INET6_Repr :: SocketDomainRepr AF_INET6
-deriving instance Show (SocketDomainRepr domain)
-
--- | Obtain a 'SocketDomain' from its corresponding singleton.
-fromSocketDomainRepr :: SocketDomainRepr domain -> SocketDomain
-fromSocketDomainRepr AF_UNIX_Repr  = AF_UNIX
-fromSocketDomainRepr AF_INET_Repr  = AF_INET
-fromSocketDomainRepr AF_INET6_Repr = AF_INET6
-
--- | Convert a singleton to its corresponding singleton.
-toSocketDomainRepr :: SocketDomain -> Some SocketDomainRepr
-toSocketDomainRepr AF_UNIX  = Some AF_UNIX_Repr
-toSocketDomainRepr AF_INET  = Some AF_INET_Repr
-toSocketDomainRepr AF_INET6 = Some AF_INET6_Repr
-
--- | The type of address corresponding to a particular socket domain.
-type family SocketAddress (domain :: SocketDomain) :: Type where
-  SocketAddress AF_UNIX  = BS.ByteString -- A file path (`sun_path`)
-  SocketAddress AF_INET  = Word16        -- A port number (`sin_addr`)
-  SocketAddress AF_INET6 = Word16        -- A port number (`sin6_addr`)
-
--- | All of the socket types that the verifier currently supports.
-data SocketType
-  = SOCK_STREAM
-  | SOCK_DGRAM
-  | SOCK_SEQPACKET
-  deriving Show

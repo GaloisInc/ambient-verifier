@@ -78,6 +78,7 @@ import qualified What4.Protocol.Online as WPO
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions.Memory as AEM
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.FunctionOverride.Overrides.Networking.Types as AFONT
 import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.SharedMemory as AMS
 import qualified Ambient.Syscall as ASy
@@ -752,7 +753,7 @@ data AmbientSimulatorState sym arch = AmbientSimulatorState
     -- ^ The regions of memory which we have populated with symbolic bytes in
     -- the 'AEM.MemPtrTable' backing global memory.
     -- See @Note [Lazy memory initialization@ in "Ambient.Extensions.Memory".
-  , _serverSocketFDs :: Map.Map Integer (Some AF.ServerSocketInfo)
+  , _serverSocketFDs :: Map.Map Integer (Some AFONT.ServerSocketInfo)
     -- ^ A map from registered socket file descriptors to their corresponding
     -- metadata. See @Note [The networking story]@ in
     -- "Ambient.FunctionOverride.Overrides".
@@ -810,7 +811,7 @@ populatedMemChunks = lens _populatedMemChunks
                           (\s v -> s { _populatedMemChunks = v })
 
 serverSocketFDs :: Lens' (AmbientSimulatorState sym arch)
-                       (Map.Map Integer (Some AF.ServerSocketInfo))
+                       (Map.Map Integer (Some AFONT.ServerSocketInfo))
 serverSocketFDs = lens _serverSocketFDs
                        (\s v -> s { _serverSocketFDs = v })
 

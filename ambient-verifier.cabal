@@ -56,6 +56,8 @@ library
                       Ambient.FunctionOverride.ArgumentMapping,
                       Ambient.FunctionOverride.Extension,
                       Ambient.FunctionOverride.Overrides,
+                      Ambient.FunctionOverride.Overrides.Networking,
+                      Ambient.FunctionOverride.Overrides.Networking.Types,
                       Ambient.FunctionOverride.Overrides.Printf,
                       Ambient.FunctionOverride.Overrides.SymIO,
                       Ambient.FunctionOverride.AArch32.Linux,
