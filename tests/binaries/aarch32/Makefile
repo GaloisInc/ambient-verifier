@@ -162,6 +162,9 @@ printf-tailcall/printf-tailcall.exe: printf-tailcall/printf-tailcall.c
 sprintf.exe: sprintf.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static $^ -o $@
 
+strstr/strstr.exe: strstr/strstr.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

@@ -25,7 +25,7 @@ module Ambient.FunctionOverride.Extension (
   ) where
 
 import           Control.Applicative ( empty )
-import           Control.Monad ( void, unless )
+import           Control.Monad ( mapAndUnzipM, void, unless )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(liftIO) )
 import qualified Data.Aeson as DA
@@ -210,8 +210,8 @@ loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks = do
         Right (globals, acfgs) -> do
           let someGlobals = [ Some glob
                             | (_, (Pair.Pair _ glob)) <- Map.toList globals ]
-          let (matches, nonMatches) = List.partition evalFnNamePred acfgs
-          return (someGlobals, matches, nonMatches)
+          let (matchCFGs, auxCFGs) = List.partition evalFnNamePred acfgs
+          return (someGlobals, matchCFGs, auxCFGs)
   where
     evalFnNamePred (LCSC.ACFG _ _ g) =
       fnNamePred (LCF.handleName (LCCR.cfgHandle g))
@@ -253,31 +253,24 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
     go :: FilePath -> IO ()
     go path = do
       let fnNamePred = \fn -> List.isPrefixOf "test_" (show fn)
-      (ovGlobals, matches, nonMatches) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
-      mapM_ (runTest path ovGlobals nonMatches) matches
+      (ovGlobals, matchCFGs, auxCFGs) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
+      mapM_ (runTest path ovGlobals auxCFGs) matchCFGs
 
     runTest :: FilePath
             -> [Some LCS.GlobalVar]
             -> [LCSC.ACFG ext]
             -> LCSC.ACFG ext
             -> IO ()
-    runTest path ovGlobals nonTestCFGs acfg = do
+    runTest path ovGlobals auxCFGs acfg = do
       LJ.writeLog logAction (AD.ExecutingOverrideTest acfg path)
       case acfg of
         LCSC.ACFG Ctx.Empty LCT.UnitRepr test -> do
           let testHdl = LCCR.cfgHandle test
-          -- Make sure to also include functions that don't begin with `test_`,
-          -- as they might be used during simulation. For example, if our test
-          -- function is named @test_foobar, we'll need to include the CFG for
-          -- @foobar itself.
-          let cfgsToRegister = acfg : nonTestCFGs
-          let fns = LCS.fnBindingsFromList
-                [ case LCCS.toSSA g of
-                    LCCC.SomeCFG ssa ->
-                      LCS.FnBinding (LCCR.cfgHandle g)
-                                    (LCS.UseCFG ssa (LCAP.postdomInfo ssa))
-                | LCSC.ACFG _ _ g <- cfgsToRegister
-                ]
+          -- Make sure to also include functions that don't begin with `test_`
+          -- (i.e., the `auxCFGs`), as they might be used during simulation.
+          -- For example, if our test function is named @test_foobar, we'll
+          -- need to include the CFG for @foobar itself.
+          let fns = acfgsToFunctionBindings (acfg : auxCFGs)
           let mem = DMM.emptyMemory (DMA.archAddrWidth archInfo)
           initMem <- AVS.initializeMemory bak
                                           halloc
@@ -319,11 +312,22 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
     noopInitGlobals = AM.InitArchSpecificGlobals $ \_ mem ->
       return (mem, LCSG.emptyGlobals)
 
+-- | Convert a list of 'LCSC.ACFG's to 'LCS.FunctionBindings'.
+acfgsToFunctionBindings :: [LCSC.ACFG ext] -> LCS.FunctionBindings p sym ext
+acfgsToFunctionBindings acfgs = LCS.fnBindingsFromList
+  [ case LCCS.toSSA g of
+      LCCC.SomeCFG ssa ->
+        LCS.FnBinding (LCCR.cfgHandle g)
+                      (LCS.UseCFG ssa (LCAP.postdomInfo ssa))
+  | LCSC.ACFG _ _ g <- acfgs
+  ]
+
 -- | Load all crucible syntax function overrides in an @--overrides@ directory.
 -- This function reads all files matching @<dirPath>/function/*.cbl@ and
 -- generates 'AF.FunctionOverride's for them. It will also parse and validate
 -- the @overrides.yaml@ file if one is present.
-loadCrucibleSyntaxOverrides :: (LCCE.IsSyntaxExtension ext, DMM.MemWidth w)
+loadCrucibleSyntaxOverrides :: forall ext w s p sym
+                             . (LCCE.IsSyntaxExtension ext, DMM.MemWidth w)
                             => FilePath
                             -- ^ Override directory
                             -> Nonce.NonceGenerator IO s
@@ -335,7 +339,7 @@ loadCrucibleSyntaxOverrides :: (LCCE.IsSyntaxExtension ext, DMM.MemWidth w)
 loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
   RawSyntaxOverrides{cblFiles, functionAddressOverrides}
     <- findRawSyntaxOverrides dirPath
-  namedOvs <- mapM go cblFiles
+  (namedOvs, auxCFGs) <- mapAndUnzipM go cblFiles
   let namedOvsMap = Map.fromList $
         map (\sov@(AF.SomeFunctionOverride ov) -> (AF.functionName ov, sov))
             namedOvs
@@ -349,16 +353,26 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
   pure $ CrucibleSyntaxOverrides
     { csoAddressOverrides = Map.fromList funAddrOvs
     , csoNamedOverrides = namedOvs
+    , csoAuxiliaryFnBindings = acfgsToFunctionBindings $ concat auxCFGs
     }
   where
+    -- Given a @<name>.cbl@ file, return a tuple where:
+    --
+    -- * The first element is the override for the @<name>@ function.
+    --
+    -- * The second element are the CFGs for all other functions in the file.
+    go :: FilePath ->
+          IO (AF.SomeFunctionOverride p sym ext, [LCSC.ACFG ext])
     go path = do
       let fnName = SF.takeBaseName path
       let fnNamePred = \fn -> fn == DS.fromString (SF.takeBaseName path)
-      (globals, matches, _) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
-      case matches of
+      (globals, matchCFGs, auxCFGs) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
+      case matchCFGs of
         [] -> CMC.throwM (AE.CrucibleSyntaxFunctionNotFound fnName path)
         [acfg] ->
-          return (acfgToFunctionOverride (DS.fromString fnName) acfg globals)
+          return ( acfgToFunctionOverride (DS.fromString fnName) acfg globals
+                 , auxCFGs
+                 )
         _ ->
           -- This shouldn't be possible.  Multiple functions with the same name
           -- should have already been caught by crucible-syntax.

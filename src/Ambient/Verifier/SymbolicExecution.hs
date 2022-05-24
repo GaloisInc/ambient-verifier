@@ -1115,9 +1115,22 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
     let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig)) (ALB.bcUnsuportedRelocations binConf)
+    -- While we usually avoid registering functions until right before invoking
+    -- them (see Note [Lazily registering overrides] in Ambient.Extensions),
+    -- there are some exceptions to the rule for which we must register their
+    -- functions ahead of time. They are:
+    --
+    -- * The entry point function, as we would not be able to start simulation
+    --   without it being registered.
+    --
+    -- * The auxiliary functions defined in @.cbl@ files—i.e., the functions
+    --   in each @<name>.cbl@ file that are not the @<name>@ function. While
+    --   these functions cannot be invoked directly from machine code
+    --   simulation, they can be invoked by syntax overrides, so we must
+    --   register them in the simulator.
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
-                                       LCF.emptyHandleMap
+                                       (LCS.fnBindings (AFET.csoAuxiliaryFnBindings csOverrides))
     let ambientSimState = set AExt.discoveredFunctionHandles
                           (Map.singleton entryPointAddr (LCCC.cfgHandle cfg))
                           AExt.emptyAmbientSimulatorState
