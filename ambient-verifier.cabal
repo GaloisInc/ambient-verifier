@@ -55,6 +55,7 @@ library
                       Ambient.FunctionOverride,
                       Ambient.FunctionOverride.ArgumentMapping,
                       Ambient.FunctionOverride.Extension,
+                      Ambient.FunctionOverride.Extension.Types,
                       Ambient.FunctionOverride.Overrides,
                       Ambient.FunctionOverride.Overrides.Networking,
                       Ambient.FunctionOverride.Overrides.Networking.Types,

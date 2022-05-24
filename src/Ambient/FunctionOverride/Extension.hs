@@ -27,9 +27,7 @@ module Ambient.FunctionOverride.Extension (
 import           Control.Applicative ( empty )
 import           Control.Monad ( void, unless )
 import qualified Control.Monad.Catch as CMC
-import           Control.Monad.IO.Class ( MonadIO, liftIO )
-import           Control.Monad.State.Class ( MonadState )
-import           Control.Monad.Writer.Class ( MonadWriter )
+import           Control.Monad.IO.Class ( MonadIO(liftIO) )
 import qualified Data.Aeson as DA
 import qualified Data.Aeson.Key as DAK
 import qualified Data.Aeson.KeyMap as DAKM
@@ -89,21 +87,13 @@ import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.ArgumentMapping as AFA
+import           Ambient.FunctionOverride.Extension.Types
 import qualified Ambient.Memory as AM
 import qualified Ambient.Verifier.SymbolicExecution as AVS
-
--- | The additional types ambient-verifier supports beyond those built into
--- crucible-syntax.
-data TypeAlias = Byte | Int | Long | PidT | Pointer | SizeT | UidT
-  deriving (Show, Eq, Enum, Bounded)
 
 -- | A list of every type alias.
 allTypeAliases :: [TypeAlias]
 allTypeAliases = [minBound .. maxBound]
-
--- | Lookup function from a 'TypeAlias' to the underlying crucible type it
--- represents.
-newtype TypeLookup = TypeLookup (TypeAlias -> (Some LCT.TypeRepr))
 
 -- | The raw, unvalidated contents of a user-specified @--overrides@ directory.
 -- 'CrucibleSyntaxOverrides' is the post-validation counterpart to this data
@@ -116,15 +106,6 @@ data RawSyntaxOverrides = RawSyntaxOverrides
     --   If there is no @overrides.yaml@ file or if the map is not present,
     --   this list is empty.
   }
-
--- | Errors that can occur when parsing an @overrides.yaml@ file.
-data OverrideMapParseError
-  = ExpectedObject DA.Value
-  | ExpectedString DA.Value
-  | ExpectedAddress DAK.Key
-  deriving (Show)
-
-instance CMC.Exception OverrideMapParseError
 
 -- | Parse the @function address overrides@ map in an @overrides.yaml@ file. If
 -- no such map is present, return an empty list.
@@ -333,27 +314,6 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
     noopInitGlobals = AM.InitArchSpecificGlobals $ \_ mem ->
       return (mem, LCSG.emptyGlobals)
 
--- | The overrides in a user-specified @--overrides@ directory that have gone
--- through a light round of validation checks.
-data CrucibleSyntaxOverrides w p sym ext = CrucibleSyntaxOverrides
-  { csoAddressOverrides :: Map.Map (AF.FunctionAddrLoc w)
-                                   (AF.SomeFunctionOverride p sym ext)
-    -- ^ A map of @function address overrides@. These have been checked to
-    --   ensure that every override that appears in the domain of the map
-    --   corresponds to a @.cbl@ file.
-  , csoNamedOverrides :: [AF.SomeFunctionOverride p sym ext]
-    -- ^ An override for each @<name>.cbl@ file. These have been checked to
-    --   ensure that the @.cbl@ file contents are valid and that there are no
-    --   duplicate names.
-  }
-
--- | An empty collection of 'CrucibleSyntaxOverrides'.
-emptyCrucibleSyntaxOverrides :: CrucibleSyntaxOverrides w p sym ext
-emptyCrucibleSyntaxOverrides = CrucibleSyntaxOverrides
-  { csoAddressOverrides = Map.empty
-  , csoNamedOverrides = []
-  }
-
 -- | Load all crucible syntax function overrides in an @--overrides@ directory.
 -- This function reads all files matching @<dirPath>/function/*.cbl@ and
 -- generates 'AF.FunctionOverride's for them. It will also parse and validate
@@ -443,14 +403,6 @@ extensionTypeParser types = do
   case Map.lookup name types of
     Just someTypeRepr -> return someTypeRepr
     Nothing -> empty
-
--- | The constraints on the abstract parser monad
-type ExtensionParser m ext s = ( LCSE.MonadSyntax LCSA.Atomic m
-                               , MonadWriter [WP.Posd (LCCR.Stmt ext s)] m
-                               , MonadState (LCSC.SyntaxState s) m
-                               , MonadIO m
-                               , LCCE.IsSyntaxExtension ext
-                               )
 
 -- | Convert a NatRepr containing a value in bytes to one containing a value in
 -- bits.
@@ -549,28 +501,6 @@ extensionParser wrappers hooks =
         LCSA.AtomName "le" -> Just DMM.LittleEndian
         LCSA.AtomName "be" -> Just DMM.BigEndian
         _ -> Nothing
-
-
--- | A wrapper for a syntax extension statement
---
--- Note that these are pure and are intended to guide the substitution of syntax
--- extensions for operations in the 'MDS.MacawExt' syntax.
-data ExtensionWrapper arch args ret =
-  ExtensionWrapper { extName :: LCSA.AtomName
-                  -- ^ Name of the syntax extension
-                   , extArgTypes :: LCT.CtxRepr args
-                  -- ^ Types of the arguments to the syntax extension
-                   , extWrapper :: forall s m
-                                 . ( ExtensionParser m (DMS.MacawExt arch) s)
-                                => Ctx.Assignment (LCCR.Atom s) args
-                                -> m (LCCR.AtomValue (DMS.MacawExt arch) s ret)
-                  -- ^ Syntax extension wrapper that takes the arguments passed
-                  -- to the extension operator, returning a suitable crucible
-                  -- 'LCCR.AtomValue' to represent it in the syntax extension.
-                   }
-
-data SomeExtensionWrapper arch =
-  forall args ret. SomeExtensionWrapper (ExtensionWrapper arch args ret)
 
 -- | Wrap a statement extension binary operator
 binop :: (KnownNat w, Monad m)
