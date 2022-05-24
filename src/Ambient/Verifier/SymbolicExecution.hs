@@ -88,6 +88,7 @@ import qualified Ambient.Extensions as AExt
 import qualified Ambient.Extensions.Memory as AEM
 import qualified Ambient.EventTrace as AET
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.FunctionOverride.Extension.Types as AFET
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Loader.LoadOptions as ALL
@@ -1018,11 +1019,8 @@ data FunctionConfig arch sym p ext = FunctionConfig {
   -- ^ Function to construct an ABI specification for system calls
   , fcBuildFunctionABI :: AF.BuildFunctionABI arch sym p
   -- ^ Function to construct an ABI specification for function calls
-  , fcFunctionAddrOverrides :: Map.Map (AF.FunctionAddrLoc (DMC.ArchAddrWidth arch))
-                                       (AF.SomeFunctionOverride p sym ext)
-  -- ^ A map of function overrides at particular addresses
-  , fcFunctionNamedOverrides :: [ AF.SomeFunctionOverride p sym ext ]
-  -- ^ A list of additional function overrides to register by name
+  , fcCrucibleSyntaxOverrides :: AFET.CrucibleSyntaxOverrides (DMC.ArchAddrWidth arch) p sym ext
+  -- ^ @crucible-syntax@ overrides to register
   }
 
 simulateFunction
@@ -1091,12 +1089,13 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
 
   (wmConfig, globals1) <- liftIO $ AVW.initWMConfig sym halloc globals0 (secProperties seConf)
 
+  let csOverrides = fcCrucibleSyntaxOverrides fnConf
   let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
   let syscallABI = buildSyscallABI fs initialMem (ALB.bcUnsuportedRelocations binConf)
   let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
   let functionABI = buildFunctionABI fs initialMem (ALB.bcUnsuportedRelocations binConf)
-                                     (fcFunctionAddrOverrides fnConf)
-                                     (fcFunctionNamedOverrides fnConf)
+                                     (AFET.csoAddressOverrides csOverrides)
+                                     (AFET.csoNamedOverrides csOverrides)
 
   let mem0 = case LCSG.lookupGlobal (AM.imMemVar initialMem) globals1 of
                Just mem -> mem
@@ -1194,7 +1193,7 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures e
                                  archInfo
                                  mems
                                  initGlobals
-                                 (fcFunctionNamedOverrides fnConf)
+                                 (AFET.csoNamedOverrides (fcCrucibleSyntaxOverrides fnConf))
                                  (ALB.bcGlobalVarAddrs binConf)
   let ?recordLLVMAnnotation = \_ _ _ -> return ()
   simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs
