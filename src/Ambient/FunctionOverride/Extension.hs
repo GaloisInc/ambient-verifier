@@ -174,11 +174,11 @@ findRawSyntaxOverrides dirPath = do
            }
 
 
--- | Load a single crucible syntax override.  This function returns an optional
+-- | Load a single crucible syntax override file. This function returns a
 -- tuple containing:
 -- 1. A list of global variables declared in the file
 -- 2. A list of 'LCSC.ACFG' for which 'fnNamePred' returned 'True'
--- 3. A list of 'LCSC.ACFG' containing all functions in the .cbl file.
+-- 3. A list of 'LCSC.ACFG' for which 'fnNamePred' returned 'False'
 -- If 'fnName' cannot be found in the .cbl file, this function returns
 -- 'Nothing'.
 loadCrucibleSyntaxOverride
@@ -210,8 +210,8 @@ loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks = do
         Right (globals, acfgs) -> do
           let someGlobals = [ Some glob
                             | (_, (Pair.Pair _ glob)) <- Map.toList globals ]
-          let matches = filter evalFnNamePred acfgs
-          return (someGlobals, matches, acfgs)
+          let (matches, nonMatches) = List.partition evalFnNamePred acfgs
+          return (someGlobals, matches, nonMatches)
   where
     evalFnNamePred (LCSC.ACFG _ _ g) =
       fnNamePred (LCF.handleName (LCCR.cfgHandle g))
@@ -253,25 +253,30 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
     go :: FilePath -> IO ()
     go path = do
       let fnNamePred = \fn -> List.isPrefixOf "test_" (show fn)
-      (ovGlobals, matches, acfgs) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
-      mapM_ (runTest path ovGlobals acfgs) matches
+      (ovGlobals, matches, nonMatches) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
+      mapM_ (runTest path ovGlobals nonMatches) matches
 
     runTest :: FilePath
             -> [Some LCS.GlobalVar]
             -> [LCSC.ACFG ext]
             -> LCSC.ACFG ext
             -> IO ()
-    runTest path ovGlobals acfgs acfg = do
+    runTest path ovGlobals nonTestCFGs acfg = do
       LJ.writeLog logAction (AD.ExecutingOverrideTest acfg path)
       case acfg of
         LCSC.ACFG Ctx.Empty LCT.UnitRepr test -> do
           let testHdl = LCCR.cfgHandle test
+          -- Make sure to also include functions that don't begin with `test_`,
+          -- as they might be used during simulation. For example, if our test
+          -- function is named @test_foobar, we'll need to include the CFG for
+          -- @foobar itself.
+          let cfgsToRegister = acfg : nonTestCFGs
           let fns = LCS.fnBindingsFromList
                 [ case LCCS.toSSA g of
                     LCCC.SomeCFG ssa ->
                       LCS.FnBinding (LCCR.cfgHandle g)
                                     (LCS.UseCFG ssa (LCAP.postdomInfo ssa))
-                | LCSC.ACFG _ _ g <- acfgs
+                | LCSC.ACFG _ _ g <- cfgsToRegister
                 ]
           let mem = DMM.emptyMemory (DMA.archAddrWidth archInfo)
           initMem <- AVS.initializeMemory bak
