@@ -104,13 +104,10 @@ buildKUserGetTLSOverride ::
   => LCCC.GlobalVar (LCLM.LLVMPointerType w)
      -- ^ Global variable for TLS
   -> AF.FunctionOverride p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
-buildKUserGetTLSOverride tlsGlob = AF.FunctionOverride
-  { AF.functionName = "__kuser_get_tls"
-  , AF.functionGlobals = []
-  , AF.functionArgTypes = Ctx.empty
-  , AF.functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , AF.functionOverride = \bak args -> Ctx.uncurryAssignment (callKUserGetTLSOverride bak tlsGlob) args
-  }
+buildKUserGetTLSOverride tlsGlob =
+  PN.withKnownNat ?ptrWidth $
+  AF.mkFunctionOverride "__kuser_get_tls" $ \bak args ->
+    Ctx.uncurryAssignment (callKUserGetTLSOverride bak tlsGlob) args
 
 callKUserGetTLSOverride ::
      ( LCB.IsSymBackend sym bak

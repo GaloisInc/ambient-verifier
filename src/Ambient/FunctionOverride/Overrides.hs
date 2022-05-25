@@ -71,13 +71,10 @@ buildCallocOverride :: ( LCLM.HasLLVMAnn sym
                     -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w) ext
                                               (LCLM.LLVMPointerType w)
-buildCallocOverride mvar = FunctionOverride
-  { functionName = "calloc"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callCalloc bak mvar) args
-  }
+buildCallocOverride mvar =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "calloc" $ \bak args ->
+    Ctx.uncurryAssignment (callCalloc bak mvar) args
 
 callCalloc :: ( LCB.IsSymBackend sym bak
               , LCLM.HasLLVMAnn sym
@@ -104,13 +101,10 @@ buildMallocOverride :: ( ?memOpts :: LCLM.MemOptions
                     => LCS.GlobalVar LCLM.Mem
                     -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext
                                               (LCLM.LLVMPointerType w)
-buildMallocOverride mvar = FunctionOverride
-  { functionName = "malloc"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callMalloc bak mvar) args
-  }
+buildMallocOverride mvar =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "malloc" $ \bak args ->
+    Ctx.uncurryAssignment (callMalloc bak mvar) args
 
 callMalloc :: ( LCB.IsSymBackend sym bak
               , ?memOpts :: LCLM.MemOptions
@@ -136,15 +130,10 @@ buildMemcpyOverride :: ( LCLM.HasPtrWidth w
                                                             Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w) ext
                                               LCT.UnitType
-buildMemcpyOverride mvar = FunctionOverride
-  { functionName = "memcpy"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCT.UnitRepr
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callMemcpy bak mvar) args
-  }
+buildMemcpyOverride mvar =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "memcpy" $ \bak args ->
+    Ctx.uncurryAssignment (callMemcpy bak mvar) args
 
 -- | Override for the @memcpy@ function. This behaves identically to the
 -- corresponding override in @crucible-llvm@.
@@ -173,15 +162,10 @@ buildMemsetOverride :: ( LCLM.HasPtrWidth w
                                                             Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w) ext
                                               LCT.UnitType
-buildMemsetOverride mvar = FunctionOverride
-  { functionName = "memset"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCT.UnitRepr
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callMemset bak mvar) args
-  }
+buildMemsetOverride mvar =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "memset" $ \bak args ->
+    Ctx.uncurryAssignment (callMemset bak mvar) args
 
 -- | Override for the @memset@ function. This behaves identically to the
 -- corresponding override in @crucible-llvm@.
@@ -276,15 +260,10 @@ shmatOverride :: ( LCLM.HasLLVMAnn sym
                                                 Ctx.::> LCLM.LLVMPointerType w)
                                   ext
                                   (LCLM.LLVMPointerType w)
-shmatOverride = FunctionOverride {
-    functionName = "shmat"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-                                Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-                                Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callShmat bak) args
-  }
+shmatOverride =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "shmat" $ \bak args ->
+    Ctx.uncurryAssignment (callShmat bak) args
 
 -- | Override for the @shmget@ function.  It has the following caveats that may
 -- need to be addressed in the future for a more faithful override:
@@ -361,16 +340,10 @@ buildShmgetOverride :: ( LCLM.HasLLVMAnn sym
                                                     Ctx.::> LCLM.LLVMPointerType w)
                                       ext
                                       (LCLM.LLVMPointerType w)
-buildShmgetOverride memVar = FunctionOverride {
-    functionName = "shmget"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-                                 Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-                                 Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride =
-      \bak args -> Ctx.uncurryAssignment (callShmget memVar bak) args
-  }
+buildShmgetOverride memVar =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "shmget" $ \bak args ->
+    Ctx.uncurryAssignment (callShmget memVar bak) args
 
 -------------------------------------------------------------------------------
 -- Hacky Overrides
@@ -403,13 +376,10 @@ buildHackyBumpMallocOverride
   -- ^ Global pointing to end of heap bump allocation
   -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext
                                               (LCLM.LLVMPointerType w)
-buildHackyBumpMallocOverride endGlob = FunctionOverride
-  { functionName = "malloc"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (hackyBumpMalloc bak endGlob) args
-  }
+buildHackyBumpMallocOverride endGlob =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "malloc" $ \bak args ->
+    Ctx.uncurryAssignment (hackyBumpMalloc bak endGlob) args
 
 hackyBumpCalloc :: ( LCB.IsSymBackend sym bak
                    , LCLM.HasLLVMAnn sym
@@ -449,10 +419,7 @@ buildHackyBumpCallocOverride
   -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                           Ctx.::> LCLM.LLVMPointerType w) ext
                             (LCLM.LLVMPointerType w)
-buildHackyBumpCallocOverride endGlob memVar = FunctionOverride
-  { functionName = "calloc"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (hackyBumpCalloc bak endGlob memVar) args
-  }
+buildHackyBumpCallocOverride endGlob memVar =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "calloc" $ \bak args ->
+    Ctx.uncurryAssignment (hackyBumpCalloc bak endGlob memVar) args

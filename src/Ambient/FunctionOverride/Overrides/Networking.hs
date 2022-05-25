@@ -208,15 +208,10 @@ buildAcceptOverride :: ( LCLM.HasPtrWidth w
                                                       Ctx.::> LCLM.LLVMPointerType w
                                                       Ctx.::> LCLM.LLVMPointerType w) ext
                                         (LCLM.LLVMPointerType w)
-buildAcceptOverride fs = FunctionOverride
-  { functionName = "accept"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callAccept fs bak) args
-  }
+buildAcceptOverride fs =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "accept" $ \bak args ->
+    Ctx.uncurryAssignment (callAccept fs bak) args
 
 -- | Override for the @accept@ function. This function looks up the metadata
 -- associated with the socket file descriptor argument, allocates a new socket
@@ -280,15 +275,10 @@ buildBindOverride :: ( LCLM.HasPtrWidth w
                                                     Ctx.::> LCLM.LLVMPointerType w
                                                     Ctx.::> LCLM.LLVMPointerType w) ext
                                       (LCLM.LLVMPointerType w)
-buildBindOverride fs initialMem unsupportedRelocs = FunctionOverride
-  { functionName = "bind"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callBind fs initialMem unsupportedRelocs bak) args
-  }
+buildBindOverride fs initialMem unsupportedRelocs =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "bind" $ \bak args ->
+    Ctx.uncurryAssignment (callBind fs initialMem unsupportedRelocs bak) args
 
 -- | Override for the @bind@ function. This function reads the port number from
 -- the @addr@ struct, ensures that it is concrete, and records it for later
@@ -476,15 +466,10 @@ buildConnectOverride :: ( LCLM.HasPtrWidth w
                                                        Ctx.::> LCLM.LLVMPointerType w
                                                        Ctx.::> LCLM.LLVMPointerType w) ext
                                          (LCLM.LLVMPointerType w)
-buildConnectOverride = FunctionOverride
-  { functionName = "connect"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callConnect bak) args
-  }
+buildConnectOverride =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "connect" $ \bak args ->
+    Ctx.uncurryAssignment (callConnect bak) args
 
 
 -- | Override for the @connect@ function. This implementation is very simple, as
@@ -518,14 +503,10 @@ buildListenOverride :: ( LCLM.HasPtrWidth w
                                         (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                       Ctx.::> LCLM.LLVMPointerType w) ext
                                         (LCLM.LLVMPointerType w)
-buildListenOverride = FunctionOverride
-  { functionName = "listen"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callListen bak) args
-  }
+buildListenOverride =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "listen" $ \bak args ->
+    Ctx.uncurryAssignment (callListen bak) args
 
 -- | Override for the @listen@ function. This implementation is very simple, as
 -- it only checks to see if the socket file descriptor argument has previously
@@ -581,16 +562,10 @@ buildRecvOverride :: ( LCLM.HasLLVMAnn sym
                                                           Ctx.::> LCLM.LLVMPointerType w
                                                           Ctx.::> LCLM.LLVMPointerType w) ext
                                             (LCLM.LLVMPointerType w)
-buildRecvOverride fs memVar = FunctionOverride
-  { functionName = "recv"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callRecv fs memVar bak) args
-  }
+buildRecvOverride fs memVar =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "recv" $ \bak args ->
+    Ctx.uncurryAssignment (callRecv fs memVar bak) args
 
 -- | Override for the @recv@ function. For now, we treat it identically to
 -- @read@, ignoring the @flags@ argument entirely.
@@ -619,16 +594,10 @@ buildSendOverride :: ( LCLM.HasLLVMAnn sym
                                                           Ctx.::> LCLM.LLVMPointerType w
                                                           Ctx.::> LCLM.LLVMPointerType w) ext
                                             (LCLM.LLVMPointerType w)
-buildSendOverride fs memVar = FunctionOverride
-  { functionName = "send"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callSend fs memVar bak) args
-  }
+buildSendOverride fs memVar =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "send" $ \bak args ->
+    Ctx.uncurryAssignment (callSend fs memVar bak) args
 
 -- | Override for the @send@ function. For now, we treat it identically to
 -- @write@, ignoring the @flags@ argument entirely.
@@ -656,15 +625,10 @@ buildSocketOverride :: ( LCLM.HasPtrWidth w
                                                       Ctx.::> LCLM.LLVMPointerType w
                                                       Ctx.::> LCLM.LLVMPointerType w) ext
                                         (LCLM.LLVMPointerType w)
-buildSocketOverride fs = FunctionOverride
-  { functionName = "socket"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                                 Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callSocket fs bak) args
-  }
+buildSocketOverride fs =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "socket" $ \bak args ->
+    Ctx.uncurryAssignment (callSocket fs bak) args
 
 -- | Override for the @socket@ function. This checks to see if the appropriate
 -- arguments are concrete, and if so, open a file with the appropriate name

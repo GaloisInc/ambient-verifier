@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -5,6 +6,7 @@
 
 module Ambient.FunctionOverride (
     FunctionOverride(..)
+  , mkFunctionOverride
   , SomeFunctionOverride(..)
   , FunctionOverrideHandle
   , FunctionAddrLoc(..)
@@ -60,6 +62,34 @@ data FunctionOverride p sym args ext ret =
                        -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))
                    -- ^ Override capturing behavior of the function
                    }
+
+-- | A smart constructor for 'FunctionOverride' for the common case when:
+--
+-- * There are no global variables.
+--
+-- * The argument and result types are statically known.
+mkFunctionOverride ::
+  ( LCT.KnownRepr LCT.CtxRepr args
+  , LCT.KnownRepr LCT.TypeRepr ret
+  ) =>
+  WF.FunctionName ->
+  (forall bak solver scope st fs
+     . ( LCB.IsSymBackend sym bak
+       , sym ~ WE.ExprBuilder scope st fs
+       , bak ~ LCBO.OnlineBackend solver scope st fs
+       , WPO.OnlineSolver solver
+       )
+    => bak
+    -> Ctx.Assignment (LCS.RegEntry sym) args
+    -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))) ->
+  FunctionOverride p sym args ext ret
+mkFunctionOverride name ov = FunctionOverride
+  { functionName = name
+  , functionGlobals = []
+  , functionArgTypes = LCT.knownRepr
+  , functionReturnType = LCT.knownRepr
+  , functionOverride = ov
+  }
 
 data SomeFunctionOverride p sym ext =
   forall args ret . SomeFunctionOverride (FunctionOverride p sym args ext ret)

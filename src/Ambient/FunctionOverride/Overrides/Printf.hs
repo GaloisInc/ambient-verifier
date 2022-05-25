@@ -152,17 +152,10 @@ buildSprintfOverride
                                           Ctx.::> LCLM.LLVMPointerType w
                                           Ctx.::> LCLM.LLVMPointerType w) ext
                             (LCLM.LLVMPointerType w)
-buildSprintfOverride initialMem unsupportedRelocs = FunctionOverride
-  { functionName = "sprintf"
-  , functionGlobals = []
-  , functionArgTypes = Ctx.empty
-                Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-                Ctx.:> LCLM.LLVMPointerRepr ?ptrWidth
-  , functionReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , functionOverride = \bak args -> Ctx.uncurryAssignment (callSprintf bak initialMem unsupportedRelocs) args
-  }
+buildSprintfOverride initialMem unsupportedRelocs =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "sprintf" $ \bak args ->
+    Ctx.uncurryAssignment (callSprintf bak initialMem unsupportedRelocs) args
 
 -- | Define handlers for the various printf directives.
 --
