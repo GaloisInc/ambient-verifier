@@ -28,8 +28,6 @@ import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.CFG.Extension as LCCE
 import qualified Lang.Crucible.CFG.Reg as LCCR
-import qualified Lang.Crucible.FunctionHandle as LCF
-import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Syntax.Atoms as LCSA
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.Syntax.ExprParse as LCSE
@@ -88,18 +86,6 @@ data CrucibleSyntaxOverrides w p sym ext = CrucibleSyntaxOverrides
     -- ^ An override for each @<name>.cbl@'s function of the corresponding
     --   @<name>@. These have been checked to ensure that the @.cbl@ file
     --   contents are valid and that there are no duplicate names.
-  , csoAuxiliaryFnBindings :: LCS.FunctionBindings p sym ext
-    -- ^ Bindings for every other function in the @.cbl@ files that do not
-    --   match a @<name>@ for some @<name>.cbl@ file. While these functions
-    --   cannot be invoked directly from machine code simulation, they can
-    --   be invoked by syntax overrides, so we must register them in the
-    --   simulator.
-    --
-    --   Note that it is OK for multiple auxiliary functions across different
-    --   @.cbl@ files to have the same name in this list. This is because the
-    --   simulator looks up functions by their handle, not by their name, and
-    --   since handles are uniquely identified in Crucible, different functions
-    --   with the same name won't conflict with each other.
   }
 
 -- | An empty collection of 'CrucibleSyntaxOverrides'.
@@ -107,7 +93,6 @@ emptyCrucibleSyntaxOverrides :: CrucibleSyntaxOverrides w p sym ext
 emptyCrucibleSyntaxOverrides = CrucibleSyntaxOverrides
   { csoAddressOverrides = Map.empty
   , csoNamedOverrides = []
-  , csoAuxiliaryFnBindings = LCS.FnBindings LCF.emptyHandleMap
   }
 
 -- | Errors that can occur when parsing an @overrides.yaml@ file.

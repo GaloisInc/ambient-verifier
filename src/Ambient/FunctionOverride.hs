@@ -49,6 +49,28 @@ data FunctionOverride p sym args ext ret =
                    -- ^ Types of the arguments to the function
                    , functionReturnType :: LCT.TypeRepr ret
                    -- ^ Return type of the function
+                   , functionAuxiliaryFnBindings :: [LCS.FnBinding p sym ext]
+                   -- ^ Bindings for every auxiliary function that is called
+                   --   from the 'functionOverride' but does not have a
+                   --   'FunctionOverride' of its own. This is primarily
+                   --   intended for local functions that are not meant to be
+                   --   invoked from other functions besides the one being
+                   --   overridden.
+                   --
+                   --   Currently, the sole use case for this feature is to
+                   --   support @<name>.cbl@ files that define functions
+                   --   besides ones named @<name>@. While these functions
+                   --   cannot be invoked directly from machine code
+                   --   simulation, they can be invoked by syntax overrides, so
+                   --   we must register them in the simulator.
+                   --
+                   --   Note that it is OK for multiple auxiliary functions
+                   --   across different 'FunctionOverrides' files to have the
+                   --   same name. This is because the simulator looks up
+                   --   functions by their handle, not by their name, and since
+                   --   handles are uniquely identified in Crucible, different
+                   --   auxiliary functions with the same name won't conflict
+                   --   with each other.
                    , functionOverride
                        :: forall bak solver scope st fs
                         . ( LCB.IsSymBackend sym bak
@@ -68,6 +90,8 @@ data FunctionOverride p sym args ext ret =
 -- * There are no global variables.
 --
 -- * The argument and result types are statically known.
+--
+-- * No auxiliary function bindings are used.
 mkFunctionOverride ::
   ( LCT.KnownRepr LCT.CtxRepr args
   , LCT.KnownRepr LCT.TypeRepr ret
@@ -88,6 +112,7 @@ mkFunctionOverride name ov = FunctionOverride
   , functionGlobals = []
   , functionArgTypes = LCT.knownRepr
   , functionReturnType = LCT.knownRepr
+  , functionAuxiliaryFnBindings = []
   , functionOverride = ov
   }
 

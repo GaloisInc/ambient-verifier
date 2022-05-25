@@ -25,7 +25,7 @@ module Ambient.FunctionOverride.Extension (
   ) where
 
 import           Control.Applicative ( empty )
-import           Control.Monad ( mapAndUnzipM, void, unless )
+import           Control.Monad ( void, unless )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(liftIO) )
 import qualified Data.Aeson as DA
@@ -256,7 +256,8 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
           -- (i.e., the `auxCFGs`), as they might be used during simulation.
           -- For example, if our test function is named @test_foobar, we'll
           -- need to include the CFG for @foobar itself.
-          let fns = acfgsToFunctionBindings (acfg : auxCFGs)
+          let fns = LCS.fnBindingsFromList $
+                    map acfgToFnBinding (acfg : auxCFGs)
           let mem = DMM.emptyMemory (DMA.archAddrWidth archInfo)
           initMem <- AVS.initializeMemory bak
                                           halloc
@@ -298,16 +299,6 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
     noopInitGlobals = AM.InitArchSpecificGlobals $ \_ mem ->
       return (mem, LCSG.emptyGlobals)
 
--- | Convert a list of 'LCSC.ACFG's to 'LCS.FunctionBindings'.
-acfgsToFunctionBindings :: [LCSC.ACFG ext] -> LCS.FunctionBindings p sym ext
-acfgsToFunctionBindings acfgs = LCS.fnBindingsFromList
-  [ case LCCS.toSSA g of
-      LCCC.SomeCFG ssa ->
-        LCS.FnBinding (LCCR.cfgHandle g)
-                      (LCS.UseCFG ssa (LCAP.postdomInfo ssa))
-  | LCSC.ACFG _ _ g <- acfgs
-  ]
-
 -- | Load all crucible syntax function overrides in an @--overrides@ directory.
 -- This function reads all files matching @<dirPath>/function/*.cbl@ and
 -- generates 'AF.FunctionOverride's for them. It will also parse and validate
@@ -325,7 +316,7 @@ loadCrucibleSyntaxOverrides :: forall ext w s p sym
 loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
   RawSyntaxOverrides{cblFiles, functionAddressOverrides}
     <- findRawSyntaxOverrides dirPath
-  (namedOvs, auxCFGs) <- mapAndUnzipM go cblFiles
+  namedOvs <- traverse go cblFiles
   let namedOvsMap = Map.fromList $
         map (\sov@(AF.SomeFunctionOverride ov) -> (AF.functionName ov, sov))
             namedOvs
@@ -339,16 +330,10 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
   pure $ CrucibleSyntaxOverrides
     { csoAddressOverrides = Map.fromList funAddrOvs
     , csoNamedOverrides = namedOvs
-    , csoAuxiliaryFnBindings = acfgsToFunctionBindings $ concat auxCFGs
     }
   where
-    -- Given a @<name>.cbl@ file, return a tuple where:
-    --
-    -- * The first element is the override for the @<name>@ function.
-    --
-    -- * The second element are the CFGs for all other functions in the file.
-    go :: FilePath ->
-          IO (AF.SomeFunctionOverride p sym ext, [LCSC.ACFG ext])
+    -- Given a @<name>.cbl@ file, return an override for the @<name>@ function.
+    go :: FilePath -> IO (AF.SomeFunctionOverride p sym ext)
     go path = do
       let fnName = SF.takeBaseName path
       parsedProg <- loadCrucibleSyntaxOverride path ng halloc hooks
@@ -358,9 +343,7 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
       case matchCFGs of
         [] -> CMC.throwM (AE.CrucibleSyntaxFunctionNotFound fnName path)
         [acfg] ->
-          return ( acfgToFunctionOverride (DS.fromString fnName) acfg globals
-                 , auxCFGs
-                 )
+          return $ acfgToFunctionOverride (DS.fromString fnName) globals auxCFGs acfg
         _ ->
           -- This shouldn't be possible.  Multiple functions with the same name
           -- should have already been caught by crucible-syntax.
@@ -373,11 +356,13 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
 -- Convert an ACFG to a FunctionOverride
 acfgToFunctionOverride
   :: WF.FunctionName
-  -> LCSC.ACFG ext
   -> [ Some LCS.GlobalVar ]
   -- ^ GlobalVars used in function override
+  -> [LCSC.ACFG ext]
+  -- ^ The ACFGs for auxiliary functions
+  -> LCSC.ACFG ext
   -> AF.SomeFunctionOverride p sym ext
-acfgToFunctionOverride name (LCSC.ACFG argTypes retType cfg) globals =
+acfgToFunctionOverride name globals auxCFGs (LCSC.ACFG argTypes retType cfg) =
   let argMap = AFA.bitvectorArgumentMapping argTypes
       (ptrTypes, ptrTypeMapping) = AFA.pointerArgumentMappping argMap
       retRepr = AFA.promoteBVToPtr retType
@@ -388,6 +373,7 @@ acfgToFunctionOverride name (LCSC.ACFG argTypes retType cfg) globals =
          , AF.functionGlobals = globals
          , AF.functionArgTypes = ptrTypes
          , AF.functionReturnType = retRepr
+         , AF.functionAuxiliaryFnBindings = map acfgToFnBinding auxCFGs
          , AF.functionOverride = \bak args -> do
              -- Translate any arguments that are LLVMPointers but should be Bitvectors into Bitvectors
              --
@@ -397,6 +383,14 @@ acfgToFunctionOverride name (LCSC.ACFG argTypes retType cfg) globals =
              -- Convert any BV returns from the user override to LLVMPointers
              LCS.regValue <$> liftIO (AFA.convertBitvector bak retRepr userRes)
          }
+
+-- | Convert an 'LCSC.ACFG' to a 'LCS.FnBinding'.
+acfgToFnBinding :: forall p sym ext. LCSC.ACFG ext -> LCS.FnBinding p sym ext
+acfgToFnBinding (LCSC.ACFG _ _ g) =
+  case LCCS.toSSA g of
+    LCCC.SomeCFG ssa ->
+      LCS.FnBinding (LCCR.cfgHandle g)
+                    (LCS.UseCFG ssa (LCAP.postdomInfo ssa))
 
 -- | Retrieve the 'WF.FunctionName' in the handle in a 'LCSC.ACFG'.
 acfgHandleName :: LCSC.ACFG ext -> WF.FunctionName

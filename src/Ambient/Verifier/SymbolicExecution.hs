@@ -438,8 +438,8 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
                       -> IO ( LCF.FnHandle args ret
                             , LCS.CrucibleState p sym ext rtp blocks r ctx
                             )
-    mkAndBindOverride state fnOverride = do
-      -- Construct an override for the function
+    mkAndBindOverride state0 fnOverride = do
+      -- First, construct an override for the function.
       let retOV :: forall r'
                  . LCSO.OverrideSim p sym ext r' args ret
                                    (Ctx.Assignment (LCS.RegValue' sym)
@@ -459,9 +459,16 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
       let ov :: LCSO.Override p sym ext args ret
           ov = LCSO.mkOverride' (AF.functionName fnOverride) regsRepr retOV
 
-      -- Build a function handle for the override and insert it into the
-      -- state
-      bindOverrideHandle state hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
+      -- Next, register any auxiliary functions that are used in the override.
+      let state1 =
+            F.foldl' (\state (LCS.FnBinding fnHdl fnSt) ->
+                       insertFunctionHandle state fnHdl fnSt)
+                     state0
+                     (AF.functionAuxiliaryFnBindings fnOverride)
+
+      -- Finally, build a function handle for the override and insert it into
+      -- the state.
+      bindOverrideHandle state1 hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
 
     -- Massage the RegEntry Assignment that getOverrideArgs provides into the
     -- form that FunctionABI expects.
@@ -1115,22 +1122,9 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
     let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig)) (ALB.bcUnsuportedRelocations binConf)
-    -- While we usually avoid registering functions until right before invoking
-    -- them (see Note [Lazily registering overrides] in Ambient.Extensions),
-    -- there are some exceptions to the rule for which we must register their
-    -- functions ahead of time. They are:
-    --
-    -- * The entry point function, as we would not be able to start simulation
-    --   without it being registered.
-    --
-    -- * The auxiliary functions defined in @.cbl@ files—i.e., the functions
-    --   in each @<name>.cbl@ file that are not the @<name>@ function. While
-    --   these functions cannot be invoked directly from machine code
-    --   simulation, they can be invoked by syntax overrides, so we must
-    --   register them in the simulator.
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
-                                       (LCS.fnBindings (AFET.csoAuxiliaryFnBindings csOverrides))
+                                       LCF.emptyHandleMap
     let ambientSimState = set AExt.discoveredFunctionHandles
                           (Map.singleton entryPointAddr (LCCC.cfgHandle cfg))
                           AExt.emptyAmbientSimulatorState
