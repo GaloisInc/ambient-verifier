@@ -174,26 +174,17 @@ findRawSyntaxOverrides dirPath = do
            }
 
 
--- | Load a single crucible syntax override file. This function returns a
--- tuple containing:
--- 1. A list of global variables declared in the file
--- 2. A list of 'LCSC.ACFG' for which 'fnNamePred' returned 'True'
--- 3. A list of 'LCSC.ACFG' for which 'fnNamePred' returned 'False'
--- If 'fnName' cannot be found in the .cbl file, this function returns
--- 'Nothing'.
+-- | Read and parse a single crucible syntax override file.
 loadCrucibleSyntaxOverride
   :: LCCE.IsSyntaxExtension ext
   => FilePath
   -- ^ Path to .cbl file to load
-  -> (WF.FunctionName -> Bool)
-  -- ^ Predicate for function names indicating which functions in the .cbl file
-  -- to load
   -> Nonce.NonceGenerator IO s
   -> LCF.HandleAllocator
   -> LCSC.ParserHooks ext
   -- ^ ParserHooks for the desired syntax extension
-  -> IO ([Some LCS.GlobalVar], [LCSC.ACFG ext], [LCSC.ACFG ext])
-loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks = do
+  -> IO (LCSC.ParsedProgram ext)
+loadCrucibleSyntaxOverride path ng halloc hooks = do
   contents <- DTI.readFile path
   let parsed = MP.parse (  LCSS.skipWhitespace
                         *> MP.many (LCSS.sexp LCSA.atom)
@@ -207,17 +198,7 @@ loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks = do
       eAcfgs <- LCSC.top ng halloc [] $ LCSC.prog asts
       case eAcfgs of
         Left err -> CMC.throwM (AE.CrucibleSyntaxExprParseFailure err)
-        Right (LCSC.ParsedProgram
-                 { LCSC.parsedProgGlobals = globals
-                 , LCSC.parsedProgCFGs = acfgs
-                 }) -> do
-          let someGlobals = [ Some glob
-                            | (_, (Pair.Pair _ glob)) <- Map.toList globals ]
-          let (matchCFGs, auxCFGs) = List.partition evalFnNamePred acfgs
-          return (someGlobals, matchCFGs, auxCFGs)
-  where
-    evalFnNamePred (LCSC.ACFG _ _ g) =
-      fnNamePred (LCF.handleName (LCCR.cfgHandle g))
+        Right parsedProg -> pure parsedProg
 
 -- | Run tests for crucible syntax function overrides.  This function reads all
 -- files matching @<dirPath>/function/*.cbl@ and symbolically executes any
@@ -255,8 +236,10 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
 
     go :: FilePath -> IO ()
     go path = do
-      let fnNamePred = \fn -> List.isPrefixOf "test_" (show fn)
-      (ovGlobals, matchCFGs, auxCFGs) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
+      parsedProg <- loadCrucibleSyntaxOverride path ng halloc hooks
+      let ovGlobals = parsedProgGlobalsList parsedProg
+      let (matchCFGs, auxCFGs) = List.partition hasTestName
+                                   (LCSC.parsedProgCFGs parsedProg)
       mapM_ (runTest path ovGlobals auxCFGs) matchCFGs
 
     runTest :: FilePath
@@ -368,8 +351,10 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
           IO (AF.SomeFunctionOverride p sym ext, [LCSC.ACFG ext])
     go path = do
       let fnName = SF.takeBaseName path
-      let fnNamePred = \fn -> fn == DS.fromString (SF.takeBaseName path)
-      (globals, matchCFGs, auxCFGs) <- loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks
+      parsedProg <- loadCrucibleSyntaxOverride path ng halloc hooks
+      let globals = parsedProgGlobalsList parsedProg
+      let (matchCFGs, auxCFGs) = List.partition (hasSameNameAsCblFile path)
+                                                (LCSC.parsedProgCFGs parsedProg)
       case matchCFGs of
         [] -> CMC.throwM (AE.CrucibleSyntaxFunctionNotFound fnName path)
         [acfg] ->
@@ -412,6 +397,26 @@ acfgToFunctionOverride name (LCSC.ACFG argTypes retType cfg) globals =
              -- Convert any BV returns from the user override to LLVMPointers
              LCS.regValue <$> liftIO (AFA.convertBitvector bak retRepr userRes)
          }
+
+-- | Retrieve the 'WF.FunctionName' in the handle in a 'LCSC.ACFG'.
+acfgHandleName :: LCSC.ACFG ext -> WF.FunctionName
+acfgHandleName (LCSC.ACFG _ _ g) = LCF.handleName (LCCR.cfgHandle g)
+
+-- | Retrieve the global variables in a 'LSCS.ParsedProgram' in list form.
+parsedProgGlobalsList :: LCSC.ParsedProgram ext -> [Some LCS.GlobalVar]
+parsedProgGlobalsList (LCSC.ParsedProgram{LCSC.parsedProgGlobals = globals}) =
+  [ Some glob
+  | (_, (Pair.Pair _ glob)) <- Map.toList globals ]
+
+-- | Does a function's name begin with @test_@?
+hasTestName :: LCSC.ACFG ext -> Bool
+hasTestName acfg = List.isPrefixOf "test_" $ show $ acfgHandleName acfg
+
+-- | Does a function have the same name as the @.cbl@ file in which it is
+-- defined?
+hasSameNameAsCblFile :: FilePath -> LCSC.ACFG ext -> Bool
+hasSameNameAsCblFile path acfg =
+  acfgHandleName acfg == DS.fromString (SF.takeBaseName path)
 
 -- | Parser for type extensions to crucible syntax
 extensionTypeParser
