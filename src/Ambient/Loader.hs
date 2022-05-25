@@ -20,7 +20,6 @@ import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe )
 import           Data.Parameterized.Some ( Some(..) )
 import           Data.Proxy ( Proxy(..) )
-import qualified Data.Text as DT
 import qualified Data.Vector.NonEmpty as NEV
 import           GHC.TypeLits ( type (<=) )
 import qualified System.FilePath as SF
@@ -38,12 +37,10 @@ import qualified Data.Macaw.X86 as DMX
 import           Data.Macaw.X86.Symbolic ()
 import qualified Data.Macaw.ARM as Macaw.AArch32
 import           Data.Macaw.AArch32.Symbolic ()
-import qualified Lang.Crucible.CFG.Common as LCCC
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified PE.Parser as PE
-import qualified What4.Interface as WI
 
 import qualified Ambient.ABI as AA
 import qualified Ambient.Exception as AE
@@ -122,14 +119,8 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
       let options = MML.defaultLoadOptions
       case (hdrMachine, hdrClass) of
         (DE.EM_X86_64, DE.ELFCLASS64) -> do
-          fsbaseGlob <- liftIO $
-            LCCC.freshGlobalVar hdlAlloc
-                                (DT.pack "fsbase")
-                                (LCLM.LLVMPointerRepr (WI.knownNat @64))
-          gsbaseGlob <- liftIO $
-            LCCC.freshGlobalVar hdlAlloc
-                                (DT.pack "gsbase")
-                                (LCLM.LLVMPointerRepr (WI.knownNat @64))
+          fsbaseGlob <- liftIO $ AMXL.freshFSBaseGlobalVar hdlAlloc
+          gsbaseGlob <- liftIO $ AMXL.freshGSBaseGlobalVar hdlAlloc
           let extOverride = AMXL.x86_64LinuxStmtExtensionOverride fsbaseGlob
                                                                   gsbaseGlob
           let mArchVals = DMS.archVals (Proxy @DMX.X86_64) (Just extOverride)
@@ -159,10 +150,7 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
                 binConf
             Nothing -> CMC.throwM (AE.UnsupportedELFArchitecture name DE.EM_X86_64 DE.ELFCLASS64)
         (DE.EM_ARM, DE.ELFCLASS32) -> do
-          tlsGlob <- liftIO $
-            LCCC.freshGlobalVar hdlAlloc
-                                (DT.pack "tls")
-                                (LCLM.LLVMPointerRepr (WI.knownNat @32))
+          tlsGlob <- liftIO $ AMAL.freshTLSGlobalVar hdlAlloc
           let extOverride = AMAL.aarch32LinuxStmtExtensionOverride
           case DMS.archVals (Proxy @Macaw.AArch32.ARM) (Just extOverride) of
             Just archVals -> do

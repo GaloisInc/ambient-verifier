@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 -- | This module defines utility functions for mapping argument types between
@@ -20,6 +21,7 @@ module Ambient.FunctionOverride.ArgumentMapping (
     bitvectorArgumentMapping
   , pointerArgumentMappping
   , buildFunctionOverrideArgs
+  , buildForwardDecOverrideArgs
   , promoteBVToPtr
   , convertBitvector
   ) where
@@ -205,6 +207,27 @@ buildFunctionOverrideArgs bak pam argIdxs args =
         PointerArgumentMapping _macawRepr overrideRepr -> do
           case argIdxs Ctx.! idx of
             SomeIndex argIdx -> convertBitvector bak overrideRepr (args Ctx.! argIdx)
+
+-- | Given a list of arguments in an override for a forward declaration—see
+-- @Note [Resolving forward declarations]@ in
+-- "Ambient.FunctionOverride.Overrides.ForwardDeclarations"—convert any
+-- bitvector arguments to pointers. This corresponds to step (1) in the Note.
+buildForwardDecOverrideArgs ::
+  forall sym bak tps.
+  LCB.IsSymBackend sym bak =>
+  bak ->
+  Ctx.Assignment (LCS.RegEntry sym) tps ->
+  IO (Ctx.Assignment (LCS.RegEntry sym) (CtxToPointerType tps))
+buildForwardDecOverrideArgs bak = go
+  where
+    go :: forall tps'.
+          Ctx.Assignment (LCS.RegEntry sym) tps' ->
+          IO (Ctx.Assignment (LCS.RegEntry sym) (CtxToPointerType tps'))
+    go Ctx.Empty         = pure Ctx.Empty
+    go (rest Ctx.:> arg) = do
+      rest' <- go rest
+      arg'  <- convertBitvector bak (promoteBVToPtr (LCS.regType arg)) arg
+      pure (rest' Ctx.:> arg')
 
 {- Note [Bitvector Argument Mapping]
 

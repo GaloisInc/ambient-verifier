@@ -10,6 +10,7 @@ module Ambient.Exception (
 import qualified Control.Exception as X
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ElfEdit as DE
+import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Text as T
 import qualified Prettyprinter as PP
 import qualified Text.Megaparsec as MP
@@ -56,9 +57,11 @@ data AmbientException where
   -- | A failure during expression parsing in a crucible syntax override
   CrucibleSyntaxExprParseFailure :: LCSC.ExprErr s -> AmbientException
   -- | Could not find a function in a crucible syntax file
-  CrucibleSyntaxFunctionNotFound :: String -> FilePath -> AmbientException
+  CrucibleSyntaxFunctionNotFound :: WF.FunctionName -> FilePath -> AmbientException
   -- | The provided crucible syntax directory doesn't exist
   CrucibleOverrideDirectoryNotFound :: FilePath -> AmbientException
+  -- | A @<name>.cbl@ file defines more than one function named @<name@>.
+  DuplicateNamesInCrucibleOverride :: FilePath -> WF.FunctionName -> AmbientException
   -- | Global variable declared with an unsupported type
   UnsuportedGlobalVariableType :: String -> LCT.TypeRepr t -> AmbientException
   -- | Crucible syntax test function has an illegal type signature
@@ -111,6 +114,21 @@ data AmbientException where
   -- contained a function name without a corresponding @.cbl@ file.
   FunctionAddressOverridesNameNotFound ::
     DMM.MemWidth w => FilePath -> DMM.MemWord w -> WF.FunctionName -> AmbientException
+  -- | When resolving a forward declaration, a function with the same name
+  -- could not be found.
+  ForwardDeclarationNameNotFound :: WF.FunctionName -> AmbientException
+  -- | When resolving a forward declaration, the function to resolve to has a
+  -- different number of arguments than stated in the declaration.
+  ForwardDeclarationArgumentNumberMismatch ::
+    WF.FunctionName -> LCT.CtxRepr fwdDecArgTys -> LCT.CtxRepr resolvedFnArgTys -> AmbientException
+  -- | Unable to narrow a type down from a specific bitvector length when invoking a function.
+  FunctionTypeBvNarrowingError :: LCT.NatRepr w -> AmbientException
+  -- | Unable to zero-extend a type to a specific bitvector length when invoking a function.
+  FunctionTypeBvExtensionError :: LCT.NatRepr w -> AmbientException
+  -- | Unable to convert from one type to another when invoking a function.
+  -- This is about as vague as error messages get, so if possible, use one of
+  -- the @FunctionTypeBv-@ error messages above instead.
+  FunctionTypeMismatch :: AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -196,6 +214,10 @@ instance PP.Pretty AmbientException where
             _ -> PP.pretty (show err)
       CrucibleSyntaxFunctionNotFound name path ->
         PP.pretty "Expected to find a function named '" <> PP.pretty name <> PP.pretty "' in '" <> PP.pretty path <> PP.pretty "'"
+      DuplicateNamesInCrucibleOverride path fnName ->
+        PP.pretty "Override" PP.<+> PP.squotes (PP.pretty path) PP.<+>
+        PP.pretty "contains multiple" PP.<+> PP.squotes (PP.pretty fnName) PP.<+>
+        PP.pretty "functions"
       CrucibleOverrideDirectoryNotFound path ->
         PP.pretty "Crucible syntax override directory not found: " <> PP.pretty path
       UnsuportedGlobalVariableType name tp ->
@@ -255,3 +277,27 @@ instance PP.Pretty AmbientException where
                 , PP.pretty "- Address:" PP.<+> PP.pretty addr
                 , PP.pretty "- Name:" PP.<+> PP.pretty name
                 ]
+      ForwardDeclarationNameNotFound fwdDecName ->
+        PP.pretty "Could not find a function to resolve the forward declaration named" PP.<+>
+        PP.squotes (PP.pretty fwdDecName)
+      ForwardDeclarationArgumentNumberMismatch fwdDecName fwdDecArgTys resolvedFnArgTys ->
+        PP.vcat [ PP.pretty "The forward declaration for" PP.<+> PP.squotes (PP.pretty fwdDecName) PP.<+>
+                  PP.pretty "has" PP.<+> PP.pretty (Ctx.sizeInt (Ctx.size fwdDecArgTys)) PP.<+>
+                  PP.pretty "arguments, but"
+                , PP.pretty "the resolved function has" PP.<+>
+                  PP.pretty (Ctx.sizeInt (Ctx.size resolvedFnArgTys)) PP.<+> PP.pretty "arguments"
+                ]
+      -- These error messages would be improved if the Pretty instance for
+      -- TypeRepr were more human-readable.
+      FunctionTypeBvNarrowingError bvLen ->
+        PP.vcat [ PP.pretty "Could not narrow a type from a length-" <> PP.viaShow bvLen PP.<+>
+                  PP.pretty "bitvector"
+                , PP.pretty "when invoking a function"
+                ]
+      FunctionTypeBvExtensionError bvLen ->
+        PP.vcat [ PP.pretty "Could not zero-extend a type to a length-" <> PP.viaShow bvLen PP.<+>
+                  PP.pretty "bitvector"
+                , PP.pretty "when invoking a function"
+                ]
+      FunctionTypeMismatch ->
+        PP.pretty "Type mismatch when invoking a function"

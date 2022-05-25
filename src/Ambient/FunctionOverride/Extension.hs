@@ -7,6 +7,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 module Ambient.FunctionOverride.Extension (
@@ -69,8 +70,9 @@ import qualified Lang.Crucible.CFG.SSAConversion as LCCS
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.Intrinsics as LCLI
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
-import qualified Lang.Crucible.Simulator.GlobalState as LCSG
+import qualified Lang.Crucible.SymIO as LCSy
 import qualified Lang.Crucible.Syntax.Atoms as LCSA
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.Syntax.ExprParse as LCSE
@@ -88,6 +90,7 @@ import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.ArgumentMapping as AFA
 import           Ambient.FunctionOverride.Extension.Types
+import qualified Ambient.FunctionOverride.Overrides.ForwardDeclarations as AFOF
 import qualified Ambient.Memory as AM
 import qualified Ambient.Verifier.SymbolicExecution as AVS
 
@@ -203,7 +206,7 @@ loadCrucibleSyntaxOverride path ng halloc hooks = do
 -- | Run tests for crucible syntax function overrides.  This function reads all
 -- files matching @<dirPath>/function/*.cbl@ and symbolically executes any
 -- function with a name starting with @test_@.
-runOverrideTests :: forall ext s sym bak arch w solver scope st fs
+runOverrideTests :: forall ext s sym bak arch w solver scope st fs p
                   . ( ?memOpts :: LCLM.MemOptions
                     , ext ~ DMS.MacawExt arch
                     , LCCE.IsSyntaxExtension ext
@@ -211,6 +214,7 @@ runOverrideTests :: forall ext s sym bak arch w solver scope st fs
                     , sym ~ WE.ExprBuilder scope st fs
                     , bak ~ LCBO.OnlineBackend solver scope st fs
                     , WPO.OnlineSolver solver
+                    , p ~ AExt.AmbientSimulatorState sym arch
                     , w ~ DMC.ArchAddrWidth arch
                     , KnownNat w
                     , DMM.MemWidth w
@@ -221,6 +225,8 @@ runOverrideTests :: forall ext s sym bak arch w solver scope st fs
                  -> bak
                  -> DMA.ArchitectureInfo arch
                  -> DMS.GenArchVals DMS.LLVMMemory arch
+                 -> AF.BuildFunctionABI arch sym p
+                 -> AM.InitArchSpecificGlobals arch
                  -> FilePath
                  -- ^ Override directory
                  -> Nonce.NonceGenerator IO s
@@ -228,44 +234,87 @@ runOverrideTests :: forall ext s sym bak arch w solver scope st fs
                  -> LCSC.ParserHooks ext
                  -- ^ ParserHooks for the desired syntax extension
                  -> IO ()
-runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
+runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunctionABI)
+                 initGlobals dirPath ng halloc hooks = do
   RawSyntaxOverrides{cblFiles} <- findRawSyntaxOverrides dirPath
-  mapM_ go cblFiles
+  loadedProgs <-
+    traverse (\path -> (path,) <$> loadCrucibleSyntaxOverride path ng halloc hooks)
+             cblFiles
+  cblNameOvs <-
+    traverse
+      (\(path, parsedProg) -> parsedProgToFunctionOverride path parsedProg)
+      loadedProgs
+  mapM_ (\(path, parsedProg) -> runTests cblNameOvs path parsedProg) loadedProgs
   where
     sym = LCB.backendGetSym bak
 
-    go :: FilePath -> IO ()
-    go path = do
-      parsedProg <- loadCrucibleSyntaxOverride path ng halloc hooks
+    -- | Run all of the @test_@ functions in a @.cbl@ file.
+    runTests ::
+      [AF.SomeFunctionOverride p sym ext] ->
+      -- ^ The @<name>@ function overrides defined in each @<name>.cbl@ file.
+      FilePath ->
+      -- ^ The @.cbl@ file path
+      LCSC.ParsedProgram ext ->
+      -- ^ The parsed contents of the @.cbl@ file
+      IO ()
+    runTests cblNameOvs path parsedProg = do
       let ovGlobals = parsedProgGlobalsList parsedProg
       let (matchCFGs, auxCFGs) = List.partition hasTestName
                                    (LCSC.parsedProgCFGs parsedProg)
-      mapM_ (runTest path ovGlobals auxCFGs) matchCFGs
+      let fwdDecsMap = LCSC.parsedProgForwardDecs parsedProg
+      mapM_ (runOneTest path ovGlobals auxCFGs fwdDecsMap cblNameOvs) matchCFGs
 
-    runTest :: FilePath
-            -> [Some LCS.GlobalVar]
-            -> [LCSC.ACFG ext]
-            -> LCSC.ACFG ext
-            -> IO ()
-    runTest path ovGlobals auxCFGs acfg = do
+    -- Run a single @test_@ function in a @.cbl@ file.
+    runOneTest :: FilePath
+               -> [Some LCS.GlobalVar]
+               -> [LCSC.ACFG ext]
+               -> Map.Map WF.FunctionName LCF.SomeHandle
+               -> [AF.SomeFunctionOverride p sym ext]
+               -> LCSC.ACFG ext
+               -> IO ()
+    runOneTest path ovGlobals auxCFGs fwdDecsMap cblNameOvs acfg = do
       LJ.writeLog logAction (AD.ExecutingOverrideTest acfg path)
       case acfg of
         LCSC.ACFG Ctx.Empty LCT.UnitRepr test -> do
           let testHdl = LCCR.cfgHandle test
+          -- Because we are testing outside of a binary, the choice of memory
+          -- image is unimportant.
+          let mem = DMM.emptyMemory (DMA.archAddrWidth archInfo)
+          initMem <- AVS.initializeMemory
+                       bak
+                       halloc
+                       archInfo
+                       (NEV.singleton mem)
+                       initGlobals
+                       cblNameOvs
+                       Map.empty -- Because we are testing outside of a binary,
+                                 -- there are no binary-specific global
+                                 -- variables to add.
+          let ?ptrWidth = WI.knownNat @(DMC.ArchAddrWidth arch)
+          (fs, _, LCLS.SomeOverrideSim _initFSOverride) <- liftIO $
+            LCLS.initialLLVMFileSystem halloc sym WI.knownRepr
+              -- For now, we always use an empty symbolic filesystem. We may
+              -- want to reconsider this choice if we want to test overrides
+              -- that call functions like `readFile`.
+              LCSy.emptyInitialFileSystemContents
+              [] (AM.imGlobals initMem)
+          let functionABI =
+                buildFunctionABI fs initMem
+                  Map.empty -- Because we are testing outside of a binary, we
+                            -- need not concern ourselves with which
+                            -- relocations are not supported.
+                  Map.empty -- Because we are testing outside of a binary, we
+                            -- cannot invoke function addresses, so we do not
+                            -- need to register any function address overrides.
+                  cblNameOvs
+          let ?recordLLVMAnnotation = \_ _ _ -> return ()
+          fwdDecBindings <- resolveForwardDecs (AF.functionNameMapping functionABI) fwdDecsMap
           -- Make sure to also include functions that don't begin with `test_`
           -- (i.e., the `auxCFGs`), as they might be used during simulation.
           -- For example, if our test function is named @test_foobar, we'll
           -- need to include the CFG for @foobar itself.
           let fns = LCS.fnBindingsFromList $
-                    map acfgToFnBinding (acfg : auxCFGs)
-          let mem = DMM.emptyMemory (DMA.archAddrWidth archInfo)
-          initMem <- AVS.initializeMemory bak
-                                          halloc
-                                          archInfo
-                                          (NEV.singleton mem)
-                                          noopInitGlobals
-                                          []
-                                          Map.empty
+                    fwdDecBindings ++ map acfgToFnBinding (acfg : auxCFGs)
           let ?recordLLVMAnnotation = \_ _ _ -> return ()
           DMS.withArchEval archVals sym $ \archEvalFn -> do
             let fnLookup = DMS.unsupportedFunctionCalls "Ambient override tests"
@@ -296,8 +345,19 @@ runOverrideTests logAction bak archInfo archVals dirPath ng halloc hooks = do
           let fnName = LCF.handleName (LCCR.cfgHandle g) in
           CMC.throwM (AE.IllegalCrucibleSyntaxTestSignature path fnName)
 
-    noopInitGlobals = AM.InitArchSpecificGlobals $ \_ mem ->
-      return (mem, LCSG.emptyGlobals)
+    -- Construct function bindings for any forward declarations. See
+    -- Note [Resolving forward declarations] in
+    -- Ambient.FunctionOverride.Overrides.ForwardDeclarations.
+    resolveForwardDecs ::
+      Map.Map WF.FunctionName (AF.SomeFunctionOverride p sym ext) ->
+      Map.Map WF.FunctionName LCF.SomeHandle ->
+      IO [LCS.FnBinding p sym ext]
+    resolveForwardDecs functionNameMapping fwdDecsMap =
+      traverse (\(fwdDecName, LCF.SomeHandle fwdDecHandle) ->
+                 do ovSim <- AFOF.mkForwardDeclarationOverride
+                               bak functionNameMapping fwdDecName fwdDecHandle
+                    pure $ LCS.FnBinding fwdDecHandle $ LCS.UseOverride ovSim)
+               (Map.toAscList fwdDecsMap)
 
 -- | Load all crucible syntax function overrides in an @--overrides@ directory.
 -- This function reads all files matching @<dirPath>/function/*.cbl@ and
@@ -335,34 +395,42 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
     -- Given a @<name>.cbl@ file, return an override for the @<name>@ function.
     go :: FilePath -> IO (AF.SomeFunctionOverride p sym ext)
     go path = do
-      let fnName = SF.takeBaseName path
       parsedProg <- loadCrucibleSyntaxOverride path ng halloc hooks
-      let globals = parsedProgGlobalsList parsedProg
-      let (matchCFGs, auxCFGs) = List.partition (hasSameNameAsCblFile path)
-                                                (LCSC.parsedProgCFGs parsedProg)
-      case matchCFGs of
-        [] -> CMC.throwM (AE.CrucibleSyntaxFunctionNotFound fnName path)
-        [acfg] ->
-          return $ acfgToFunctionOverride (DS.fromString fnName) globals auxCFGs acfg
-        _ ->
-          -- This shouldn't be possible.  Multiple functions with the same name
-          -- should have already been caught by crucible-syntax.
-          error $ "Override '"
-               ++ path
-               ++ "' contains multiple '"
-               ++ fnName
-               ++ "' functions'"
+      parsedProgToFunctionOverride path parsedProg
+
+-- | Convert a 'LCSC.ParsedProgram' at a the given 'FilePath' to a function
+-- override.
+parsedProgToFunctionOverride ::
+  FilePath ->
+  LCSC.ParsedProgram ext ->
+  IO (AF.SomeFunctionOverride p sym ext)
+parsedProgToFunctionOverride path parsedProg = do
+  let fnName = DS.fromString $ SF.takeBaseName path
+  let globals = parsedProgGlobalsList parsedProg
+  let (matchCFGs, auxCFGs) = List.partition (hasSameNameAsCblFile path)
+                                            (LCSC.parsedProgCFGs parsedProg)
+  let fwdDecs = LCSC.parsedProgForwardDecs parsedProg
+  case matchCFGs of
+    [] -> CMC.throwM (AE.CrucibleSyntaxFunctionNotFound fnName path)
+    [acfg] ->
+      return $ acfgToFunctionOverride fnName globals fwdDecs auxCFGs acfg
+    _ ->
+      -- This shouldn't be possible.  Multiple functions with the same name
+      -- should have already been caught by crucible-syntax.
+      CMC.throwM $ AE.DuplicateNamesInCrucibleOverride path fnName
 
 -- Convert an ACFG to a FunctionOverride
 acfgToFunctionOverride
   :: WF.FunctionName
   -> [ Some LCS.GlobalVar ]
   -- ^ GlobalVars used in function override
+  -> Map.Map WF.FunctionName LCF.SomeHandle
+  -- ^ Forward declarations declared in the override
   -> [LCSC.ACFG ext]
   -- ^ The ACFGs for auxiliary functions
   -> LCSC.ACFG ext
   -> AF.SomeFunctionOverride p sym ext
-acfgToFunctionOverride name globals auxCFGs (LCSC.ACFG argTypes retType cfg) =
+acfgToFunctionOverride name globals fwdDecs auxCFGs (LCSC.ACFG argTypes retType cfg) =
   let argMap = AFA.bitvectorArgumentMapping argTypes
       (ptrTypes, ptrTypeMapping) = AFA.pointerArgumentMappping argMap
       retRepr = AFA.promoteBVToPtr retType
@@ -374,6 +442,7 @@ acfgToFunctionOverride name globals auxCFGs (LCSC.ACFG argTypes retType cfg) =
          , AF.functionArgTypes = ptrTypes
          , AF.functionReturnType = retRepr
          , AF.functionAuxiliaryFnBindings = map acfgToFnBinding auxCFGs
+         , AF.functionForwardDeclarations = fwdDecs
          , AF.functionOverride = \bak args -> do
              -- Translate any arguments that are LLVMPointers but should be Bitvectors into Bitvectors
              --

@@ -57,6 +57,7 @@ library
                       Ambient.FunctionOverride.Extension,
                       Ambient.FunctionOverride.Extension.Types,
                       Ambient.FunctionOverride.Overrides,
+                      Ambient.FunctionOverride.Overrides.ForwardDeclarations,
                       Ambient.FunctionOverride.Overrides.Networking,
                       Ambient.FunctionOverride.Overrides.Networking.Types,
                       Ambient.FunctionOverride.Overrides.Printf,

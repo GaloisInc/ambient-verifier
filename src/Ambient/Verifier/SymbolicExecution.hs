@@ -89,6 +89,7 @@ import qualified Ambient.Extensions.Memory as AEM
 import qualified Ambient.EventTrace as AET
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension.Types as AFET
+import qualified Ambient.FunctionOverride.Overrides.ForwardDeclarations as AFOF
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Loader.LoadOptions as ALL
@@ -466,9 +467,22 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
                      state0
                      (AF.functionAuxiliaryFnBindings fnOverride)
 
+      -- Next, register overrides for any forward declarations. See
+      -- Note [Resolving forward declarations] in
+      -- Ambient.FunctionOverride.Overrides.ForwardDeclarations.
+      state2 <-
+        F.foldlM
+          (\state (fwdDecName, LCF.SomeHandle fwdDecHandle) ->
+            do ovSim <- AFOF.mkForwardDeclarationOverride
+                          bak (AF.functionNameMapping abi) fwdDecName fwdDecHandle
+               pure $ insertFunctionHandle state fwdDecHandle
+                    $ LCS.UseOverride ovSim)
+          state1
+          (Map.toAscList $ AF.functionForwardDeclarations fnOverride)
+
       -- Finally, build a function handle for the override and insert it into
       -- the state.
-      bindOverrideHandle state1 hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
+      bindOverrideHandle state2 hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
 
     -- Massage the RegEntry Assignment that getOverrideArgs provides into the
     -- form that FunctionABI expects.

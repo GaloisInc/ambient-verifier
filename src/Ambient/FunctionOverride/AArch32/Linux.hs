@@ -54,7 +54,7 @@ aarch32LinuxIntegerArgumentRegisters
   -- ^ A register structure containing symbolic values
   -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
 aarch32LinuxIntegerArgumentRegisters bak argTypes regFile =
-  AO.buildArgumentRegisterAssignment bak ptrWidth argTypes regList
+  AO.buildArgumentRegisterAssignment bak argTypes regList
   where
     ptrWidth = PN.knownNat @32
     regList = map lookupReg [ ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")

@@ -2,10 +2,14 @@
 {-# Language GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# Language ScopedTypeVariables #-}
+{-# Language TypeApplications #-}
 
 module Ambient.Memory.X86_64.Linux (
     x86_64LinuxStmtExtensionOverride
   , x86_64LinuxInitGlobals
+    -- * FSBASE and GSBASE
+  , freshFSBaseGlobalVar
+  , freshGSBaseGlobalVar
   ) where
 
 import           Control.Lens ((^.))
@@ -15,8 +19,10 @@ import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Data.Macaw.X86 as DMX
 import qualified Data.Macaw.X86.Symbolic as DMXS
+import qualified Data.Text as DT
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.CFG.Common as LCCC
+import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.MemType as LCLMT
@@ -80,6 +86,24 @@ initSegmentMemory bak mem0 symbol = do
   mem3 <- LCLM.doStore bak mem2 basePtr tpr sty LCLD.noAlignment basePtr
 
   return (basePtr, mem3)
+
+-- | Allocate a fresh global variable representing FSBASE state.
+freshFSBaseGlobalVar ::
+  LCF.HandleAllocator ->
+  IO (LCCC.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth DMX.X86_64)))
+freshFSBaseGlobalVar hdlAlloc =
+  LCCC.freshGlobalVar hdlAlloc
+                      (DT.pack "fsbase")
+                      (LCLM.LLVMPointerRepr (WI.knownNat @64))
+
+-- | Allocate a fresh global variable representing GSBASE state.
+freshGSBaseGlobalVar ::
+  LCF.HandleAllocator ->
+  IO (LCCC.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth DMX.X86_64)))
+freshGSBaseGlobalVar hdlAlloc =
+  LCCC.freshGlobalVar hdlAlloc
+                      (DT.pack "gsbase")
+                      (LCLM.LLVMPointerRepr (WI.knownNat @64))
 
 -- | This function takes global variables for the FSBASE and GSBASE pointers
 -- and returns an 'InitArchSpecificGlobals' that initializes those globals

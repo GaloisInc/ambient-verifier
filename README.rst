@@ -102,9 +102,9 @@ To better support end users, and enable faster experimentation, ``ambient-verifi
 Example::
 
   (defun @padd ((p1 Pointer) (p2 (Bitvector 64))) Pointer
-  (start start:
-    (let res (pointer-add p1 p2))
-    (return res)))
+    (start start:
+      (let res (pointer-add p1 p2))
+      (return res)))
 
 The ``overrides`` directory contains various overrides that we have curated for particular applications.
 
@@ -176,6 +176,60 @@ Now suppose that the verifier encounters a function in ``main.exe`` at address
 ``function address overrides`` mapping also maps the address ``0x123`` to
 ``bar``. In such situations, the ``function address overrides`` take higher
 precedence, so the verifier will use the ``bar`` override.
+
+Functions
+---------
+
+Each ``<name>.cbl`` file is expected to define a function named ``@<name>``.
+For instance, an ``add_bvs.cbl`` file should define an ``@add_bvs`` function,
+e.g.: ::
+
+  (defun @add_bvs ((x (Bitvector 32)) (y (Bitvector 32))) (Bitvector 32)
+    (start start:
+      (let sum (+ x y))
+      (return sum)))
+
+A ``.cbl`` file is also permitted to define other functions. These functions
+are considered local to the ``.cbl`` file and are not visible to other files.
+For instance, an alternative way to implement ``add_bvs.cbl`` would be: ::
+
+  (defun @add_bvs ((x (Bitvector 32)) (y (Bitvector 32))) (Bitvector 32)
+    (start start:
+      (let res (funcall @add_bvs_2 x y))
+      (return res)))
+
+  ; Local to this file
+  (defun @add_bvs_2 ((x (Bitvector 32)) (y (Bitvector 32))) (Bitvector 32)
+    (start start:
+      (let sum (+ x y))
+      (return sum)))
+
+A ``.cbl`` file is allowed to invoke functions defined in other ``.cbl`` files
+by way of *forward declarations*. A forward declaration states the type of a
+function that is not defined in the file itself, but will be provided later by
+some other means. For instance, suppose that ``@add_bvs_2`` were defined in its
+own ``.cbl`` file and that you want to invoke it from ``add_bvs.cbl``. To do
+so, one must declare ``add_bv_2``'s type using a forward declaration in
+``add_bvs.cbl``: ::
+
+  (declare @add_bvs_2 ((x (Bitvector 32)) (y (Bitvector 32))) (Bitvector 32))
+
+  (defun @add_bvs ((x (Bitvector 32)) (y (Bitvector 32))) (Bitvector 32)
+    (start start:
+      (let res (funcall @add_bvs_2 x y))
+      (return res)))
+
+The verifier will ensure that the invocation of ``add_bvs_2`` will be resolved
+to the same function defined in ``add_bvs_2.cbl``. The verifier will raise an
+error if it cannot find a function of the same name, or if it finds a function
+with a different type than what is stated in the forward declaration.
+
+Currently, forward declarations can be resolved to overrides defined in other
+``.cbl`` files as well as overrides that are built into the verifier (e.g.,
+the override for ``memcpy``). Note that forward declarations cannot be used to
+resolve functions that are local to a particular ``.cbl`` file. Resolving
+forward declarations to functions defined in binaries is not currently
+supported.
 
 Types
 -----

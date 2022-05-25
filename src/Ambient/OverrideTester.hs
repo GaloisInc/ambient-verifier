@@ -22,6 +22,8 @@ import qualified Ambient.Diagnostic as AD
 import qualified Ambient.FunctionOverride.AArch32.Linux as AFAL
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.X86_64.Linux as AFXL
+import qualified Ambient.Memory.AArch32.Linux as AMAL
+import qualified Ambient.Memory.X86_64.Linux as AMXL
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 import qualified Ambient.Verifier.Prove as AVP
@@ -57,12 +59,16 @@ testOverrides logAction tinst timeoutDuration = do
       AA.X86_64Linux ->
         case DMS.archVals (Proxy @DMX.X86_64) Nothing of
           Just archVals -> do
+            fsbaseGlob <- AMXL.freshFSBaseGlobalVar hdlAlloc
+            gsbaseGlob <- AMXL.freshGSBaseGlobalVar hdlAlloc
             let parserHooks = AFE.machineCodeParserHooks (Proxy @DMX.X86_64)
                                                          AFXL.x86_64LinuxTypes
             AFE.runOverrideTests logAction
                                  sym
                                  DMX.x86_64_linux_info
                                  archVals
+                                 AFXL.x86_64LinuxFunctionABI
+                                 (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
                                  (tiOverrideDir tinst)
                                  ng
                                  hdlAlloc
@@ -71,12 +77,15 @@ testOverrides logAction tinst timeoutDuration = do
       AA.AArch32Linux ->
         case DMS.archVals (Proxy @Macaw.AArch32.ARM) Nothing of
           Just archVals -> do
+            tlsGlob <- AMAL.freshTLSGlobalVar hdlAlloc
             let parserHooks = AFE.machineCodeParserHooks (Proxy @Macaw.AArch32.ARM)
                                                          AFAL.aarch32LinuxTypes
             AFE.runOverrideTests logAction
                                  sym
                                  Macaw.AArch32.arm_linux_info
                                  archVals
+                                 (AFAL.aarch32LinuxFunctionABI tlsGlob)
+                                 (AMAL.aarch32LinuxInitGlobals tlsGlob)
                                  (tiOverrideDir tinst)
                                  ng
                                  hdlAlloc

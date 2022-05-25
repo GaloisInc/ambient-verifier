@@ -55,6 +55,9 @@ crucible-syntax-function-ov.exe: crucible-syntax-function-ov.c
 non-ptr-width-ov.exe: non-ptr-width-ov.c ambient_assert.o
 	$(CC) -nostartfiles -static $^ -o $@
 
+non-ptr-width-ov-fwd-dec.exe: non-ptr-width-ov-fwd-dec.c ambient_assert.o
+	$(CC) -nostartfiles -static $^ -o $@
+
 bv-typed-literal-ov.exe: bv-typed-literal-ov.c ambient_assert.o
 	$(CC) -nostdlib -static -no-pie $^ -o $@
 
@@ -154,6 +157,9 @@ lookup-scope/lookup-scope.exe: lookup-scope/lookup-scope.c lookup-scope/liblooku
 	$(CC) -nostdlib -Llookup-scope/ -I./ lookup-scope/lookup-scope.c ambient_assert.o -llookup-scope-a -llookup-scope-b -o $@
 
 shm.exe: shm.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static -no-pie $^ -o $@
+
+shm-fwd-dec.exe: shm-fwd-dec.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie $^ -o $@
 
 printf-tailcall/printf-tailcall.exe: printf-tailcall/printf-tailcall.c

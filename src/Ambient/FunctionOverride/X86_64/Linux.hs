@@ -51,7 +51,7 @@ x86_64LinuxIntegerArgumentRegisters
   -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
 x86_64LinuxIntegerArgumentRegisters bak argTypes regs =
   let regList = map lookupReg DMX.x86ArgumentRegs in
-  AO.buildArgumentRegisterAssignment bak (PN.knownNat @64) argTypes regList
+  AO.buildArgumentRegisterAssignment bak argTypes regList
   where
     lookupReg r =
       case DMXS.lookupX86Reg r regs of

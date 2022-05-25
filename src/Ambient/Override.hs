@@ -6,12 +6,15 @@
 
 module Ambient.Override
   ( buildArgumentRegisterAssignment
+  , narrowRegisterType
+  , extendToRegisterType
   , bvToPtr
   , ptrToBv8
   , ptrToBv32
   , overrideMemOptions
   ) where
 
+import qualified Control.Monad.Catch as CMC
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.Map as MapF
 import qualified Data.Parameterized.NatRepr as PN
@@ -23,12 +26,8 @@ import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Interface as WI
 
+import qualified Ambient.Exception as AE
 import qualified Ambient.Panic as AP
-
--- | Bitvector conversion from the full register width to a narrow type
-newtype BvConversion sym w tp where
-  BvConversion :: (LCS.RegEntry sym (LCLM.LLVMPointerType w) -> IO (LCS.RegEntry sym tp))
-               -> BvConversion sym w tp
 
 -- | Build an Assignment representing the arguments to a system call or
 -- function argument from a list of registers
@@ -36,18 +35,14 @@ buildArgumentRegisterAssignment
   :: forall w args sym bak
    . (1 <= w, KnownNat w, LCB.IsSymBackend sym bak)
   => bak
-  -> PN.NatRepr w
-  -- ^ Pointer width
   -> LCT.CtxRepr args
   -- ^ Types of arguments
   -> [LCS.RegEntry sym (LCLM.LLVMPointerType w)]
   -- ^ List of argument registers
   -> IO (Ctx.Assignment (LCS.RegEntry sym) args)
   -- ^ Argument values
-buildArgumentRegisterAssignment bak ptrW argTyps regEntries = go argTyps regEntries'
+buildArgumentRegisterAssignment bak argTyps regEntries = go argTyps regEntries'
   where
-    sym = LCB.backendGetSym bak
-
     -- Drop unused registers from regEntries and reverse list to account for
     -- right-to-left processing when using 'Ctx.viewAssign'
     regEntries' = reverse (take (Ctx.sizeInt (Ctx.size argTyps)) regEntries)
@@ -67,35 +62,110 @@ buildArgumentRegisterAssignment bak ptrW argTyps regEntries = go argTyps regEntr
         reg : regs' ->
           case Ctx.viewAssign typs of
             Ctx.AssignEmpty -> return Ctx.empty
-            Ctx.AssignExtend typs' trep
-              | Just (BvConversion toRegWidth) <- MapF.lookup trep conversions -> do
-                reg' <- toRegWidth reg
-                rest <- go typs' regs'
-                return (rest Ctx.:> reg')
-            _ -> AP.panic AP.Override
-                          "buildArgumentRegisterAssignment"
-                          ["Currently only LLVMPointer arguments are supported"]
+            Ctx.AssignExtend typs' trep -> do
+              reg' <- narrowRegisterType bak trep reg
+              rest <- go typs' regs'
+              return (rest Ctx.:> reg')
 
+-- | Bitvector conversion from the full register width to a narrow type.
+newtype BvNarrowing sym w tp where
+  BvNarrowing :: (LCS.RegEntry sym (LCLM.LLVMPointerType w) -> IO (LCS.RegEntry sym tp))
+               -> BvNarrowing sym w tp
+
+-- | Convert a @regTp@ to a @narrowTp@. If both types are
+-- 'LCLM.LLVMPointerType's, truncate the register type to the narrow type.
+-- Otherwise, require the types to be the same.
+narrowRegisterType ::
+  forall sym bak regTp narrowTp.
+  LCB.IsSymBackend sym bak =>
+  bak ->
+  LCT.TypeRepr narrowTp ->
+  LCS.RegEntry sym regTp ->
+  IO (LCS.RegEntry sym narrowTp)
+narrowRegisterType bak narrowTypeRepr regEntry
+  | LCLM.LLVMPointerRepr regPtrW <- LCS.regType regEntry
+  = case MapF.lookup narrowTypeRepr (conversions regPtrW) of
+      Nothing -> CMC.throwM $ AE.FunctionTypeBvNarrowingError regPtrW
+      Just (BvNarrowing toRegWidth) -> toRegWidth regEntry
+
+  | otherwise
+  = case WI.testEquality (LCS.regType regEntry) narrowTypeRepr of
+      Just WI.Refl -> pure regEntry
+      Nothing -> CMC.throwM AE.FunctionTypeMismatch
+  where
     -- Mapping of conversions from register width bitvectors to a narrow type.
-    -- The register sized bitvector with width 'ptrW' should always be the last
-    -- element in the 'MapF.fromList' list to ensure that register width
+    -- The register sized bitvector with width @regPtrW@ should always be the
+    -- last element in the 'MapF.fromList' list to ensure that register width
     -- bitvectors do not undergo any conversion.
-    conversions :: MapF.MapF LCT.TypeRepr (BvConversion sym w)
-    conversions =
-      MapF.fromList [ MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @8)) (BvConversion (bvTrunc WI.knownNat))
-                    , MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @32)) (BvConversion (bvTrunc WI.knownNat))
-                    , MapF.Pair (LCLM.LLVMPointerRepr ptrW) (BvConversion return)
+    conversions :: forall regPtrW.
+                   (1 <= regPtrW) =>
+                   PN.NatRepr regPtrW ->
+                   MapF.MapF LCT.TypeRepr (BvNarrowing sym regPtrW)
+    conversions regPtrW =
+      MapF.fromList [ MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @8)) (BvNarrowing (bvTrunc (WI.knownNat @8)))
+                    , MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @32)) (BvNarrowing (bvTrunc (WI.knownNat @32)))
+                    , MapF.Pair (LCLM.LLVMPointerRepr regPtrW) (BvNarrowing return)
                     ]
 
-    -- Truncate a bitvector down to 'bvW' bits.
-    bvTrunc :: (1 <= bvW, KnownNat bvW)
-            => PN.NatRepr bvW
-            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-            -> IO (LCS.RegEntry sym (LCLM.LLVMPointerType bvW))
-    bvTrunc bvW ptr = do
-      bv <- LCLM.projectLLVM_bv bak (LCS.regValue ptr)
-      rv <- bvToPtr sym bv bvW
-      return (LCS.RegEntry (LCLM.LLVMPointerRepr bvW) rv)
+    -- Truncate a bitvector down to @narrowPtrW@ bits.
+    bvTrunc :: forall regPtrW narrowPtrW
+             . (1 <= regPtrW, 1 <= narrowPtrW)
+            => PN.NatRepr narrowPtrW
+            -> LCS.RegEntry sym (LCLM.LLVMPointerType regPtrW)
+            -> IO (LCS.RegEntry sym (LCLM.LLVMPointerType narrowPtrW))
+    bvTrunc bvW ptr = adjustPtrEntrySize bak ptr bvW
+
+-- | Bitvector conversion from a narrow type to the full register width.
+-- Like 'BvConversion', except with the argument and result types in the
+-- function reversed.
+newtype BvExtension sym w tp where
+  BvExtension :: (LCS.RegEntry sym tp -> IO (LCS.RegEntry sym (LCLM.LLVMPointerType w)))
+              -> BvExtension sym w tp
+
+-- | Convert a @narrowTp@ to a @regTp@. If both types are
+-- 'LCLM.LLVMPointerType's, zero-extend the narrow type to the register type.
+-- Otherwise, require the types to be the same.
+extendToRegisterType ::
+  forall sym bak narrowTp regTp.
+  LCB.IsSymBackend sym bak =>
+  bak ->
+  LCT.TypeRepr regTp ->
+  LCS.RegEntry sym narrowTp ->
+  IO (LCS.RegEntry sym regTp)
+extendToRegisterType bak regTypeRepr narrowEntry
+  | LCLM.LLVMPointerRepr regPtrW <- regTypeRepr
+  = case MapF.lookup narrowTypeRepr (conversions regPtrW) of
+      Nothing -> CMC.throwM $ AE.FunctionTypeBvExtensionError regPtrW
+      Just (BvExtension toRegWidth) -> toRegWidth narrowEntry
+
+  | otherwise
+  = case WI.testEquality narrowTypeRepr regTypeRepr of
+      Just WI.Refl -> pure narrowEntry
+      Nothing -> CMC.throwM AE.FunctionTypeMismatch
+  where
+    narrowTypeRepr = LCS.regType narrowEntry
+
+    -- Mapping of conversions from narrow-width bitvectors to register width.
+    -- The register sized bitvector with width @regPtrW@ should always be the
+    -- last element in the 'MapF.fromList' list to ensure that register width
+    -- bitvectors do not undergo any conversion.
+    conversions :: forall regPtrW.
+                   (1 <= regPtrW) =>
+                   PN.NatRepr regPtrW ->
+                   MapF.MapF LCT.TypeRepr (BvExtension sym regPtrW)
+    conversions regPtrW =
+      MapF.fromList [ MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @8)) (BvExtension (bvZext regPtrW))
+                    , MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @32)) (BvExtension (bvZext regPtrW))
+                    , MapF.Pair (LCLM.LLVMPointerRepr regPtrW) (BvExtension return)
+                    ]
+
+    -- Zero-extend a bitvector to @regPtrW@ bits.
+    bvZext :: forall narrowPtrW regPtrW
+             . (1 <= narrowPtrW, 1 <= regPtrW)
+            => PN.NatRepr regPtrW
+            -> LCS.RegEntry sym (LCLM.LLVMPointerType narrowPtrW)
+            -> IO (LCS.RegEntry sym (LCLM.LLVMPointerType regPtrW))
+    bvZext bvW ptr = adjustPtrEntrySize bak ptr bvW
 
 -- | Zero extend or truncate bitvector to an LLVMPointer
 bvToPtr :: forall sym srcW ptrW
@@ -116,6 +186,23 @@ bvToPtr sym bv ptrW =
     srcW :: PN.NatRepr srcW
     srcW = case WI.exprType bv of
              WI.BaseBVRepr w -> w
+
+-- | Zero extend or truncate an 'LCLM.LLVMPointer' 'LCS.RegEntry'.
+adjustPtrEntrySize ::
+  forall sym bak srcW dstW.
+  ( LCB.IsSymBackend sym bak
+  , 1 <= srcW
+  , 1 <= dstW
+  ) =>
+  bak ->
+  LCS.RegEntry sym (LCLM.LLVMPointerType srcW) ->
+  PN.NatRepr dstW ->
+  IO (LCS.RegEntry sym (LCLM.LLVMPointerType dstW))
+adjustPtrEntrySize bak srcPtr dstW = do
+  let sym = LCB.backendGetSym bak
+  bv <- LCLM.projectLLVM_bv bak $ LCS.regValue srcPtr
+  rv <- bvToPtr sym bv dstW
+  pure $ LCS.RegEntry (LCLM.LLVMPointerRepr dstW) rv
 
 -- | Convert an 'LCLM.LLVMPtr' to an 8-bit vector by dropping the upper bits.
 ptrToBv8 :: ( LCB.IsSymBackend sym bak )

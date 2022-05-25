@@ -127,7 +127,7 @@ aarch32LinuxSyscallArgumentRegisters bak regTypes regs syscallTypes
       case LCS.regValue regs of
         Ctx.Empty Ctx.:> r0 Ctx.:> r1 Ctx.:> r2 Ctx.:> r3 Ctx.:> r4 Ctx.:> r5 Ctx.:> r6 Ctx.:> _ ->
           let regEntries = map toRegEntry [r0, r1, r2, r3, r4, r5, r6]
-          in AO.buildArgumentRegisterAssignment bak ptrWidth syscallTypes regEntries
+          in AO.buildArgumentRegisterAssignment bak syscallTypes regEntries
   | otherwise = AP.panic AP.Syscall "aarch32LinuxSyscallArgumentRegisters" [ "Unexpected argument register shape: " ++ show regTypes ]
   where
     ptrWidth = PN.knownNat @32

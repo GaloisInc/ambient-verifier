@@ -71,6 +71,12 @@ data FunctionOverride p sym args ext ret =
                    --   handles are uniquely identified in Crucible, different
                    --   auxiliary functions with the same name won't conflict
                    --   with each other.
+                   , functionForwardDeclarations ::
+                       Map.Map WF.FunctionName LCF.SomeHandle
+                   -- ^ Forward declarations associated with a syntax override
+                   --   that must be registered before invoking the override.
+                   --   See @Note [Resolving forward declarations]@ in
+                   --   "Ambient.FunctionOverride.Overrides.ForwardDeclarations".
                    , functionOverride
                        :: forall bak solver scope st fs
                         . ( LCB.IsSymBackend sym bak
@@ -92,6 +98,8 @@ data FunctionOverride p sym args ext ret =
 -- * The argument and result types are statically known.
 --
 -- * No auxiliary function bindings are used.
+--
+-- * No forward declarations are used.
 mkFunctionOverride ::
   ( LCT.KnownRepr LCT.CtxRepr args
   , LCT.KnownRepr LCT.TypeRepr ret
@@ -113,6 +121,7 @@ mkFunctionOverride name ov = FunctionOverride
   , functionArgTypes = LCT.knownRepr
   , functionReturnType = LCT.knownRepr
   , functionAuxiliaryFnBindings = []
+  , functionForwardDeclarations = Map.empty
   , functionOverride = ov
   }
 

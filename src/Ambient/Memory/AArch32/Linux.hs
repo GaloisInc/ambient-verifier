@@ -1,10 +1,15 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE TypeApplications #-}
 module Ambient.Memory.AArch32.Linux (
     aarch32LinuxInitGlobals
   , aarch32LinuxStmtExtensionOverride
+    -- * TLS
+  , freshTLSGlobalVar
   ) where
 
 import qualified Data.BitVector.Sized as BVS
+import qualified Data.Text as DT
 
 import qualified Data.Macaw.ARM as DMA
  -- Sometimes, GHC is unable to find instances of RegAddrWidth that are
@@ -17,6 +22,7 @@ import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.CFG.Common as LCCC
+import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
@@ -58,6 +64,15 @@ initTLSMemory bak mem0 = do
                             arrayStorage
                             tlsMemorySizeBV
   pure (tlsPtr, mem2)
+
+-- | Allocate a fresh global variable representing TLS state.
+freshTLSGlobalVar ::
+  LCF.HandleAllocator ->
+  IO (LCCC.GlobalVar (LCLM.LLVMPointerType (DMC.ArchAddrWidth DMA.ARM)))
+freshTLSGlobalVar hdlAlloc =
+  LCCC.freshGlobalVar hdlAlloc
+                      (DT.pack "tls")
+                      (LCLM.LLVMPointerRepr (WI.knownNat @32))
 
 -- | This function takes a global variable for the TLS pointer
 -- and returns an 'InitArchSpecificGlobals' that initializes the global
