@@ -207,7 +207,10 @@ loadCrucibleSyntaxOverride path fnNamePred ng halloc hooks = do
       eAcfgs <- LCSC.top ng halloc [] $ LCSC.prog asts
       case eAcfgs of
         Left err -> CMC.throwM (AE.CrucibleSyntaxExprParseFailure err)
-        Right (globals, acfgs) -> do
+        Right (LCSC.ParsedProgram
+                 { LCSC.parsedProgGlobals = globals
+                 , LCSC.parsedProgCFGs = acfgs
+                 }) -> do
           let someGlobals = [ Some glob
                             | (_, (Pair.Pair _ glob)) <- Map.toList globals ]
           let (matchCFGs, auxCFGs) = List.partition evalFnNamePred acfgs
