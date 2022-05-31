@@ -174,6 +174,9 @@ strstr/strstr.exe: strstr/strstr.c ambient_assert.o
 memcpy.exe: memcpy.c ambient_assert.o
 	$(MUSL_CC) -static -nostartfiles -no-pie $^ -o $@
 
+crucible-strings/crucible-strings.exe: crucible-strings/crucible-strings.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

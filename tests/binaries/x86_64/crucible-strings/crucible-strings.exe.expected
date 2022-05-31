@@ -1,0 +1,3 @@
+successful: 0
+failed: 0
+overrideDir: tests/binaries/x86_64/crucible-strings/overrides

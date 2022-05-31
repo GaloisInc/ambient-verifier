@@ -16,6 +16,7 @@ module Ambient.Extensions
   , readMem
   , resolveAndPopulate
   , loadString
+  , storeString
   , AmbientSimulatorState(..)
   , incrementSimStat
   , lensNumOvsApplied
@@ -233,6 +234,45 @@ readMem bak memImpl initialMem unsupportedRelocs st addrWidth memRep ptr0 =
         let st2 = updateReads readVal memRep (updateBoundsRefined resolveEffect st1)
         return (readVal,st2)
 
+-- | Write memory to a pointer
+writeMem :: forall sym scope st fs bak solver arch p w ext rtp f args ty.
+     ( LCB.IsSymInterface sym
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , WPO.OnlineSolver solver
+     , LCLM.HasLLVMAnn sym
+     , p ~ AmbientSimulatorState sym arch
+     , w ~ DMC.ArchAddrWidth arch
+     )
+  => bak
+  -> LCLM.MemImpl sym
+  -> AM.InitialMemory sym w
+  -- ^ Initial memory state for symbolic execution
+  -> LCS.SimState p sym ext rtp f args
+  -> DMM.AddrWidthRepr w
+  -> DMC.MemRepr ty
+  -- ^ Info about write (endianness, size)
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -- ^ Pointer to write to
+  -> LCS.RegEntry sym (DMS.ToCrucibleType ty)
+  -- ^ Value to write
+  -> IO ( LCLM.MemImpl sym
+        , LCS.SimState p sym ext rtp f args )
+writeMem bak memImpl initialMem st addrWidth memRep ptr0 v =
+  DMM.addrWidthClass addrWidth $ do
+    let sym = LCB.backendGetSym bak
+    let w = DMM.memWidthNatRepr
+    memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
+                      toInteger $ DMC.memReprBytes memRep
+    (ptr1, st1) <- resolveAndPopulate bak memImpl initialMem memReprBytesBV ptr0 st
+    let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerWrite
+    mGlobalPtrValid <- (AM.imValidityCheck initialMem) sym puse Nothing ptr0
+    case mGlobalPtrValid of
+      Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
+      Nothing -> return ()
+    mem1 <- DMSMO.doWriteMem bak memImpl addrWidth memRep ptr1 (LCS.regValue v)
+    pure (mem1, st1)
+
 -- | Load a null-terminated string from the memory.
 --
 -- The pointer to read from must be concrete and nonnull.  Moreover,
@@ -295,6 +335,64 @@ loadString bak memImpl initialMem unsupportedRelocs = go id
          liftIO $ LCB.addFailedAssertion bak
             $ LCS.Unsupported GHC.callStack "Symbolic value encountered when loading a string"
 
+-- | Store a concrete string (represented as a list of bytes) to memory,
+-- including a null terminator at the end.
+storeString
+  :: forall sym bak w p ext r args ret m arch scope st fs solver
+   . ( LCB.IsSymBackend sym bak
+     , LCLM.HasPtrWidth w
+     , LCLM.HasLLVMAnn sym
+     , ?memOpts :: LCLM.MemOptions
+     , GHC.HasCallStack
+     , DMC.MemWidth w
+     , w ~ DMC.ArchAddrWidth arch
+     , p ~ AmbientSimulatorState sym arch
+     , m ~ LCS.OverrideSim p sym ext r args ret
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , WPO.OnlineSolver solver
+     )
+  => bak
+  -> LCLM.MemImpl sym
+  -- ^ Memory to write to
+  -> AM.InitialMemory sym w
+  -- ^ Initial memory state for symbolic execution
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -- ^ Pointer to write value to
+  -> [Word8]
+  -- ^ The bytes of the string to write (null terminator not included)
+  -> m (LCLM.MemImpl sym)
+  -- ^ The updated memory
+storeString bak memImpl initialMem = go memImpl
+  where
+    sym = LCB.backendGetSym bak
+    writeInfo = DMC.BVMemRepr (WI.knownNat @1) DMC.LittleEndian
+    byteRepr = WI.knownNat @8
+
+    go :: LCLM.MemImpl sym -> LCS.RegEntry sym (LCLM.LLVMPointerType w) -> [Word8] -> m (LCLM.MemImpl sym)
+    go mem p bytes
+      = case bytes of
+          [] -> do
+            bvNullTerminator <- liftIO $ WI.bvLit sym byteRepr $ BV.zero byteRepr
+            writeByte mem p bvNullTerminator
+
+          (b:bs) -> do
+            bvByte <- liftIO $ WI.bvLit sym byteRepr $ BV.mkBV byteRepr $ toInteger b
+            mem' <- writeByte mem p bvByte
+            bvOne <- liftIO $ WI.bvLit sym LCLM.PtrWidth (BV.one LCLM.PtrWidth)
+            p' <- liftIO $ LCLM.doPtrAddOffset bak mem' (LCS.regValue p) bvOne
+            go mem' (LCS.RegEntry (LCLM.LLVMPointerRepr ?ptrWidth) p') bs
+
+    writeByte :: LCLM.MemImpl sym -> LCS.RegEntry sym (LCLM.LLVMPointerType w) -> WI.SymBV sym 8 -> m (LCLM.MemImpl sym)
+    writeByte mem p bvByte = do
+      ptrByte <- liftIO $ LCLM.llvmPointer_bv sym bvByte
+      let ptrByte' = LCS.RegEntry (LCLM.LLVMPointerRepr byteRepr) ptrByte
+      st <- CMS.get
+      (mem', st') <- liftIO $
+        writeMem bak mem initialMem st (DMC.addrWidthRepr ?ptrWidth) writeInfo p ptrByte'
+      CMS.put st'
+      pure mem'
+
 -- | This evaluates a Macaw statement extension in the simulator.
 execAmbientStmtExtension :: forall sym scope st fs bak solver arch p w.
      ( LCB.IsSymInterface sym
@@ -356,17 +454,8 @@ execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedReloc
           return (readVal,st2)
     DMS.MacawWriteMem addrWidth memRep ptr0 v -> DMM.addrWidthClass addrWidth $ do
       memImpl <- DMSMO.getMem st mvar
-      let w = DMM.memWidthNatRepr
-      memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
-                        toInteger $ DMC.memReprBytes memRep
-      (ptr1, st1) <- resolveAndPopulate bak memImpl initialMem memReprBytesBV ptr0 st
-      let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerWrite
-      mGlobalPtrValid <- toMemPred sym puse Nothing ptr0
-      case mGlobalPtrValid of
-        Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
-        Nothing -> return ()
-      mem1 <- DMSMO.doWriteMem bak memImpl addrWidth memRep ptr1 (LCS.regValue v)
-      pure ((), DMSMO.setMem st1 mvar mem1)
+      (memImpl', st') <- writeMem bak memImpl initialMem st addrWidth memRep ptr0 v
+      pure ((), DMSMO.setMem st' mvar memImpl')
     DMS.MacawCondWriteMem addrWidth memRep cond ptr0 v -> DMM.addrWidthClass addrWidth $ do
       memImpl <- DMSMO.getMem st mvar
       let w = DMM.memWidthNatRepr

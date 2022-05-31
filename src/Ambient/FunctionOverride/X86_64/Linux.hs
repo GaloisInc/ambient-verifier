@@ -130,7 +130,8 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs 
                      , AF.SomeFunctionOverride AFO.shmatOverride
                      , AF.SomeFunctionOverride (AFO.buildSprintfOverride initialMem unsupportedRelocs)
                      ] in
-  let networkOverrides = AFO.networkOverrides fs initialMem unsupportedRelocs
+  let networkOverrides = AFO.networkOverrides fs initialMem unsupportedRelocs in
+  let crucibleStringOverrides = AFO.crucibleStringOverrides initialMem unsupportedRelocs
   in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
                     , AF.functionMainArgumentRegisters = (DMXR.RDI, DMXR.RSI)
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
@@ -138,7 +139,7 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs 
                       Map.fromList [ (AF.functionName fo, sfo)
                                    | sfo@(AF.SomeFunctionOverride fo) <-
                                        memOverrides ++ networkOverrides ++
-                                       namedOvs
+                                       crucibleStringOverrides ++ namedOvs
                                    ]
                     , AF.functionAddrMapping = addrOvs
                     }

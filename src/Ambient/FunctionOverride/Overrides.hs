@@ -26,6 +26,8 @@ module Ambient.FunctionOverride.Overrides
   , module Ambient.FunctionOverride.Overrides.Printf
     -- * Networking-related overrides
   , module Ambient.FunctionOverride.Overrides.Networking
+    -- * Crucible string–related overrides
+  , module Ambient.FunctionOverride.Overrides.CrucibleStrings
   ) where
 
 import           Control.Lens ( (.=), (+=), use )
@@ -49,6 +51,7 @@ import qualified What4.Protocol.Online as WPO
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import           Ambient.FunctionOverride
+import           Ambient.FunctionOverride.Overrides.CrucibleStrings
 import           Ambient.FunctionOverride.Overrides.Networking
 import           Ambient.FunctionOverride.Overrides.Printf
 import qualified Ambient.Memory as AM

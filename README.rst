@@ -263,6 +263,40 @@ The extra operations supported in ``ambient-verifier`` are:
 - ``pointer-read :: Nat -> Endianness -> Pointer -> Bitvector w`` where the first argument is the size of the read in bytes, the second argument is ``le`` or ``be``, and ``w`` is the size of the read in bits (will match the ``Nat`` argument).
 - ``pointer-write :: Nat -> Endianness -> Pointer -> Bitvector w -> Unit`` where the first argument is the size of the write in bytes, the second argument is ``le`` or ``be``, and ``w`` is the size of the write in bits (must match the ``Nat`` argument).
 
+Built-in Overrides
+------------------
+
+There are some overrides that are built-in to the verifier, as they cannot
+easily be defined in terms of the primitives that the syntax override language
+provides. The following overrides can be invoked from both binaries and syntax
+overrides:
+
+* ``accept :: Int -> Pointer -> Pointer -> Int``
+* ``bind :: Int -> Pointer -> SizeT -> Int``
+* ``calloc :: SizeT -> SizeT -> Pointer``
+* ``connect :: Int -> Pointer -> SizeT -> Int``
+* ``listen :: Int -> Int -> Int``
+* ``recv :: Int -> Pointer -> SizeT -> Int -> SizeT``
+* ``malloc :: SizeT -> Pointer``
+* ``memcpy :: Pointer -> Pointer -> SizeT -> Pointer``
+* ``memset :: Pointer -> Int -> SizeT -> Pointer``
+* ``send :: Int -> Pointer -> SizeT -> Int -> SizeT``
+* ``shmat :: Int -> Pointer -> Int -> Pointer``
+* ``shmget :: SizeT -> SizeT -> Int -> Int``
+* ``socket :: Int -> Int -> Int -> Int``
+* ``sprintf :: Pointer -> Pointer -> ... -> Int``
+
+The following overrides can only be invoked from syntax overrides:
+
+* ``read-c-string :: Pointer -> String Unicode`` reads a null-terminated,
+  UTF-8–encoded, concrete string from the ``Pointer`` and converts it to a
+  ``String``. Representing it as a ``String`` can be more convenient in the
+  syntax override language, as it is easier to manipulate and check for
+  equality.
+* ``write-c-string :: Pointer -> String Unicode -> Unit`` writes a
+  UTF-8–encoded, concrete string to a ``Pointer``, including a null
+  terminator.
+
 Global Variables
 ----------------
 
