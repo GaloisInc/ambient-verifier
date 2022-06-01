@@ -151,6 +151,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piRecursionBound = recursionBound expectedResult
                                  , AV.piSolverInteractionFile = Nothing
                                  , AV.piSharedObjectDir = sharedObjectsDir expectedResult
+                                 , AV.piLogSymbolicBranches = Nothing
                                  }
 
   chan <- CC.newChan

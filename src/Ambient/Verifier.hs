@@ -27,7 +27,7 @@ import qualified Data.Aeson as DA
 import qualified Data.ByteString as BS
 import qualified Data.Foldable as F
 import           Data.IORef ( readIORef )
-import           Data.Maybe ( catMaybes )
+import           Data.Maybe ( catMaybes, isJust )
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Set as Set
@@ -126,6 +126,8 @@ data ProgramInstance =
                   -- ^ Optional location to write solver interactions log to
                   , piSharedObjectDir :: Maybe FilePath
                   -- ^ Optional directory containing shared objects to verify
+                  , piLogSymbolicBranches :: Maybe FilePath
+                  -- ^ Log symbolic branches to a given file
                   }
 
 -- | A set of metrics from a verification run
@@ -341,6 +343,7 @@ verify logAction pinst timeoutDuration = do
       let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
                                                , AVS.secWMMCallback = AVWme.wmExecutor bak archInfo (ALB.mainLoadedBinaryPath binConf) hdlAlloc archVals execFeatures
                                                , AVS.secSolver = piSolver pinst
+                                               , AVS.secLogBranches = isJust $ piLogSymbolicBranches pinst
                                                }
       let ?memOpts = LCLM.defaultMemOptions
       csOverrides <-

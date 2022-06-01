@@ -40,6 +40,9 @@ data LogHandles = LogHandles
   , mbFunctionCFGsHandle :: Maybe IO.Handle
     -- ^ If @'Just' hdl@, write function CFG–related logs to @hdl@.
     -- If 'Nothing', do not write function CFG–related logs at all.
+  , mbSymbolicBranchesHandle :: Maybe IO.Handle
+    -- ^ If @'Just' hdl@, write symbolic branch logs to @hdl@.
+    -- If 'Nothing', do not write symbolic branch logs at all.
   , defaultHandle :: IO.Handle
     -- ^ The file handle to write all logs besides the ones noted above.
   }
@@ -50,9 +53,11 @@ withVerifyLogHandles :: O.VerifyOptions -> (LogHandles -> IO r) -> IO r
 withVerifyLogHandles o k =
  withMaybeFile (O.solverDebugMessagesFile o) IO.WriteMode $ \mbSolverDebugMsgsHdl ->
  withMaybeFile (O.functionCFGsFile o) IO.WriteMode $ \mbFunCFGsHdl ->
+ withMaybeFile (O.logSymbolicBranches o) IO.WriteMode $ \mbLogSymbolicBranches ->
  k $ LogHandles
   { mbSolverDebugMessagesHandle = mbSolverDebugMsgsHdl
   , mbFunctionCFGsHandle = mbFunCFGsHdl
+  , mbSymbolicBranchesHandle = mbLogSymbolicBranches
   , defaultHandle = IO.stdout
   }
 
@@ -61,6 +66,7 @@ testLogHandles :: LogHandles
 testLogHandles = LogHandles
   { mbSolverDebugMessagesHandle = Nothing
   , mbFunctionCFGsHandle = Nothing
+  , mbSymbolicBranchesHandle = Nothing
   , defaultHandle = IO.stdout
   }
 
@@ -89,6 +95,11 @@ printLogs logHdls chan = go
                 Nothing -> pure ()
                 Just functionCFGsHdl
                   -> hPutDocAndFlush functionCFGsHdl ppd
+            AD.SymbolicBranch{} ->
+              case mbSymbolicBranchesHandle logHdls of
+                Nothing -> pure ()
+                Just symBranchesHdl
+                  -> hPutDocAndFlush symBranchesHdl ppd
             _ -> hPutDocAndFlush (defaultHandle logHdls) ppd
           go
 
@@ -135,6 +146,7 @@ buildPinstFromVerifyOptions o = do
            , AV.piRecursionBound = O.recursionBound o
            , AV.piSolverInteractionFile = O.solverInteractionFile o
            , AV.piSharedObjectDir = O.sharedObjectDir o
+           , AV.piLogSymbolicBranches = O.logSymbolicBranches o
            }
 
 -- | This is the real verification driver that takes the parsed out command line

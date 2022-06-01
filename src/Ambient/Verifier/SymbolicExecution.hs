@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -67,6 +68,7 @@ import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.LLVM.MemType as LCLMT
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Simulator.EvalStmt as LCSEv
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
@@ -106,6 +108,8 @@ data SymbolicExecutionConfig arch sym =
   SymbolicExecutionConfig { secProperties :: [APD.Property APD.StateID]
                           , secWMMCallback :: AVW.WMMCallback arch sym
                           , secSolver :: AS.Solver
+                          , secLogBranches :: Bool
+                          -- ^ Report symbolic branches
                           }
 
 -- | The stack size in bytes
@@ -118,6 +122,16 @@ stackOffset = stackSize `div` 2
 -- | Heap size in bytes
 heapSize :: Integer
 heapSize = 2 * 1024 * 1024 * 1024
+
+-- | An execution feature that logs all symbolic branches that occur
+sbsFeature :: LJ.LogAction IO AD.Diagnostic
+  -> LCSEv.ExecutionFeature p sym ext rtp
+sbsFeature logAction = LCSEv.ExecutionFeature $ \case
+    LCSE.SymbolicBranchState _pred _tpath _fpath _mergePoint simState -> do
+      let loc = simState ^. LCSE.stateLocation
+      LJ.writeLog logAction (AD.SymbolicBranch loc)
+      return LCSEv.ExecutionFeatureNoChange
+    _ -> return LCSEv.ExecutionFeatureNoChange
 
 mkInitialRegVal
   :: (LCB.IsSymInterface sym, DMT.HasRepr (DMC.ArchReg arch) DMT.TypeRepr)
@@ -1151,7 +1165,8 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
     let wmCallback = secWMMCallback seConf
     let wmSolver = secSolver seConf
     let wmm = AVW.wmmFeature logAction wmSolver archVals wmCallback (AVW.wmProperties wmConfig)
-    let executionFeatures = wmm : fmap LCS.genericToExecutionFeature execFeatures
+    let sbsRecorder = sbsFeature logAction
+    let executionFeatures = wmm : [sbsRecorder | secLogBranches seConf] ++ fmap LCS.genericToExecutionFeature execFeatures
 
     res <- liftIO $ LCS.executeCrucible executionFeatures s0
     return (AM.imMemVar initialMem, res, wmConfig)

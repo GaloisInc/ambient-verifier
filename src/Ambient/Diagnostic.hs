@@ -10,9 +10,12 @@ module Ambient.Diagnostic (
 import qualified Control.Exception as X
 import           Control.Lens ( (^.) )
 import qualified Control.Lens as Lens
+import qualified Data.Aeson as DA
+import qualified Data.Aeson.Key as DAK
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map as Map
 import qualified Data.Text as T
+import qualified Data.ByteString.Lazy.Char8 as DBSL
 import qualified Data.Time.Clock as DTC
 import           Numeric ( showHex )
 import qualified Prettyprinter as PP
@@ -71,6 +74,8 @@ data Diagnostic where
   ExecutingOverrideTest :: LCSC.ACFG ext -> FilePath -> Diagnostic
   -- | Listing the overrides registered for a binary
   ListingOverrides :: AOLT.OverrideLists arch -> Diagnostic
+  -- | Reporting a symbolic branch
+  SymbolicBranch :: Maybe WP.ProgramLoc -> Diagnostic
 
 ppSymbol :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> String
 ppSymbol (Just fnName) addr = show addr ++ " (" ++ BSC.unpack fnName ++ ")"
@@ -152,6 +157,16 @@ instance PP.Pretty Diagnostic where
                          PP.pretty "- " <> PP.pretty name <> PP.line)
                        functionNameOverrides
           ]
+      SymbolicBranch maybeLoc ->
+        let ppShowMaybe mb =
+              case mb of
+                Just v  -> show (PP.pretty v)
+                Nothing -> "unknown"
+        in PP.pretty (DBSL.unpack $ DA.encode $
+          DA.object [ DAK.fromString "symbolicBranchFunction" DA..= ppShowMaybe (WP.plFunction <$> maybeLoc)
+                    , DAK.fromString "symbolicBranchLocation" DA..= ppShowMaybe (WP.plSourceLoc <$> maybeLoc)
+                    ]) <> PP.line
+
     where
       overridesHeader title = PP.vcat
         [ PP.pretty "============================"

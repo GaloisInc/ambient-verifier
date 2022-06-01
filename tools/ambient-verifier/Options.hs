@@ -72,6 +72,8 @@ data VerifyOptions =
                 -- ^ Directory containing shared objects to verify
                 , metricsFile :: Maybe FilePath
                 -- ^ File to write metrics to
+                , logSymbolicBranches :: Maybe FilePath
+                -- ^ Optional file to record symbolic branches to
                 }
   deriving ( Show )
 
@@ -244,6 +246,10 @@ verifyOptions = VerifyOptions
            <*> OA.optional (OA.strOption ( OA.long "metrics"
                                         <> OA.metavar "FILE"
                                         <> OA.help "File to write metrics to"))
+           <*> OA.optional (OA.strOption ( OA.long "log-symbolic-branches"
+                                        <> OA.metavar "FILE"
+                                        <> OA.help "Log all symbolic branches that occur to FILE"
+                                       ))
 
 -- | A parser for the \"list-overrides\" subcommand
 listOverridesParser :: OA.Parser Command
