@@ -8,7 +8,6 @@ module Ambient.Memory (
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
-import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 
@@ -37,8 +36,6 @@ data InitialMemory sym w =
                -- ^ Initial global variables
                 , imStackBasePtr :: LCLM.LLVMPtr sym w
                -- ^ Stack memory base pointer
-                , imHeapEndGlob :: LCS.GlobalVar (LCLMP.LLVMPointerType w)
-               -- ^ Pointer to the end of heap memory
                 , imValidityCheck :: DMS.MkGlobalPointerValidityAssertion sym w
                -- ^ Additional pointer validity checks to enforce
                 , imGlobalMap :: DMS.GlobalMap sym LCLM.Mem w

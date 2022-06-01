@@ -26,11 +26,6 @@ module Ambient.FunctionOverride.Overrides
   , module Ambient.FunctionOverride.Overrides.Printf
     -- * Networking-related overrides
   , module Ambient.FunctionOverride.Overrides.Networking
-    -- * Hacky overrides
-  , buildHackyBumpMallocOverride
-  , hackyBumpMalloc
-  , buildHackyBumpCallocOverride
-  , hackyBumpCalloc
   ) where
 
 import           Control.Lens ( (.=), (+=), use )
@@ -383,82 +378,3 @@ buildShmgetOverride memVar =
   WI.withKnownNat ?ptrWidth $
   mkFunctionOverride "shmget" $ \bak args ->
     Ctx.uncurryAssignment (callShmget memVar bak) args
-
--------------------------------------------------------------------------------
--- Hacky Overrides
--------------------------------------------------------------------------------
-
--- These are crude overrides that are primarily meant as a shortcut to getting
--- something to work. We should replace these with proper solutions later.
--- See #19 for one possible way to do this.
-
-hackyBumpMalloc :: ( LCB.IsSymBackend sym bak
-                   , LCLM.HasPtrWidth w
-                   )
-                => bak
-                -> LCS.GlobalVar (LCLM.LLVMPointerType w)
-                -- ^ Global pointing to end of heap bump allocation
-                -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-                -- ^ The number of bytes to allocate
-                -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-hackyBumpMalloc bak endGlob (LCS.regValue -> sz) = do
-  let sym = LCB.backendGetSym bak
-  szBv <- liftIO $ LCLM.projectLLVM_bv bak sz
-  LCS.modifyGlobal endGlob $ \endPtr -> liftIO $ do
-    -- Bump up end pointer
-    endPtr' <- LCLM.ptrSub sym ?ptrWidth endPtr szBv
-    return (endPtr', endPtr')
-
-buildHackyBumpMallocOverride
-  :: LCLM.HasPtrWidth w
-  => LCS.GlobalVar (LCLM.LLVMPointerType w)
-  -- ^ Global pointing to end of heap bump allocation
-  -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext
-                                              (LCLM.LLVMPointerType w)
-buildHackyBumpMallocOverride endGlob =
-  WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "malloc" $ \bak args ->
-    Ctx.uncurryAssignment (hackyBumpMalloc bak endGlob) args
-
-hackyBumpCalloc :: ( LCB.IsSymBackend sym bak
-                   , LCLM.HasLLVMAnn sym
-                   , LCLM.HasPtrWidth w
-                   )
-                => bak
-                -> LCS.GlobalVar (LCLM.LLVMPointerType w)
-                -- ^ Global pointing to end of heap bump allocation
-                -> LCS.GlobalVar LCLM.Mem
-                -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-                -- ^ The number of elements in the array
-                -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-                -- ^ The number of bytes to allocate
-                -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-hackyBumpCalloc bak endGlob memVar (LCS.regValue -> num) (LCS.regValue -> sz) = do
-  let sym = LCB.backendGetSym bak
-  LCS.modifyGlobal endGlob $ \endPtr -> do
-    res <- LCS.modifyGlobal memVar $ \mem -> liftIO $ do
-      -- Bump up end pointer
-      numBV <- LCLM.projectLLVM_bv bak num
-      szBV  <- LCLM.projectLLVM_bv bak sz
-      allocSzBv <- WI.bvMul sym numBV szBV
-      endPtr' <- LCLM.ptrSub sym ?ptrWidth endPtr allocSzBv
-
-      -- Zero memory
-      zero <- WI.bvLit sym WI.knownNat (BVS.zero WI.knownNat)
-      mem' <- LCLM.doMemset bak ?ptrWidth mem endPtr' zero allocSzBv
-      return (endPtr', mem')
-    return (res, res)
-
-buildHackyBumpCallocOverride
-  :: ( LCLM.HasLLVMAnn sym
-     , LCLM.HasPtrWidth w
-     )
-  => LCS.GlobalVar (LCLM.LLVMPointerType w)
-  -> LCS.GlobalVar LCLM.Mem
-  -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                          Ctx.::> LCLM.LLVMPointerType w) ext
-                            (LCLM.LLVMPointerType w)
-buildHackyBumpCallocOverride endGlob memVar =
-  WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "calloc" $ \bak args ->
-    Ctx.uncurryAssignment (hackyBumpCalloc bak endGlob memVar) args

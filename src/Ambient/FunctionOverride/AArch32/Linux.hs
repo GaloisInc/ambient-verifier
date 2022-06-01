@@ -134,7 +134,9 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupport
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @32 in
   let memVar = AM.imMemVar initialMem in
-  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride initialMem)
+  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildCallocOverride memVar)
+                     , AF.SomeFunctionOverride (AFO.buildMallocOverride memVar)
+                     , AF.SomeFunctionOverride (AFO.buildMemcpyOverride initialMem)
                      , AF.SomeFunctionOverride (AFO.buildMemsetOverride initialMem)
                      , AF.SomeFunctionOverride (AFO.buildShmgetOverride memVar)
                      , AF.SomeFunctionOverride AFO.shmatOverride
@@ -156,7 +158,8 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupport
                  , AF.functionNameMapping =
                      Map.fromList [ (AF.functionName fo, sfo)
                                   | sfo@(AF.SomeFunctionOverride fo) <-
-                                      memOverrides ++ networkOverrides ++ namedOvs
+                                      memOverrides ++ networkOverrides ++
+                                      namedOvs
                                   ]
                  , AF.functionAddrMapping =
                      Map.union (Map.fromList customKernelOvs) addrOvs

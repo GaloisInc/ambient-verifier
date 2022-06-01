@@ -121,20 +121,15 @@ x86_64LinuxFunctionABI :: (?memOpts :: LCLM.MemOptions)
 x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs addrOvs namedOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @64 in
-  let bumpEndVar = AM.imHeapEndGlob initialMem in
   let memVar = AM.imMemVar initialMem in
-  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride initialMem)
+  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildCallocOverride memVar)
+                     , AF.SomeFunctionOverride (AFO.buildMallocOverride memVar)
+                     , AF.SomeFunctionOverride (AFO.buildMemcpyOverride initialMem)
                      , AF.SomeFunctionOverride (AFO.buildMemsetOverride initialMem)
                      , AF.SomeFunctionOverride (AFO.buildShmgetOverride memVar)
                      , AF.SomeFunctionOverride AFO.shmatOverride
                      , AF.SomeFunctionOverride (AFO.buildSprintfOverride initialMem unsupportedRelocs)
                      ] in
-  -- Hacky overrides
-  --
-  -- TODO: Remove these (see #19)
-  let hackyOverrides = [ AF.SomeFunctionOverride (AFO.buildHackyBumpMallocOverride bumpEndVar)
-                       , AF.SomeFunctionOverride (AFO.buildHackyBumpCallocOverride bumpEndVar memVar)
-                       ] in
   let networkOverrides = AFO.networkOverrides fs initialMem unsupportedRelocs
   in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
                     , AF.functionMainArgumentRegisters = (DMXR.RDI, DMXR.RSI)
@@ -142,8 +137,8 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs 
                     , AF.functionNameMapping =
                       Map.fromList [ (AF.functionName fo, sfo)
                                    | sfo@(AF.SomeFunctionOverride fo) <-
-                                       memOverrides ++ hackyOverrides ++
-                                       networkOverrides ++ namedOvs
+                                       memOverrides ++ networkOverrides ++
+                                       namedOvs
                                    ]
                     , AF.functionAddrMapping = addrOvs
                     }

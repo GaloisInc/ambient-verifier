@@ -119,10 +119,6 @@ stackSize = 2 * 1024 * 1024
 stackOffset :: Integer
 stackOffset = stackSize `div` 2
 
--- | Heap size in bytes
-heapSize :: Integer
-heapSize = 2 * 1024 * 1024 * 1024
-
 -- | An execution feature that logs all symbolic branches that occur
 sbsFeature :: LJ.LogAction IO AD.Diagnostic
   -> LCSEv.ExecutionFeature p sym ext rtp
@@ -918,18 +914,9 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
   (stackBasePtr, mem1) <- liftIO $ LCLM.doMalloc bak LCLM.StackAlloc LCLM.Mutable "stack_alloc" initMem stackSizeBV LCLD.noAlignment
   mem2 <- liftIO $ LCLM.doArrayStore bak mem1 stackBasePtr LCLD.noAlignment stackArrayStorage stackSizeBV
 
-  -- Initialize heap memory
-  heapSizeBv <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr heapSize)
-  (heapBasePtr, mem3) <- liftIO $ LCLM.doMalloc bak LCLM.HeapAlloc LCLM.Mutable "<malloc bump>" mem2 heapSizeBv LCLD.noAlignment
-  heapEndPtr <- liftIO $ LCLM.ptrAdd sym WI.knownRepr heapBasePtr heapSizeBv
-  heapEndGlob <- liftIO $ LCCC.freshGlobalVar halloc
-                                              (DT.pack "heapFreeEnd")
-                                              (LCLM.LLVMPointerRepr WI.knownNat)
-
   memVar <- liftIO $ LCLM.mkMemVar (DT.pack "ambient-verifier::memory") halloc
-  (mem4, globals0) <- liftIO $ initGlobals bak mem3
-  let globals1 = LCSG.insertGlobal memVar mem4 $
-                 LCSG.insertGlobal heapEndGlob heapEndPtr globals0
+  (mem3, globals0) <- liftIO $ initGlobals bak mem2
+  let globals1 = LCSG.insertGlobal memVar mem3 globals0
   let functionOvGlobals = concat [ AF.functionGlobals ov
                                  | AF.SomeFunctionOverride ov <- functionOvs ]
   globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
@@ -937,7 +924,6 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
   return (AM.InitialMemory { AM.imMemVar = memVar
                            , AM.imGlobals = globals2
                            , AM.imStackBasePtr = stackBasePtr
-                           , AM.imHeapEndGlob = heapEndGlob
                            , AM.imValidityCheck = validityCheck
                            , AM.imGlobalMap = globalMap
                            , AM.imMemPtrTable = memPtrTbl
