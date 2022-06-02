@@ -134,8 +134,8 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupport
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @32 in
   let memVar = AM.imMemVar initialMem in
-  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride memVar)
-                     , AF.SomeFunctionOverride (AFO.buildMemsetOverride memVar)
+  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride initialMem)
+                     , AF.SomeFunctionOverride (AFO.buildMemsetOverride initialMem)
                      , AF.SomeFunctionOverride (AFO.buildShmgetOverride memVar)
                      , AF.SomeFunctionOverride AFO.shmatOverride
                      , AF.SomeFunctionOverride (AFO.buildSprintfOverride initialMem unsupportedRelocs)

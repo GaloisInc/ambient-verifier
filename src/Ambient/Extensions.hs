@@ -8,11 +8,13 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE ViewPatterns #-}
 
 -- | Defines verifier-specific extensions for Macaw's simulation functionality.
 module Ambient.Extensions
   ( ambientExtensions
   , readMem
+  , resolveAndPopulate
   , loadString
   , AmbientSimulatorState(..)
   , incrementSimStat
@@ -114,6 +116,71 @@ ambientExtensions bak f initialMem lookupH lookupSyscall unsupportedRelocs =
     { LCSE.extensionExec = execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedRelocs
     }
 
+-- | This function proceeds in two steps:
+--
+-- 1.  If the input pointer is a global pointer (the block ID of the pointer is
+--     zero), it is translated into an LLVM pointer.  If the input pointer is
+--     not a global pointer then it has already been translated into an LLVM
+--     pointer and this step is a no-op.  For more information on this process,
+--     see the @tryGlobPointer@ documentation in "Data.Macaw.Symbolic.MemOps".
+--
+-- 2.  The LLVM pointer from step 1 is then resolved to a concrete pointer if
+--     possible.  For more information, see the documentation on
+--     @resolveSingletonPointer@ in "Ambient.Verifier.Concretize".
+--
+-- This function returns the resolved pointer from step 2 and an
+-- 'AVC.ResolveSymBVEffect' explaining the outcome of the resolution process.
+resolvePointer
+  :: ( LCB.IsSymInterface sym
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , WPO.OnlineSolver solver
+     , 1 WI.<= w )
+  => bak
+  -> LCLM.MemImpl sym
+  -> DMS.GlobalMap sym LCLM.Mem w
+  -- ^ Global map to use for translation
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -- ^ Pointer to resolve
+  -> IO (LCLM.LLVMPtr sym w, AVC.ResolveSymBVEffect)
+resolvePointer bak memImpl globMap (LCS.regValue -> ptr) =
+  DMSMO.tryGlobPtr bak memImpl globMap ptr >>= AVC.resolveSingletonPointer bak
+
+-- | Resolve a pointer using the process described in the 'resolvePointer'
+-- documentation, then initialize the region of memory in the SMT array the
+-- pointer points to.  See @Note [Lazy memory initialization]@ in
+-- "Ambient.Extensions.Memory".
+--
+-- This function returns the resolved pointer and an updated state.  It also
+-- updates the metric tracking the number of symbolic bitvector bounds in the
+-- returned state.
+resolveAndPopulate
+  :: ( sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , p ~ AmbientSimulatorState sym arch
+     , w ~ DMC.ArchAddrWidth arch
+     , LCB.IsSymInterface sym
+     , WPO.OnlineSolver solver
+     , DMM.MemWidth w
+     )
+  => bak
+  -> LCLM.MemImpl sym
+  -> AM.InitialMemory sym w
+  -> WI.SymBV sym w
+  -- ^ The amount of memory to read
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -> LCS.SimState p sym ext rtp f args
+  -> IO (LCLM.LLVMPtr sym w, LCS.SimState p sym ext rtp f args)
+resolveAndPopulate bak memImpl initialMem readSizeBV ptr st = do
+  (ptr', resolveEffect) <-
+      resolvePointer bak memImpl (AM.imGlobalMap initialMem) ptr
+  st' <- lazilyPopulateGlobalMemArr bak
+                                    (AM.imMemPtrTable initialMem)
+                                    readSizeBV
+                                    ptr'
+                                    st
+  return (ptr', updateBoundsRefined resolveEffect st')
+
 -- | Read memory through a pointer
 readMem :: forall sym scope st fs bak solver arch p w ext rtp f args ty.
      ( LCB.IsSymInterface sym
@@ -144,10 +211,10 @@ readMem bak memImpl initialMem unsupportedRelocs st addrWidth memRep ptr0 =
   DMM.addrWidthClass addrWidth $ do
     let mpt = AM.imMemPtrTable initialMem
     let sym = LCB.backendGetSym bak
-    ptr1 <- DMSMO.tryGlobPtr bak memImpl (AM.imGlobalMap initialMem) (LCS.regValue ptr0)
-    (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
-    assertRelocSupported ptr2 unsupportedRelocs
-    case concreteImmutableGlobalRead memRep ptr2 mpt of
+    (ptr1, resolveEffect) <-
+        resolvePointer bak memImpl (AM.imGlobalMap initialMem) ptr0
+    assertRelocSupported ptr1 unsupportedRelocs
+    case concreteImmutableGlobalRead memRep ptr1 mpt of
       Just bytes -> do
         readVal <- AEM.readBytesAsRegValue sym memRep bytes
         let st' = incrementSimStat lensNumReads st
@@ -156,13 +223,13 @@ readMem bak memImpl initialMem unsupportedRelocs st addrWidth memRep ptr0 =
         let w = DMM.memWidthNatRepr
         memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
                           toInteger $ DMC.memReprBytes memRep
-        st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr2 st
+        st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr1 st
         let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerRead
         mGlobalPtrValid <- (AM.imValidityCheck initialMem) sym puse Nothing ptr0
         case mGlobalPtrValid of
           Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
           Nothing -> return ()
-        readVal <- DMSMO.doReadMem bak memImpl addrWidth memRep ptr2
+        readVal <- DMSMO.doReadMem bak memImpl addrWidth memRep ptr1
         let st2 = updateReads readVal memRep (updateBoundsRefined resolveEffect st1)
         return (readVal,st2)
 
@@ -266,10 +333,9 @@ execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedReloc
       readMem bak memImpl initialMem unsupportedRelocs st addrWidth memRep ptr0
     DMS.MacawCondReadMem addrWidth memRep cond ptr0 condFalseValue -> DMM.addrWidthClass addrWidth $ do
       memImpl <- DMSMO.getMem st mvar
-      ptr1 <- DMSMO.tryGlobPtr bak memImpl globs (LCS.regValue ptr0)
-      (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
-      assertRelocSupported ptr2 unsupportedRelocs
-      case concreteImmutableGlobalRead memRep ptr2 mpt of
+      (ptr1, resolveEffect) <- resolvePointer bak memImpl globs ptr0
+      assertRelocSupported ptr1 unsupportedRelocs
+      case concreteImmutableGlobalRead memRep ptr1 mpt of
         Just bytes -> do
           readVal <- AEM.readBytesAsRegValue sym memRep bytes
           readVal' <- muxMemReprValue sym memRep (LCS.regValue cond) readVal (LCS.regValue condFalseValue)
@@ -279,47 +345,41 @@ execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedReloc
           let w = DMM.memWidthNatRepr
           memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
                             toInteger $ DMC.memReprBytes memRep
-          st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr2 st
+          st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr1 st
           let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerRead
           mGlobalPtrValid <- toMemPred sym puse (Just cond) ptr0
           case mGlobalPtrValid of
             Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
             Nothing -> return ()
-          readVal <- DMSMO.doCondReadMem bak memImpl addrWidth memRep (LCS.regValue cond) ptr2 (LCS.regValue condFalseValue)
+          readVal <- DMSMO.doCondReadMem bak memImpl addrWidth memRep (LCS.regValue cond) ptr1 (LCS.regValue condFalseValue)
           let st2 = updateReads readVal memRep (updateBoundsRefined resolveEffect st1)
           return (readVal,st2)
     DMS.MacawWriteMem addrWidth memRep ptr0 v -> DMM.addrWidthClass addrWidth $ do
       memImpl <- DMSMO.getMem st mvar
-      ptr1 <- DMSMO.tryGlobPtr bak memImpl globs (LCS.regValue ptr0)
-      (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
       let w = DMM.memWidthNatRepr
       memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
                         toInteger $ DMC.memReprBytes memRep
-      st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr2 st
+      (ptr1, st1) <- resolveAndPopulate bak memImpl initialMem memReprBytesBV ptr0 st
       let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerWrite
       mGlobalPtrValid <- toMemPred sym puse Nothing ptr0
       case mGlobalPtrValid of
         Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
         Nothing -> return ()
-      mem1 <- DMSMO.doWriteMem bak memImpl addrWidth memRep ptr2 (LCS.regValue v)
-      let st2 = updateBoundsRefined resolveEffect st1
-      pure ((), DMSMO.setMem st2 mvar mem1)
+      mem1 <- DMSMO.doWriteMem bak memImpl addrWidth memRep ptr1 (LCS.regValue v)
+      pure ((), DMSMO.setMem st1 mvar mem1)
     DMS.MacawCondWriteMem addrWidth memRep cond ptr0 v -> DMM.addrWidthClass addrWidth $ do
       memImpl <- DMSMO.getMem st mvar
-      ptr1 <- DMSMO.tryGlobPtr bak memImpl globs (LCS.regValue ptr0)
-      (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
       let w = DMM.memWidthNatRepr
       memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
                         toInteger $ DMC.memReprBytes memRep
-      st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr2 st
+      (ptr1, st1) <- resolveAndPopulate bak memImpl initialMem memReprBytesBV ptr0 st
       let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerWrite
       mGlobalPtrValid <- toMemPred sym puse (Just cond) ptr0
       case mGlobalPtrValid of
         Just globalPtrValid -> LCB.addAssertion bak globalPtrValid
         Nothing -> return ()
-      mem1 <- DMSMO.doCondWriteMem bak memImpl addrWidth memRep (LCS.regValue cond) ptr2 (LCS.regValue v)
-      let st2 = updateBoundsRefined resolveEffect st1
-      pure ((), DMSMO.setMem st2 mvar mem1)
+      mem1 <- DMSMO.doCondWriteMem bak memImpl addrWidth memRep (LCS.regValue cond) ptr1 (LCS.regValue v)
+      pure ((), DMSMO.setMem st1 mvar mem1)
     _ ->
       let lookupFnH = fromMaybe lookupH ( st
                                        ^. LCS.stateContext

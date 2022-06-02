@@ -171,6 +171,9 @@ sprintf.exe: sprintf.c ambient_assert.o
 strstr/strstr.exe: strstr/strstr.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
 
+memcpy.exe: memcpy.c ambient_assert.o
+	$(MUSL_CC) -static -nostartfiles -no-pie $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

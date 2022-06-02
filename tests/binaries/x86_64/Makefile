@@ -183,6 +183,9 @@ shm-fwd-dec.exe: shm-fwd-dec.c ambient_assert.o
 lazy-string-load.exe: lazy-string-load.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 
+memcpy.exe: memcpy.c ambient_assert.o
+	$(MUSL_CC) -static -nostartfiles -no-pie $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

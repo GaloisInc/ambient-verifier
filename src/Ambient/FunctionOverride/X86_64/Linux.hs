@@ -123,8 +123,8 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs 
   let ?ptrWidth = PN.knownNat @64 in
   let bumpEndVar = AM.imHeapEndGlob initialMem in
   let memVar = AM.imMemVar initialMem in
-  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride memVar)
-                     , AF.SomeFunctionOverride (AFO.buildMemsetOverride memVar)
+  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildMemcpyOverride initialMem)
+                     , AF.SomeFunctionOverride (AFO.buildMemsetOverride initialMem)
                      , AF.SomeFunctionOverride (AFO.buildShmgetOverride memVar)
                      , AF.SomeFunctionOverride AFO.shmatOverride
                      , AF.SomeFunctionOverride (AFO.buildSprintfOverride initialMem unsupportedRelocs)

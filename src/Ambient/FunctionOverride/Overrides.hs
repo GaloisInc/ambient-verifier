@@ -36,6 +36,7 @@ module Ambient.FunctionOverride.Overrides
 import           Control.Lens ( (.=), (+=), use )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( liftIO )
+import qualified Control.Monad.State as CMS
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.Parameterized.Context as Ctx
 
@@ -55,6 +56,7 @@ import qualified Ambient.Extensions as AExt
 import           Ambient.FunctionOverride
 import           Ambient.FunctionOverride.Overrides.Networking
 import           Ambient.FunctionOverride.Overrides.Printf
+import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.SharedMemory as AMS
 import           Ambient.Override
 import qualified Ambient.Verifier.Concretize as AVC
@@ -94,6 +96,15 @@ callCalloc bak mvar (LCS.regValue -> num) (LCS.regValue -> sz) =
      szBV  <- LCLM.projectLLVM_bv bak sz
      LCLM.doCalloc bak mem szBV numBV LCLD.noAlignment
 
+-- | Given a function that modifies state, this function wraps the call in
+-- @get@ and @put@ operations to update the state in the state monad.
+modifyM :: (CMS.MonadState s m) => (s -> m (a, s)) -> m a
+modifyM fn = do
+  s <- CMS.get
+  (a, s') <- fn s
+  CMS.put s'
+  return a
+
 buildMallocOverride :: ( ?memOpts :: LCLM.MemOptions
                        , LCLM.HasLLVMAnn sym
                        , LCLM.HasPtrWidth w
@@ -124,68 +135,96 @@ callMalloc bak mvar (LCS.regValue -> sz) =
 
 buildMemcpyOverride :: ( LCLM.HasPtrWidth w
                        , LCLM.HasLLVMAnn sym
+                       , DMC.MemWidth w
+                       , p ~ AExt.AmbientSimulatorState sym arch
+                       , w ~ DMC.ArchAddrWidth arch
                        )
-                    => LCS.GlobalVar LCLM.Mem
+                    => AM.InitialMemory sym w
                     -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w) ext
                                               LCT.UnitType
-buildMemcpyOverride mvar =
+buildMemcpyOverride initialMem =
   WI.withKnownNat ?ptrWidth $
   mkFunctionOverride "memcpy" $ \bak args ->
-    Ctx.uncurryAssignment (callMemcpy bak mvar) args
+    Ctx.uncurryAssignment (callMemcpy bak initialMem) args
 
 -- | Override for the @memcpy@ function. This behaves identically to the
 -- corresponding override in @crucible-llvm@.
 callMemcpy :: ( LCB.IsSymBackend sym bak
               , LCLM.HasPtrWidth w
               , LCLM.HasLLVMAnn sym
+              , DMC.MemWidth w
+              , p ~ AExt.AmbientSimulatorState sym arch
+              , sym ~ WE.ExprBuilder scope st fs
+              , bak ~ LCBO.OnlineBackend solver scope st fs
+              , w ~ DMC.ArchAddrWidth arch
+              , WPO.OnlineSolver solver
               )
            => bak
-           -> LCS.GlobalVar LCLM.Mem
+           -> AM.InitialMemory sym w
+           -- ^ Initial memory state for symbolic execution
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.OverrideSim p sym ext r args ret ()
-callMemcpy bak mvar (LCS.regValue -> dest) (LCS.regValue -> src) (LCS.regValue -> sz) =
-  LCS.modifyGlobal mvar $ \mem -> liftIO $
-  do szBV <- LCLM.projectLLVM_bv bak sz
+callMemcpy bak initialMem dest src (LCS.regValue -> sz) =
+  LCS.modifyGlobal (AM.imMemVar initialMem) $ \mem0 ->
+  do szBV <- liftIO $ LCLM.projectLLVM_bv bak sz
      let ?memOpts = overrideMemOptions
-     mem' <- LCLM.doMemcpy bak (LCLM.ptrWidth sz) mem True dest src szBV
-     pure ((), mem')
+     src' <- modifyM (liftIO . AExt.resolveAndPopulate bak mem0 initialMem szBV src)
+     dest' <- modifyM (liftIO . AExt.resolveAndPopulate bak mem0 initialMem szBV dest)
+     mem1 <- LCS.readGlobal (AM.imMemVar initialMem)
+     mem2 <- liftIO $ LCLM.doMemcpy bak (LCLM.ptrWidth sz) mem1 True dest' src' szBV
+     pure ((), mem2)
 
 buildMemsetOverride :: ( LCLM.HasPtrWidth w
                        , LCLM.HasLLVMAnn sym
+                       , p ~ AExt.AmbientSimulatorState sym arch
+                       , w ~ DMC.ArchAddrWidth arch
+                       , DMC.MemWidth w
                        )
-                    => LCS.GlobalVar LCLM.Mem
+                    => AM.InitialMemory sym w
+                    -- ^ Initial memory state for symbolic execution
                     -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w) ext
                                               LCT.UnitType
-buildMemsetOverride mvar =
+buildMemsetOverride initialMem =
   WI.withKnownNat ?ptrWidth $
   mkFunctionOverride "memset" $ \bak args ->
-    Ctx.uncurryAssignment (callMemset bak mvar) args
+    Ctx.uncurryAssignment (callMemset bak initialMem) args
 
 -- | Override for the @memset@ function. This behaves identically to the
 -- corresponding override in @crucible-llvm@.
 callMemset :: ( LCB.IsSymBackend sym bak
               , LCLM.HasPtrWidth w
               , LCLM.HasLLVMAnn sym
+              , sym ~ WE.ExprBuilder scope st fs
+              , p ~ AExt.AmbientSimulatorState sym arch
+              , bak ~ LCBO.OnlineBackend solver scope st fs
+              , w ~ DMC.ArchAddrWidth arch
+              , WPO.OnlineSolver solver
+              , DMC.MemWidth w
               )
            => bak
-           -> LCS.GlobalVar LCLM.Mem
+           -> AM.InitialMemory sym w
+           -- ^ Initial memory state for symbolic execution
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
            -> LCS.OverrideSim p sym ext r args ret ()
-callMemset bak mvar (LCS.regValue -> dest) val (LCS.regValue -> sz) =
-  LCS.modifyGlobal mvar $ \mem -> liftIO $
+callMemset bak initialMem dest val (LCS.regValue -> sz) =
+  let mvar = AM.imMemVar initialMem in
+  LCS.modifyGlobal mvar $ \mem0 ->
   do let w = LCLM.ptrWidth sz
-     valBV <- ptrToBv8 bak w val
-     szBV <- LCLM.projectLLVM_bv bak sz
-     mem' <- LCLM.doMemset bak w mem dest (LCS.regValue valBV) szBV
-     pure ((), mem')
+     valBV <- liftIO $ ptrToBv8 bak w val
+     szBV <- liftIO $ LCLM.projectLLVM_bv bak sz
+     dest' <-
+        modifyM (liftIO . AExt.resolveAndPopulate bak mem0 initialMem szBV dest)
+     mem1 <- LCS.readGlobal mvar
+     mem2 <- liftIO $ LCLM.doMemset bak w mem1 dest' (LCS.regValue valBV) szBV
+     pure ((), mem2)
 
 -- | Override for the @shmat@ function.  This override only supports calls
 -- where @shmaddr@ is @NULL@.  That is, it doesn't support calls where the
