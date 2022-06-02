@@ -11,16 +11,16 @@ See the requirements and design documents in the ``doc`` directory for more deta
 Building
 ========
 
-The verifier is built with the GHC Haskell compiler (versions 8.8 and 8.10). To get the compiler, use your distribution packages or the `ghcup tool <https://www.haskell.org/ghcup/>`_::
+The verifier is built with the GHC Haskell compiler (versions 8.10, 9.0, and 9.2). To get the compiler, use your distribution packages or the `ghcup tool <https://www.haskell.org/ghcup/>`_::
 
-  ghcup install ghc 8.10.5
-  ghcup install cabal 3.4.0.0
+  ghcup install ghc 8.10.7
+  ghcup install cabal 3.6.2.0
 
 To build the verifier, first clone this repository and then::
 
   cd verifier
   ln -s cabal.project.dist cabal.project
-  cabal configure -w ghc-8.10.5 pkg:ambient-verifier
+  cabal configure -w ghc-8.10.7 pkg:ambient-verifier
   cabal build pkg:ambient-verifier
 
 Running

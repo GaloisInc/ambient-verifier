@@ -35,7 +35,7 @@ ambient-verifier:
     - export LC_ALL=en_US.UTF-8
     - mkdir -p $HOME/.ghcup/bin
     - export PATH=$PWD/bin:$HOME/.ghcup/bin:$PATH
-    - wget https://downloads.haskell.org/~ghcup/0.1.17.3/x86_64-linux-ghcup-0.1.17.3 -O $HOME/.ghcup/bin/ghcup
+    - wget https://downloads.haskell.org/~ghcup/0.1.17.8/x86_64-linux-ghcup-0.1.17.8 -O $HOME/.ghcup/bin/ghcup
     - chmod +x $HOME/.ghcup/bin/ghcup
     - ghcup install cabal
     - git config --global url."https://github.com/".insteadOf "git@github.com:"
@@ -60,7 +60,7 @@ ambient-verifier:
     - mv /root/.cabal .cabal || true
   parallel:
     matrix:
-      - GHCVER: [8.8.4, 8.10.7, 9.0.2]
+      - GHCVER: [8.10.7, 9.0.2, 9.2.3]
         CABALVER: [1]
 
 # A job dedicated to building the Docker image and pushing it to Artifactory.
