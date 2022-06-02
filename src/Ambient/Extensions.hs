@@ -153,7 +153,10 @@ readMem bak memImpl initialMem unsupportedRelocs st addrWidth memRep ptr0 =
         let st' = incrementSimStat lensNumReads st
         pure (readVal, st')
       Nothing -> do
-        st1 <- lazilyPopulateGlobalMemArr bak mpt ptr2 st
+        let w = DMM.memWidthNatRepr
+        memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
+                          toInteger $ DMC.memReprBytes memRep
+        st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr2 st
         let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerRead
         mGlobalPtrValid <- (AM.imValidityCheck initialMem) sym puse Nothing ptr0
         case mGlobalPtrValid of
@@ -273,7 +276,10 @@ execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedReloc
           let st' = incrementSimStat lensNumReads st
           pure (readVal', st')
         Nothing -> do
-          st1 <- lazilyPopulateGlobalMemArr bak mpt ptr2 st
+          let w = DMM.memWidthNatRepr
+          memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
+                            toInteger $ DMC.memReprBytes memRep
+          st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr2 st
           let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerRead
           mGlobalPtrValid <- toMemPred sym puse (Just cond) ptr0
           case mGlobalPtrValid of
@@ -286,7 +292,10 @@ execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedReloc
       memImpl <- DMSMO.getMem st mvar
       ptr1 <- DMSMO.tryGlobPtr bak memImpl globs (LCS.regValue ptr0)
       (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
-      st1 <- lazilyPopulateGlobalMemArr bak mpt ptr2 st
+      let w = DMM.memWidthNatRepr
+      memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
+                        toInteger $ DMC.memReprBytes memRep
+      st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr2 st
       let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerWrite
       mGlobalPtrValid <- toMemPred sym puse Nothing ptr0
       case mGlobalPtrValid of
@@ -299,7 +308,10 @@ execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedReloc
       memImpl <- DMSMO.getMem st mvar
       ptr1 <- DMSMO.tryGlobPtr bak memImpl globs (LCS.regValue ptr0)
       (ptr2, resolveEffect) <- AVC.resolveSingletonPointer bak ptr1
-      st1 <- lazilyPopulateGlobalMemArr bak mpt ptr2 st
+      let w = DMM.memWidthNatRepr
+      memReprBytesBV <- WI.bvLit sym w $ BV.mkBV w $
+                        toInteger $ DMC.memReprBytes memRep
+      st1 <- lazilyPopulateGlobalMemArr bak mpt memReprBytesBV ptr2 st
       let puse = DMS.PointerUse (st1 ^. LCSE.stateLocation) DMS.PointerWrite
       mGlobalPtrValid <- toMemPred sym puse (Just cond) ptr0
       case mGlobalPtrValid of
@@ -393,7 +405,8 @@ concreteImmutableGlobalRead memRep ptr mpt
   , let addr = fromInteger $ BV.asUnsigned addrBV
   , Just (addrBaseInterval, smc) <-
       combineChunksIfContiguous $ IM.toAscList $
-      AEM.memPtrTable mpt `IM.containing` addr
+      AEM.memPtrTable mpt `IM.intersecting`
+        IMI.ClosedInterval addr (addr + fromIntegral numBytes)
 
     -- Next, check that the memory is immutable.
   , AEM.smcMutability smc == LCLM.Immutable
@@ -488,12 +501,14 @@ lazilyPopulateGlobalMemArr ::
   bak ->
   AEM.MemPtrTable sym w ->
   -- ^ The global memory
+  WI.SymBV sym w ->
+  -- ^ The amount of memory to read
   LCLM.LLVMPtr sym w ->
   -- ^ The pointer being read from
   LCS.SimState p sym ext rtp f args ->
   -- ^ State to update if this is a global read
   IO (LCS.SimState p sym ext rtp f args)
-lazilyPopulateGlobalMemArr bak mpt ptr state
+lazilyPopulateGlobalMemArr bak mpt readSizeBV ptr state
   | -- We only wish to populate the array backing global memory if we know for
     -- sure that we are reading from the global pointer. If we're reading from a
     -- different pointer, there's no need to bother populating the array.
@@ -509,9 +524,22 @@ lazilyPopulateGlobalMemArr bak mpt ptr state
   | otherwise
   = pure state
   where
+    sym = LCB.backendGetSym bak
+
     -- The regions of global memory that would need to be accessed as a result
-    -- of reading from the pointer
-    tbl = IM.toAscList $ AEM.memPtrTable mpt `IM.intersecting` ptrOffsetInterval ptr
+    -- of reading from the pointer.  We build an interval [ptr, ptr+read_size]
+    -- and load all of the chunks in global memory that overlap with the
+    -- interval.
+    tbl = IM.toAscList $ AEM.memPtrTable mpt `IM.intersecting`
+                           (ptrInterval `extendUpperBound` maxReadSize)
+
+    -- ptrInterval is an interval representing the possible values that ptr
+    -- could be, and maxReadSize is the largest possible value that readSizeBV
+    -- could be.  From these we can build an interval (ptrInterval
+    -- `extendUpperBound` maxReadSize) that contains all possible global memory
+    -- addresses that the read could encompass.
+    ptrInterval = symBVInterval sym (LCLMP.llvmPointerOffset ptr)
+    maxReadSize = IMI.upperBound (symBVInterval sym readSizeBV)
 
     chunksL :: Lens' (LCS.SimState p sym ext rtp f args)
                      (IS.IntervalSet (IMI.Interval (DMM.MemWord w)))
@@ -614,6 +642,15 @@ combineIfContiguous i1 i2 =
     (IMI.OpenInterval{}, IMI.OpenInterval{})
       -> Nothing
 
+-- | Extend the upper bound of an 'IMI.Interval' by the given amount.
+extendUpperBound :: Num a => IMI.Interval a -> a -> IMI.Interval a
+extendUpperBound i extendBy =
+  case i of
+    IMI.IntervalCO     lo hi -> IMI.IntervalCO     lo (hi + extendBy)
+    IMI.IntervalOC     lo hi -> IMI.IntervalOC     lo (hi + extendBy)
+    IMI.OpenInterval   lo hi -> IMI.OpenInterval   lo (hi + extendBy)
+    IMI.ClosedInterval lo hi -> IMI.ClosedInterval lo (hi + extendBy)
+
 -- | Initialize the memory backing global memory by assuming that the elements
 -- of the array are equal to the appropriate bytes.
 -- See @Note [Lazy memory initialization]@ in "Ambient.Extensions.Memory".
@@ -646,15 +683,16 @@ assumeMemArr bak symArray absAddr bytes = do
     w = DMM.memWidthNatRepr @w
 
 -- | Return an 'IMI.Interval' representing the possible range of addresses that
--- an 'LCLM.LLVMPtr' offset can lie between. If this is a concrete pointer, the
--- interval will consist of a single point, but if this is a symbolic pointer,
--- then ihe range can span multiple addresses.
-ptrOffsetInterval ::
+-- a 'WI.SymBV' can lie between. If this is a concrete bitvector, the interval
+-- will consist of a single point, but if this is a symbolic bitvector, then
+-- the range can span multiple addresses.
+symBVInterval ::
   (WI.IsExprBuilder sym, DMM.MemWidth w) =>
-  LCLM.LLVMPtr sym w ->
+  sym ->
+  WI.SymBV sym w ->
   IMI.Interval (DMM.MemWord w)
-ptrOffsetInterval ptr =
-  case WI.unsignedBVBounds (LCLMP.llvmPointerOffset ptr) of
+symBVInterval _ bv =
+  case WI.unsignedBVBounds bv of
     Just (lo, hi) -> IMI.ClosedInterval (fromInteger lo) (fromInteger hi)
     Nothing       -> IMI.ClosedInterval minBound maxBound
 
