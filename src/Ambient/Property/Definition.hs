@@ -323,12 +323,10 @@ validateProperty p = do
 
   let stateNameIDs = Map.fromList (zip stateNamesList (map StateID [0..]))
   let assignStateID s0 = State { stateName = stateName s0
-                               , stateId =
-                                 let Just sid = Map.lookup (stateName s0) stateNameIDs
-                                 in sid
+                               , stateId = lookupNameID stateNameIDs (stateName s0)
                                , transitions = [ (t, sid)
                                                | (t, tname) <- transitions s0
-                                               , let Just sid = Map.lookup tname stateNameIDs
+                                               , let sid = lookupNameID stateNameIDs tname
                                                ]
                                , stateType = fixupStateTypeIdent stateNameIDs (stateType s0)
                                , stateDescription = stateDescription s0
@@ -348,14 +346,15 @@ validateProperty p = do
                         }
       return p'
   where
-    lookupNameID m name = Map.lookup name m
+    lookupNameID m name = fromMaybe (panic name) (Map.lookup name m)
     fixupStateTypeIdent m st0 =
       case st0 of
         NormalState -> NormalState
         FinalState -> FinalState
         SemiFinalState names ->
-          let panic = AP.panic AP.PropertyParser "fixupStateTypeIdent" ["No identifier for component: " ++ show names]
-          in SemiFinalState (map (fromMaybe panic . lookupNameID m) names)
+          SemiFinalState (map (lookupNameID m) names)
+
+    panic name = AP.panic AP.PropertyParser "fixupStateTypeIdent" ["No identifier for component: " ++ show name]
 
 -- | Parse a YAML value into a property (or return an error)
 --
