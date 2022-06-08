@@ -4,6 +4,9 @@
 {-# LANGUAGE TypeOperators #-}
 
 -- | Defines syscall overrides that are shared across different architectures.
+--
+-- If you add a new override here, consider adding a corresponding function
+-- override in "Ambient.FunctionOverrides.Overrides.SyscallWrappers".
 module Ambient.Syscall.Overrides
   ( buildExecveOverride
   , callExecve

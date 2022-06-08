@@ -30,6 +30,8 @@ module Ambient.FunctionOverride.Overrides
   , module Ambient.FunctionOverride.Overrides.Networking
     -- * Crucible string–related overrides
   , module Ambient.FunctionOverride.Overrides.CrucibleStrings
+    -- * Functions wrapping system calls
+  , module Ambient.FunctionOverride.Overrides.SyscallWrappers
   ) where
 
 import           Control.Lens ( (.=), (+=), use )
@@ -58,6 +60,7 @@ import           Ambient.FunctionOverride
 import           Ambient.FunctionOverride.Overrides.CrucibleStrings
 import           Ambient.FunctionOverride.Overrides.Networking
 import           Ambient.FunctionOverride.Overrides.Printf
+import           Ambient.FunctionOverride.Overrides.SyscallWrappers
 import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.SharedMemory as AMS
 import           Ambient.Override
@@ -90,7 +93,9 @@ allOverrides fs initialMem unsupportedRelocs =
   -- Memory
   memOverrides initialMem ++
   -- Networking
-  networkOverrides fs initialMem unsupportedRelocs
+  networkOverrides fs initialMem unsupportedRelocs ++
+  -- Syscall wrappers
+  syscallWrapperOverrides fs initialMem unsupportedRelocs
 
 -- | All of the memory-related overrides, packaged up for your convenience.
 memOverrides ::

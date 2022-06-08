@@ -7,6 +7,7 @@
 module Ambient.FunctionOverride (
     FunctionOverride(..)
   , mkFunctionOverride
+  , syscallToFunctionOverride
   , SomeFunctionOverride(..)
   , FunctionOverrideHandle
   , FunctionAddrLoc(..)
@@ -33,6 +34,7 @@ import qualified What4.FunctionName as WF
 import qualified What4.Protocol.Online as WPO
 
 import qualified Ambient.Memory as AM
+import qualified Ambient.Syscall as AS
 
 -------------------------------------------------------------------------------
 -- Function Call Overrides
@@ -123,6 +125,21 @@ mkFunctionOverride name ov = FunctionOverride
   , functionAuxiliaryFnBindings = []
   , functionForwardDeclarations = Map.empty
   , functionOverride = ov
+  }
+
+-- | Convert a 'AS.Syscall' override to a 'FunctionOverride' with the same
+-- semantics.
+syscallToFunctionOverride ::
+  AS.Syscall p sym args ext ret ->
+  FunctionOverride p sym args ext ret
+syscallToFunctionOverride syscallOv = FunctionOverride
+  { functionName = AS.syscallName syscallOv
+  , functionGlobals = []
+  , functionArgTypes = AS.syscallArgTypes syscallOv
+  , functionReturnType = AS.syscallReturnType syscallOv
+  , functionAuxiliaryFnBindings = []
+  , functionForwardDeclarations = Map.empty
+  , functionOverride = AS.syscallOverride syscallOv
   }
 
 data SomeFunctionOverride p sym ext =

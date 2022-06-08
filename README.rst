@@ -274,17 +274,26 @@ overrides:
 * ``accept :: Int -> Pointer -> Pointer -> Int``
 * ``bind :: Int -> Pointer -> SizeT -> Int``
 * ``calloc :: SizeT -> SizeT -> Pointer``
+* ``close :: Int -> Int``
 * ``connect :: Int -> Pointer -> SizeT -> Int``
+* ``execve :: Pointer -> Pointer -> Pointer -> Int``
+* ``exit :: Int -> Void``
+* ``getppid :: PidT``
 * ``listen :: Int -> Int -> Int``
 * ``recv :: Int -> Pointer -> SizeT -> Int -> SizeT``
 * ``malloc :: SizeT -> Pointer``
 * ``memcpy :: Pointer -> Pointer -> SizeT -> Pointer``
 * ``memset :: Pointer -> Int -> SizeT -> Pointer``
+* ``mkdir :: Pointer -> SizeT -> Int``
+* ``open :: Pointer -> Int -> SizeT -> Int``
+* ``read :: Int -> Pointer -> SizeT -> SizeT``
 * ``send :: Int -> Pointer -> SizeT -> Int -> SizeT``
 * ``shmat :: Int -> Pointer -> Int -> Pointer``
 * ``shmget :: SizeT -> SizeT -> Int -> Int``
 * ``socket :: Int -> Int -> Int -> Int``
 * ``sprintf :: Pointer -> Pointer -> ... -> Int``
+* ``read :: Int -> Pointer -> SizeT -> SizeT``
+* ``write :: Int -> Pointer -> SizeT -> SizeT``
 
 The following overrides can only be invoked from syntax overrides:
 

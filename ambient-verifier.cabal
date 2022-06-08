@@ -63,6 +63,7 @@ library
                       Ambient.FunctionOverride.Overrides.Networking.Types,
                       Ambient.FunctionOverride.Overrides.Printf,
                       Ambient.FunctionOverride.Overrides.SymIO,
+                      Ambient.FunctionOverride.Overrides.SyscallWrappers,
                       Ambient.FunctionOverride.AArch32.Linux,
                       Ambient.FunctionOverride.X86_64.Linux,
                       Ambient.Lift,
