@@ -33,7 +33,6 @@ import qualified Lang.Crucible.Types as LCT
 import qualified What4.Interface as WI
 
 import qualified Ambient.Extensions as AE
-import qualified Ambient.Memory as AM
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.FunctionOverride as AF
@@ -121,25 +120,14 @@ x86_64LinuxFunctionABI :: (?memOpts :: LCLM.MemOptions)
 x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs addrOvs namedOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @64 in
-  let memVar = AM.imMemVar initialMem in
-  let memOverrides = [ AF.SomeFunctionOverride (AFO.buildCallocOverride memVar)
-                     , AF.SomeFunctionOverride (AFO.buildMallocOverride memVar)
-                     , AF.SomeFunctionOverride (AFO.buildMemcpyOverride initialMem)
-                     , AF.SomeFunctionOverride (AFO.buildMemsetOverride initialMem)
-                     , AF.SomeFunctionOverride (AFO.buildShmgetOverride memVar)
-                     , AF.SomeFunctionOverride AFO.shmatOverride
-                     , AF.SomeFunctionOverride (AFO.buildSprintfOverride initialMem unsupportedRelocs)
-                     ] in
-  let networkOverrides = AFO.networkOverrides fs initialMem unsupportedRelocs in
-  let crucibleStringOverrides = AFO.crucibleStringOverrides initialMem unsupportedRelocs
+  let customNamedOvs = AFO.allOverrides fs initialMem unsupportedRelocs
   in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
                     , AF.functionMainArgumentRegisters = (DMXR.RDI, DMXR.RSI)
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
                     , AF.functionNameMapping =
                       Map.fromList [ (AF.functionName fo, sfo)
                                    | sfo@(AF.SomeFunctionOverride fo) <-
-                                       memOverrides ++ networkOverrides ++
-                                       crucibleStringOverrides ++ namedOvs
+                                       customNamedOvs ++ namedOvs
                                    ]
                     , AF.functionAddrMapping = addrOvs
                     }

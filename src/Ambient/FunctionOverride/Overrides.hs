@@ -9,8 +9,10 @@
 
 -- | Defines function overrides that are shared across different architectures.
 module Ambient.FunctionOverride.Overrides
-  ( -- * crucible-llvm–based overrides
-    buildMallocOverride
+  ( allOverrides
+    -- * Memory-related overrides
+  , memOverrides
+  , buildMallocOverride
   , callMalloc
   , buildCallocOverride
   , callCalloc
@@ -35,6 +37,7 @@ import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( liftIO )
 import qualified Control.Monad.State as CMS
 import qualified Data.BitVector.Sized as BVS
+import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 
 import qualified Data.Macaw.CFG as DMC
@@ -42,6 +45,7 @@ import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Expr as WE
@@ -60,8 +64,55 @@ import           Ambient.Override
 import qualified Ambient.Verifier.Concretize as AVC
 
 -------------------------------------------------------------------------------
--- crucible-llvm–based overrides
+-- Memory-related overrides
 -------------------------------------------------------------------------------
+
+-- | All of the overrides that work across all supported configurations.
+allOverrides ::
+  ( LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  , DMC.MemWidth w
+  , w ~ DMC.ArchAddrWidth arch
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  LCLS.LLVMFileSystem w ->
+  AM.InitialMemory sym w ->
+  -- ^ Initial memory state for symbolic execution
+  Map.Map (DMC.MemWord w) String ->
+  -- ^ Mapping from unsupported relocation addresses to the names of the
+  -- unsupported relocation types.
+  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
+allOverrides fs initialMem unsupportedRelocs =
+  -- Printf
+  [SomeFunctionOverride (buildSprintfOverride initialMem unsupportedRelocs)] ++
+  -- Crucible strings
+  crucibleStringOverrides initialMem unsupportedRelocs ++
+  -- Memory
+  memOverrides initialMem ++
+  -- Networking
+  networkOverrides fs initialMem unsupportedRelocs
+
+-- | All of the memory-related overrides, packaged up for your convenience.
+memOverrides ::
+  ( LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  , DMC.MemWidth w
+  , w ~ DMC.ArchAddrWidth arch
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  AM.InitialMemory sym w ->
+  -- ^ Initial memory state for symbolic execution
+  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
+memOverrides initialMem =
+  [ SomeFunctionOverride (buildCallocOverride memVar)
+  , SomeFunctionOverride (buildMallocOverride memVar)
+  , SomeFunctionOverride (buildMemcpyOverride initialMem)
+  , SomeFunctionOverride (buildMemsetOverride initialMem)
+  , SomeFunctionOverride (buildShmgetOverride memVar)
+  , SomeFunctionOverride shmatOverride
+  ]
+  where
+    memVar = AM.imMemVar initialMem
 
 buildCallocOverride :: ( LCLM.HasLLVMAnn sym
                        , ?memOpts :: LCLM.MemOptions
