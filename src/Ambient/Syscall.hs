@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE RankNTypes #-}
@@ -7,6 +8,7 @@
 
 module Ambient.Syscall (
     Syscall(..)
+  , mkSyscall
   , SomeSyscall(..)
   , SyscallNumRepr(..)
   , SyscallFnHandle(..)
@@ -63,6 +65,30 @@ data Syscall p sym args ext ret =
               -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))
           -- ^ Override capturing behavior of the syscall
           }
+
+-- | A smart constructor for 'Syscall' for the common case when the argument
+-- and result types are statically known.
+mkSyscall ::
+  ( LCT.KnownRepr LCT.CtxRepr args
+  , LCT.KnownRepr LCT.TypeRepr ret
+  ) =>
+  WF.FunctionName ->
+  (forall bak solver scope st fs
+     . ( LCB.IsSymBackend sym bak
+       , sym ~ WE.ExprBuilder scope st fs
+       , bak ~ LCBO.OnlineBackend solver scope st fs
+       , WPO.OnlineSolver solver
+       )
+    => bak
+    -> Ctx.Assignment (LCS.RegEntry sym) args
+    -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))) ->
+  Syscall p sym args ext ret
+mkSyscall name ov = Syscall
+  { syscallName = name
+  , syscallArgTypes = LCT.knownRepr
+  , syscallReturnType = LCT.knownRepr
+  , syscallOverride = ov
+  }
 
 data SomeSyscall p sym ext =
   forall args ret . SomeSyscall (Syscall p sym args ext ret)
@@ -167,7 +193,7 @@ data SyscallABI arch sym p =
       . ( LCB.IsSymInterface sym
         , LCLM.HasLLVMAnn sym )
      => Map.Map DT.Text (SomeSyscall p sym ext)
-  
+
     -- A mapping from syscall numbers to names
   , syscallCodeMapping
     :: IM.IntMap DT.Text

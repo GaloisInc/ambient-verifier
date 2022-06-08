@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -31,7 +32,6 @@ import           Control.Monad.IO.Class ( liftIO )
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
-import           Data.String ( fromString )
 
 import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
@@ -99,12 +99,9 @@ callExecve bak = do
 
 buildExecveOverride :: LCLM.HasPtrWidth w
                     => Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
-buildExecveOverride = Syscall {
-    syscallName = fromString "execve"
-  , syscallArgTypes = Ctx.empty
-  , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , syscallOverride = \bak _args -> callExecve bak
-}
+buildExecveOverride =
+  WI.withKnownNat ?ptrWidth $
+  mkSyscall "execve" $ \bak _args -> callExecve bak
 
 -- | Override for the 'exit' system call.
 --
@@ -134,12 +131,10 @@ callExit bak reg = liftIO $
 exitOverride :: forall p sym ext w
               . LCLM.HasPtrWidth w
              => Syscall p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext (LCT.UnitType)
-exitOverride = Syscall {
-    syscallName = fromString "exit"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-  , syscallReturnType = LCT.UnitRepr
-  , syscallOverride = \bak args -> Ctx.uncurryAssignment (callExit bak) args
-  }
+exitOverride =
+  WI.withKnownNat ?ptrWidth $
+  mkSyscall "exit" $ \bak args ->
+    Ctx.uncurryAssignment (callExit bak) args
 
 -- | Override for the getppid(2) system call
 --
@@ -161,12 +156,9 @@ callGetppid bak = liftIO $ do
 
 getppidOverride :: LCLM.HasPtrWidth w
                 => Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
-getppidOverride = Syscall {
-    syscallName = fromString "getppid"
-  , syscallArgTypes = Ctx.empty
-  , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , syscallOverride = \bak _args -> callGetppid bak
-  }
+getppidOverride =
+  WI.withKnownNat ?ptrWidth $
+  mkSyscall "getppid" $ \bak _args -> callGetppid bak
 
 -- | Override for the read(2) system call
 --
@@ -213,15 +205,10 @@ buildReadOverride :: ( LCLM.HasLLVMAnn sym
                                            Ctx.::> LCLM.LLVMPointerType w)
                              ext
                              (LCLM.LLVMPointerType w)
-buildReadOverride fs memVar = Syscall {
-    syscallName = fromString "read"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-                                Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-                                Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-  , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , syscallOverride =
-      \bak args -> Ctx.uncurryAssignment (callRead fs memVar bak) args
-  }
+buildReadOverride fs memVar =
+  WI.withKnownNat ?ptrWidth $
+  mkSyscall "read" $ \bak args ->
+    Ctx.uncurryAssignment (callRead fs memVar bak) args
 
 
 -- | Override for the write(2) system call
@@ -266,15 +253,10 @@ buildWriteOverride :: ( LCLM.HasLLVMAnn sym
                                            Ctx.::> LCLM.LLVMPointerType w)
                              ext
                              (LCLM.LLVMPointerType w)
-buildWriteOverride fs memVar = Syscall {
-    syscallName = fromString "write"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-                                Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-                                Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-  , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , syscallOverride =
-      \bak args -> Ctx.uncurryAssignment (callWrite fs memVar bak) args
-  }
+buildWriteOverride fs memVar =
+  WI.withKnownNat ?ptrWidth $
+  mkSyscall "write" $ \bak args ->
+    Ctx.uncurryAssignment (callWrite fs memVar bak) args
 
 -- | A no-op override for the mkdir(2) system call.  This override ignores any
 -- arguments and always returns 0 for success.  It is intended to be used only
@@ -290,12 +272,9 @@ callNoOpMkdir bak = do
 
 buildNoOpMkdirOverride :: LCLM.HasPtrWidth w
                     => Syscall p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
-buildNoOpMkdirOverride = Syscall {
-    syscallName = fromString "mkdir"
-  , syscallArgTypes = Ctx.empty
-  , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , syscallOverride = \bak _args -> callNoOpMkdir bak
-}
+buildNoOpMkdirOverride =
+  WI.withKnownNat ?ptrWidth $
+  mkSyscall "mkdir" $ \bak _args -> callNoOpMkdir bak
 
 -- | Override for the open(2) system call
 callOpen :: ( LCLM.HasLLVMAnn sym
@@ -350,14 +329,10 @@ buildOpenOverride :: ( LCLM.HasLLVMAnn sym
                                           Ctx.::> LCLM.LLVMPointerType w)
                             ext
                             (LCLM.LLVMPointerType w)
-buildOpenOverride fs initialMem unsupportedRelocs = Syscall {
-    syscallName = fromString "open"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-                                Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-  , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , syscallOverride =
-      \bak args -> Ctx.uncurryAssignment (callOpen fs initialMem unsupportedRelocs bak) args
-  }
+buildOpenOverride fs initialMem unsupportedRelocs =
+  WI.withKnownNat ?ptrWidth $
+  mkSyscall "open" $ \bak args ->
+    Ctx.uncurryAssignment (callOpen fs initialMem unsupportedRelocs bak) args
 
 -- | Override for the write(2) system call
 callClose :: ( LCLM.HasLLVMAnn sym
@@ -392,13 +367,10 @@ buildCloseOverride :: ( LCLM.HasLLVMAnn sym
                              (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w)
                              ext
                              (LCLM.LLVMPointerType w)
-buildCloseOverride fs memVar = Syscall {
-    syscallName = fromString "close"
-  , syscallArgTypes = Ctx.empty Ctx.:> (LCLM.LLVMPointerRepr ?ptrWidth)
-  , syscallReturnType = LCLM.LLVMPointerRepr ?ptrWidth
-  , syscallOverride =
-      \bak args -> Ctx.uncurryAssignment (callClose fs memVar bak) args
-  }
+buildCloseOverride fs memVar =
+  WI.withKnownNat ?ptrWidth $
+  mkSyscall "close" $ \bak args ->
+    Ctx.uncurryAssignment (callClose fs memVar bak) args
 
 {- Note [Argument and Return Widths]
 
