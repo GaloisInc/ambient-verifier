@@ -8,7 +8,8 @@
 -- If you add a new override here, consider adding a corresponding function
 -- override in "Ambient.FunctionOverrides.Overrides.SyscallWrappers".
 module Ambient.Syscall.Overrides
-  ( buildExecveOverride
+  ( allOverrides
+  , buildExecveOverride
   , callExecve
   , buildNoOpMkdirOverride
   , exitOverride
@@ -23,6 +24,7 @@ module Ambient.Syscall.Overrides
   , callOpen
   , buildCloseOverride
   , callClose
+    -- * Networking-related overrides
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
@@ -49,6 +51,36 @@ import qualified Ambient.Extensions as AExt
 import           Ambient.FunctionOverride.Overrides.SymIO as AFOS
 import qualified Ambient.Memory as AM
 import           Ambient.Syscall
+
+-- | All of the syscall overrides that work across all supported configurations.
+allOverrides ::
+  ( LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  , DMC.MemWidth w
+  , w ~ DMC.ArchAddrWidth arch
+  ) =>
+  LCLS.LLVMFileSystem w ->
+  AM.InitialMemory sym w ->
+  -- ^ Initial memory state for symbolic execution
+  Map.Map (DMC.MemWord w) String ->
+  -- ^ Mapping from unsupported relocation addresses to the names of the
+  -- unsupported relocation types.
+  [SomeSyscall (AExt.AmbientSimulatorState sym arch) sym ext]
+allOverrides fs initialMem unsupportedRelocs =
+  [ SomeSyscall buildExecveOverride
+  , SomeSyscall exitOverride
+  , SomeSyscall getppidOverride
+  , SomeSyscall (buildReadOverride fs memVar)
+  , SomeSyscall (buildWriteOverride fs memVar)
+  , SomeSyscall (buildOpenOverride fs initialMem unsupportedRelocs)
+  , SomeSyscall (buildCloseOverride fs memVar)
+    -- FIXME: This no-op override is for tracking purposes
+    -- only.  It should be replaced with a more faithful
+    -- override at some point.
+  , SomeSyscall buildNoOpMkdirOverride
+  ]
+  where
+    memVar = AM.imMemVar initialMem
 
 -- | Override for the 'execve' system call.  Currently this override records
 -- that it was invoked through the 'hitExec' global, then aborts.

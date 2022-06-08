@@ -20,10 +20,10 @@ import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 
 import qualified Ambient.Extensions as AE
-import qualified Ambient.Memory as AM
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Syscall as AS
@@ -149,22 +149,13 @@ x86_64LinuxSyscallReturnRegisters ovTyp ovSim atps argRegs rtps
 x86_64LinuxSyscallABI :: AS.BuildSyscallABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
 x86_64LinuxSyscallABI = AS.BuildSyscallABI $ \fs initialMem unsupportedRelocs ->
   let ?ptrWidth = PN.knownNat @64 in
-  let memVar = AM.imMemVar initialMem in
   AS.SyscallABI { AS.syscallArgumentRegisters = x86_64LinuxSyscallArgumentRegisters
                 , AS.syscallNumberRegister = x86_64LinuxSyscallNumberRegister
                 , AS.syscallReturnRegisters = x86_64LinuxSyscallReturnRegisters
                 , AS.syscallOverrideMapping = Map.fromList
-                    [ ("read", AS.SomeSyscall (ASO.buildReadOverride fs memVar))
-                    , ("write", AS.SomeSyscall (ASO.buildWriteOverride fs memVar))
-                    , ("open", AS.SomeSyscall (ASO.buildOpenOverride fs initialMem unsupportedRelocs))
-                    , ("close", AS.SomeSyscall (ASO.buildCloseOverride fs memVar))
-                    , ("execve", AS.SomeSyscall ASO.buildExecveOverride)
-                    , ("exit", AS.SomeSyscall ASO.exitOverride)
-                    -- FIXME: This no-op override is for tracking purposes
-                    -- only.  It should be replaced with a more faithful
-                    -- override at some point.
-                    , ("mkdir", AS.SomeSyscall ASO.buildNoOpMkdirOverride)
-                    , ("getppid", AS.SomeSyscall ASO.getppidOverride)
+                    [ (WF.functionName (AS.syscallName s), ss)
+                    | ss@(AS.SomeSyscall s) <-
+                        ASO.allOverrides fs initialMem unsupportedRelocs
                     ]
                 , AS.syscallCodeMapping = SN.syscallMap
                 }
