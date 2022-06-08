@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -45,10 +46,6 @@ import qualified Ambient.Panic as AP
 -- later binary. As a result, the order of the binaries in the collection will
 -- determine the lookup scope, as described in @Note [Dynamic lookup scope]@ in
 -- "Ambient.Loader.ELF.DynamicLoader".
-
--- TODO: This check may be too strict in the presence of weak symbols. If this
--- is the case, we should establish a load order and respect weak symbols, only
--- throwing an exception if a symbol is /strongly/ defined more than once.
 elfDynamicFuncSymbolMap ::
   forall f arch w.
   ( Foldable f
@@ -68,7 +65,7 @@ elfDynamicFuncSymbolMap = elfDynamicSymbolMap
 -- under the 3-Clause BSD license.
 isGlobalSymbol :: DE.SymtabEntry nm w -> Bool
 isGlobalSymbol e
-  =  DE.steBind  e == DE.STB_GLOBAL
+  =  DE.steBind  e `elem` [DE.STB_GLOBAL, DE.STB_WEAK] -- See Note [Weak symbols]
   && DE.steIndex e /= DE.SHN_UNDEF
   && DE.steIndex e <  DE.SHN_LORESERVE
 
@@ -112,31 +109,68 @@ elfDynamicSymbolMap ::
   f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
   -- ^ Binaries to build symbol map from
   Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w)
-elfDynamicSymbolMap getSymbol filterFn = F.foldl' addSymbols Map.empty
+elfDynamicSymbolMap getSymbol filterFn =
+  fmap snd . F.foldl' addSymbols Map.empty
   where
     addSymbols ::
-      Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w) ->
+      Map.Map (ALV.VersionedSymbol symbol)
+              (DE.SymtabEntry (BSC.ByteString) (DE.ElfWordType w), DMM.MemWord w) ->
       DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
-      Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w)
+      Map.Map (ALV.VersionedSymbol symbol)
+              (DE.SymtabEntry (BSC.ByteString) (DE.ElfWordType w), DMM.MemWord w)
     addSymbols m loadedBinary =
-      -- We use a left-biased map union so that it will favor
-      -- already-encountered symbols over symbols that appear in later
-      -- binaries. This is what implements the lookup scope scheme described in
-      -- Note [Dynamic lookup scope] in Ambient.Loader.ELF.DynamicLoader.
-      Map.unionWith (\sym1 _sym2 -> sym1) m (Map.fromList binaryMap)
+      F.foldl' (\m' (versym, addr) ->
+                 addSymbolWithPriority (fmap getSymbol versym) (ALV.versymSymbol versym) addr m')
+               m dynSymsAndAddrs
       where
         elfHeaderInfo = DMB.originalBinary loadedBinary
         offset = fromMaybe 0 $ DMML.loadOffset $ DMB.loadOptions loadedBinary
 
         dynSymbolTable = concatMap DV.toList $ elfResolveDynamicSymbolVersions elfHeaderInfo
-        binaryMap = DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
-                    [ ( fmap getSymbol versym
-                      , fromIntegral (DE.steValue ste) + fromIntegral offset
-                      )
-                    | versym <- dynSymbolTable
-                    , let ste = ALV.versymSymbol versym
-                    , filterFn ste
-                    ]
+        dynSymsAndAddrs =
+          DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
+          [ ( versym
+            , fromIntegral (DE.steValue ste) + fromIntegral offset
+            )
+          | versym <- dynSymbolTable
+          , let ste = ALV.versymSymbol versym
+          , filterFn ste
+          ]
+
+-- | Add a new @symbol@ (which has been derived from a 'DE.SymtabEntry' in some
+-- way) and associated @v@ value to a 'Map.Map'. If the 'Map.Map' already
+-- contains that @symbol@, the conflict is resolved as follows:
+--
+-- 1. Global symbols are favored over weak symbols. See @Note [Weak symbols]@.
+--    (The only reason the 'Map.Map' includes a 'DE.SymtabEntry' in its range
+--    is because we need to consult its 'DE.steBind' during this step.)
+--
+-- 2. Otherwise, favor the already-encountered @symbol@ over the new @symbol@.
+--    This is what implements the lookup scope scheme described in
+--    @Note [Dynamic lookup scope]@ in "Ambient.Loader.ELF.DynamicLoader".
+addSymbolWithPriority ::
+  Ord symbol =>
+  symbol ->
+  DE.SymtabEntry nm w ->
+  v ->
+  Map.Map symbol (DE.SymtabEntry nm w, v) ->
+  Map.Map symbol (DE.SymtabEntry nm w, v)
+addSymbolWithPriority newSym newSt newVal =
+  Map.insertWith
+    (\new@(newSte, _) old@(oldSte, _) ->
+      if -- Step (1)
+         |  DE.steBind oldSte == DE.STB_GLOBAL
+         ,  DE.steBind newSte == DE.STB_WEAK
+         -> old
+
+         |  DE.steBind newSte == DE.STB_GLOBAL
+         ,  DE.steBind oldSte == DE.STB_WEAK
+         -> new
+
+         -- Step (2)
+         |  otherwise
+         -> old)
+    newSym (newSt, newVal)
 
 -- | Given a collection of binaries, map the name of each dynamic global
 -- variable to its address. (See 'isGlobalVar' for a precise definition of
@@ -168,6 +202,12 @@ elfEntryPointAddrMap ::
   Map.Map (DMM.MemSegmentOff w) ALV.VersionedFunctionName
 elfEntryPointAddrMap loadedBinary =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
+  -- The use of `Map.fromList` here is questionable, since it will favor later
+  -- addresses in the list over ones that appear earlier in the list. A
+  -- consequence of this is that each function address can only be associated
+  -- with a single name, even though it is quite possible for an address to
+  -- have multiple function names (e.g., @setuid@ and @__setuid@). See #142 for
+  -- an alternative design which would solve this issue.
   Map.fromList [ ( case DMBE.resolveAbsoluteAddress mem addr of
                      Just addrOff -> addrOff
                      Nothing -> AP.panic AP.Loader "elfEntryPointAddrMap"
@@ -191,8 +231,12 @@ elfEntryPointSymbolMap ::
   Map.Map WF.FunctionName (DMM.MemWord w)
 elfEntryPointSymbolMap loadedBinary =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
-  Map.fromList
-    [ ( symtabEntryFunctionName ste
+  fmap snd $
+  F.foldl'
+    (\m (ste, addr) ->
+      addSymbolWithPriority (symtabEntryFunctionName ste) ste addr m)
+    Map.empty
+    [ ( ste
       , fromIntegral (DE.steValue ste) + fromIntegral offset
       )
     | versym <- elfEntryPoints elfHeaderInfo
@@ -350,3 +394,23 @@ symtabEntryFunctionName =
 
 -- | A symbol table entry paired with a version.
 type VersionedSymtabEntry nm w = ALV.VersionedSymbol (DE.SymtabEntry nm w)
+
+{-
+Note [Weak symbols]
+~~~~~~~~~~~~~~~~~~~
+Weak symbols are like global symbols, except that a weak symbol is allowed to
+be overridden by a global symbol of the same name. Libraries like libc use weak
+symbols all over the place. For instance, libc might have a weak symbol named
+setuid and a global symbol named __setuid at the same function address. A PLT
+stub that jumps to setuid() will likely use the former symbol name, however,
+so it's important to make our ELF loader aware of them.
+
+Much of the time, if a weak symbol exists in a binary, then there is no
+corresponding global symbol of the same name. This is because the linker
+usually removes weak symbols of this sort, so by the time the verifier
+simulates the binary, any potential name conflicts between weak and global
+symbols have already been resolved. Still, it's difficult to state with
+confidence that such a scenario could never happen. Just in case it does,
+we manually resolve such naming conflicts (in `addSymbolWithPriority`) by
+favoring global symbols over weak symbols in case of a name conflict.
+-}
