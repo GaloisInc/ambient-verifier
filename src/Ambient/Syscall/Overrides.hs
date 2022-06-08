@@ -17,17 +17,18 @@ module Ambient.Syscall.Overrides
   , callExit
   , getppidOverride
   , callGetppid
-  , buildReadOverride
-  , callRead
-  , buildWriteOverride
-  , callWrite
-  , buildOpenOverride
-  , callOpen
-  , buildCloseOverride
-  , callClose
+  , buildShmgetOverride
+  , callShmget
+  , shmatOverride
+  , callShmat
     -- * Networking-related overrides
+  , module Ambient.Syscall.Overrides.Networking
+    -- * Symbolic IO–related overrides
+  , module Ambient.Syscall.Overrides.SymIO
   ) where
 
+import           Control.Lens ( (.=), (+=), use )
+import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( liftIO )
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.Map.Strict as Map
@@ -37,6 +38,7 @@ import qualified Data.Macaw.CFG as DMC
 import           Data.Macaw.X86.Symbolic ()
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
+import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
@@ -46,11 +48,15 @@ import qualified What4.Expr as WE
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
 
+import qualified Ambient.Exception as AE
 import           Ambient.Override
 import qualified Ambient.Extensions as AExt
-import           Ambient.FunctionOverride.Overrides.SymIO as AFOS
 import qualified Ambient.Memory as AM
+import qualified Ambient.Memory.SharedMemory as AMS
 import           Ambient.Syscall
+import           Ambient.Syscall.Overrides.Networking
+import           Ambient.Syscall.Overrides.SymIO
+import qualified Ambient.Verifier.Concretize as AVC
 
 -- | All of the syscall overrides that work across all supported configurations.
 allOverrides ::
@@ -70,15 +76,17 @@ allOverrides fs initialMem unsupportedRelocs =
   [ SomeSyscall buildExecveOverride
   , SomeSyscall exitOverride
   , SomeSyscall getppidOverride
-  , SomeSyscall (buildReadOverride fs memVar)
-  , SomeSyscall (buildWriteOverride fs memVar)
-  , SomeSyscall (buildOpenOverride fs initialMem unsupportedRelocs)
-  , SomeSyscall (buildCloseOverride fs memVar)
+  , SomeSyscall (buildShmgetOverride memVar)
+  , SomeSyscall shmatOverride
     -- FIXME: This no-op override is for tracking purposes
     -- only.  It should be replaced with a more faithful
     -- override at some point.
   , SomeSyscall buildNoOpMkdirOverride
-  ]
+  ] ++
+  -- -- Networking
+  networkOverrides fs initialMem unsupportedRelocs ++
+  -- Symbolic IO
+  symIOOverrides fs initialMem unsupportedRelocs
   where
     memVar = AM.imMemVar initialMem
 
@@ -160,104 +168,6 @@ getppidOverride =
   WI.withKnownNat ?ptrWidth $
   mkSyscall "getppid" $ \bak _args -> callGetppid bak
 
--- | Override for the read(2) system call
---
--- See Note [Argument and Return Widths] for a discussion on the type of the
--- argument and return values.
-callRead :: ( LCLM.HasLLVMAnn sym
-            , LCB.IsSymBackend sym bak
-            , LCLM.HasPtrWidth w
-            )
-         => LCLS.LLVMFileSystem w
-         -> LCS.GlobalVar LCLM.Mem
-         -> bak
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-         -- ^ File descriptor to read from
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-         -- ^ Pointer to buffer to read into
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-         -- ^ Maximum number of bytes to read
-         -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callRead fs memVar bak fd buf count = do
-  let sym = LCB.backendGetSym bak
-  -- Drop upper 32 bits from fd to create a 32 bit file descriptor
-  fdReg <- liftIO $ ptrToBv32 bak ?ptrWidth fd
-
-  -- Convert 'count' to a bitvector
-  countBv <- liftIO $ LCLM.projectLLVM_bv bak (LCS.regValue count)
-  let countReg = LCS.RegEntry (LCT.BVRepr ?ptrWidth) countBv
-
-  -- Use llvm override for read
-  resBv <- LCLS.callReadFileHandle bak memVar fs fdReg buf countReg
-
-  liftIO $ LCLM.llvmPointer_bv sym resBv
-
--- | Given a filesystem and a memvar, construct an override for read(2)
-buildReadOverride :: ( LCLM.HasLLVMAnn sym
-                     , LCLM.HasPtrWidth w
-                     )
-                  => LCLS.LLVMFileSystem w
-                  -> LCS.GlobalVar LCLM.Mem
-                  -> Syscall p
-                             sym
-                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                           Ctx.::> LCLM.LLVMPointerType w
-                                           Ctx.::> LCLM.LLVMPointerType w)
-                             ext
-                             (LCLM.LLVMPointerType w)
-buildReadOverride fs memVar =
-  WI.withKnownNat ?ptrWidth $
-  mkSyscall "read" $ \bak args ->
-    Ctx.uncurryAssignment (callRead fs memVar bak) args
-
-
--- | Override for the write(2) system call
-callWrite :: ( LCLM.HasLLVMAnn sym
-             , LCB.IsSymBackend sym bak
-             , LCLM.HasPtrWidth w
-             )
-          => LCLS.LLVMFileSystem w
-          -> LCS.GlobalVar LCLM.Mem
-          -> bak
-          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-          -- ^ File descriptor to write to
-          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-          -- ^ Pointer to buffer to read from
-          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-          -- ^ Number of bytes to write
-          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callWrite fs memVar bak fd buf count = do
-  let sym = LCB.backendGetSym bak
-  let ?memOpts = overrideMemOptions
-  -- Drop upper 32 bits from fd to create a 32 bit file descriptor
-  fdReg <- liftIO $ ptrToBv32 bak ?ptrWidth fd
-
-  -- Convert 'count' to a bitvector
-  countBv <- liftIO $ LCLM.projectLLVM_bv bak (LCS.regValue count)
-  let countReg = LCS.RegEntry (LCT.BVRepr ?ptrWidth) countBv
-
-  -- Use the llvm override for write
-  resBv <- LCLS.callWriteFileHandle bak memVar fs fdReg buf countReg
-
-  liftIO $ LCLM.llvmPointer_bv sym resBv
-
-buildWriteOverride :: ( LCLM.HasLLVMAnn sym
-                      , LCLM.HasPtrWidth w
-                      )
-                   => LCLS.LLVMFileSystem w
-                   -> LCS.GlobalVar LCLM.Mem
-                   -> Syscall p
-                             sym
-                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                           Ctx.::> LCLM.LLVMPointerType w
-                                           Ctx.::> LCLM.LLVMPointerType w)
-                             ext
-                             (LCLM.LLVMPointerType w)
-buildWriteOverride fs memVar =
-  WI.withKnownNat ?ptrWidth $
-  mkSyscall "write" $ \bak args ->
-    Ctx.uncurryAssignment (callWrite fs memVar bak) args
-
 -- | A no-op override for the mkdir(2) system call.  This override ignores any
 -- arguments and always returns 0 for success.  It is intended to be used only
 -- to track invocations of mkdir syscalls.
@@ -276,101 +186,163 @@ buildNoOpMkdirOverride =
   WI.withKnownNat ?ptrWidth $
   mkSyscall "mkdir" $ \bak _args -> callNoOpMkdir bak
 
--- | Override for the open(2) system call
-callOpen :: ( LCLM.HasLLVMAnn sym
-            , LCB.IsSymBackend sym bak
-            , LCLM.HasPtrWidth w
-            , sym ~ WE.ExprBuilder scope st fs
-            , bak ~ LCBO.OnlineBackend solver scope st fs
-            , p ~ AExt.AmbientSimulatorState sym arch
-            , DMC.MemWidth w
-            , w ~ DMC.ArchAddrWidth arch
-            , WPO.OnlineSolver solver
-            )
-         => LCLS.LLVMFileSystem w
-         -> AM.InitialMemory sym w
-         -- ^ Initial memory state for symbolic execution
-         -> Map.Map (DMC.MemWord w) String
-         -- ^ Mapping from unsupported relocation addresses to the names of the
-         -- unsupported relocation types.
-         -> bak
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-         -- ^ File path to open
-         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-         -- ^ Flags to use when opening file
-         -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callOpen fs initialMem unsupportedRelocs bak pathname flags = do
-  let sym = LCB.backendGetSym bak
-  let ?memOpts = overrideMemOptions
-  -- Drop upper 32 bits from flags to create a 32 bit flags int
-  flagsInt <- liftIO $ ptrToBv32 bak ?ptrWidth flags
-
-  -- Use llvm override for open
-  resBv <- AFOS.callOpenFile bak initialMem unsupportedRelocs fs pathname flagsInt
-
-  -- Pad result out to 64 bit pointer
-  liftIO $ bvToPtr sym resBv ?ptrWidth
-
-buildOpenOverride :: ( LCLM.HasLLVMAnn sym
-                     , LCLM.HasPtrWidth w
-                     , p ~ AExt.AmbientSimulatorState sym arch
-                     , DMC.MemWidth w
-                     , w ~ DMC.ArchAddrWidth arch
-                     )
-                  => LCLS.LLVMFileSystem w
-                  -> AM.InitialMemory sym w
-                  -- ^ Initial memory state for symbolic execution
-                  -> Map.Map (DMC.MemWord w) String
-                  -- ^ Mapping from unsupported relocation addresses to the names of the
-                  -- unsupported relocation types.
-                  -> Syscall p
-                            sym
-                            (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                          Ctx.::> LCLM.LLVMPointerType w)
-                            ext
-                            (LCLM.LLVMPointerType w)
-buildOpenOverride fs initialMem unsupportedRelocs =
-  WI.withKnownNat ?ptrWidth $
-  mkSyscall "open" $ \bak args ->
-    Ctx.uncurryAssignment (callOpen fs initialMem unsupportedRelocs bak) args
-
--- | Override for the write(2) system call
-callClose :: ( LCLM.HasLLVMAnn sym
-             , LCB.IsSymBackend sym bak
+-- | Override for the @shmat(2)@ syscall.  This override only supports calls
+-- where @shmaddr@ is @NULL@.  That is, it doesn't support calls where the
+-- caller specifies which address the shared memory segment should be mapped
+-- to.  This override also ignores the @shmflg@ argument and always maps the
+-- memory as read/write.
+callShmat :: forall sym scope st fs w solver arch m p ext r args ret
+           . ( sym ~ WE.ExprBuilder scope st fs
+             , LCB.IsSymInterface sym
              , LCLM.HasPtrWidth w
+             , LCLM.HasLLVMAnn sym
+             , WPO.OnlineSolver solver
+             , p ~ AExt.AmbientSimulatorState sym arch
+             , w ~ DMC.ArchAddrWidth arch
+             , m ~ LCS.OverrideSim p sym ext r args ret
              )
-          => LCLS.LLVMFileSystem w
-          -> LCS.GlobalVar LCLM.Mem
-          -> bak
+          => LCBO.OnlineBackend solver scope st fs
           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-          -- ^ File descriptor to close
-          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
-callClose fs memVar bak fd = do
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+          -> m (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callShmat bak shmid shmaddr _shmflg = do
   let sym = LCB.backendGetSym bak
+
+  -- Check that shmaddr is NULL.
+  nullCond <- liftIO $ LCLM.ptrIsNull sym ?ptrWidth (LCS.regValue shmaddr)
+  liftIO $ LCB.assert bak nullCond (LCS.AssertFailureSimError
+                                   "Call to shmat() with non-null shmaddr"
+                                   "")
+
+  -- Extract ID and lookup in shared memory state
+  (shmIdSymBv, resolveEffect) <- liftIO $
+        LCLM.projectLLVM_bv bak (LCS.regValue shmid)
+    >>= AVC.resolveSymBV bak ?ptrWidth
+  updateBoundsRefined resolveEffect
+  shmIdBv <- maybe (CMC.throwM AE.SymbolicSharedMemorySegmentId)
+                   pure
+                   (WI.asBV shmIdSymBv)
+
+  shmState <- use (LCS.stateContext . LCS.cruciblePersonality . AExt.sharedMemoryState)
+  let lookupId = BVS.asUnsigned shmIdBv
+  case AMS.sharedMemorySegmentAt lookupId shmState of
+    Nothing -> liftIO $ LCB.addFailedAssertion bak $
+       LCS.AssertFailureSimError ("Nonexistent shared memory ID: " ++ show lookupId)
+                                 ""
+    Just segment -> pure segment
+  where
+    -- Update the metric tracking the number of symbolic bitvector bounds
+    -- refined
+    updateBoundsRefined :: AVC.ResolveSymBVEffect -> m ()
+    updateBoundsRefined resolveEffect =
+      case resolveEffect of
+        AVC.Concretized -> pure ()
+        AVC.UnchangedBounds -> pure ()
+        AVC.RefinedBounds ->
+            LCS.stateContext
+          . LCS.cruciblePersonality
+          . AExt.simulationStats
+          . AExt.lensNumBoundsRefined += 1
+
+
+
+shmatOverride :: ( LCLM.HasLLVMAnn sym
+                 , LCLM.HasPtrWidth w
+                 , p ~ AExt.AmbientSimulatorState sym arch
+                 , w ~ DMC.ArchAddrWidth arch
+                 )
+              => Syscall p
+                         sym
+                         (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                       Ctx.::> LCLM.LLVMPointerType w
+                                       Ctx.::> LCLM.LLVMPointerType w)
+                         ext
+                         (LCLM.LLVMPointerType w)
+shmatOverride =
+  WI.withKnownNat ?ptrWidth $
+  mkSyscall "shmat" $ \bak args ->
+    Ctx.uncurryAssignment (callShmat bak) args
+
+-- | Override for the @shmget(2)@ syscall. It has the following caveats that may
+-- need to be addressed in the future for a more faithful override:
+--
+-- * @key@ must be @IPC_PRIVATE@.
+-- * @size@ is not rounded to a multiple of @PAGE_SIZE@ like it is in the real
+--   implementation.
+-- * @shmflag@ is ignored.  This is because:
+--   * @key == IPC_PRIVATE@ implies that a shared memory segment is being
+--     created regardless of whether the @IPC_CREAT@ flag is set.
+--   * @key == IPC_PRIVATE@ always satisfies @IPC_EXCL@.
+--   * @SHM_NORESERVE@ is irrelevant because we don't model swap space.
+--   * The remaining flags concern page sizes and rounding modes, but this
+--     override does not faithfully model the rounding behavior of @shmget@
+-- * The shared memory IDs that this function returns start at 1 and increment
+--   by 1 at each call.  This may differ from the real method of allocating
+--   shared memory IDs.
+callShmget :: ( LCB.IsSymBackend sym bak
+              , LCLM.HasPtrWidth w
+              , LCLM.HasLLVMAnn sym
+              , p ~ AExt.AmbientSimulatorState sym arch
+              , w ~ DMC.ArchAddrWidth arch
+              )
+           => LCS.GlobalVar LCLM.Mem
+           -> bak
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callShmget mvar bak key size _shmflag = do
   let ?memOpts = overrideMemOptions
-  -- Drop upper 32 bits from fd
-  fdInt <- liftIO $ ptrToBv32 bak ?ptrWidth fd
+  let sym = LCB.backendGetSym bak
 
-  -- Use llvm override for close
-  resBv <- LCLS.callCloseFile bak memVar fs fdInt
+  -- Extract and check that key is zero
+  keyBv <- liftIO $ LCLM.projectLLVM_bv bak (LCS.regValue key)
+  cond <- liftIO $ WI.bvEq sym keyBv =<< WI.bvLit sym ?ptrWidth (BVS.zero ?ptrWidth)
+  liftIO $ LCB.assert bak cond (LCS.AssertFailureSimError
+                                "Call to shmget() with non-zero key"
+                                "")
 
-  -- Pad result out to 64 bit pointer
-  liftIO $ bvToPtr sym resBv ?ptrWidth
+  -- Allocate shared memory segment
+  sizeBv <- liftIO $ LCLM.projectLLVM_bv bak (LCS.regValue size)
+  let displayString = "<shared memory segment>"
+  LCS.modifyGlobal mvar $ \mem -> do
+    (segment, mem') <- liftIO $ LCLM.doMalloc bak
+                                              LCLM.HeapAlloc
+                                              LCLM.Mutable
+                                              displayString
+                                              mem
+                                              sizeBv
+                                              LCLD.noAlignment
 
-buildCloseOverride :: ( LCLM.HasLLVMAnn sym
-                      , LCLM.HasPtrWidth w
-                      )
-                   => LCLS.LLVMFileSystem w
-                   -> LCS.GlobalVar LCLM.Mem
-                   -> Syscall p
+    -- Store segment in the shared memory state and get an ID
+    shmState <- use (LCS.stateContext . LCS.cruciblePersonality . AExt.sharedMemoryState)
+    let (shmId, shmState') =
+          AMS.newSharedMemorySegment segment shmState
+    LCS.stateContext . LCS.cruciblePersonality . AExt.sharedMemoryState .= shmState'
+
+    -- Convert ID to a BV
+    shmIdBv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.mkBV ?ptrWidth (AMS.asInteger shmId))
+    shmIdPtr <- liftIO $ LCLM.llvmPointer_bv sym shmIdBv
+    return (shmIdPtr, mem')
+
+buildShmgetOverride :: ( LCLM.HasLLVMAnn sym
+                       , LCLM.HasPtrWidth w
+                       , p ~ AExt.AmbientSimulatorState sym arch
+                       , w ~ DMC.ArchAddrWidth arch
+                       )
+                  => LCS.GlobalVar LCLM.Mem
+                  -> Syscall p
                              sym
-                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w)
+                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                           Ctx.::> LCLM.LLVMPointerType w
+                                           Ctx.::> LCLM.LLVMPointerType w)
                              ext
                              (LCLM.LLVMPointerType w)
-buildCloseOverride fs memVar =
+buildShmgetOverride memVar =
   WI.withKnownNat ?ptrWidth $
-  mkSyscall "close" $ \bak args ->
-    Ctx.uncurryAssignment (callClose fs memVar bak) args
+  mkSyscall "shmget" $ \bak args ->
+    Ctx.uncurryAssignment (callShmget memVar bak) args
 
 {- Note [Argument and Return Widths]
 

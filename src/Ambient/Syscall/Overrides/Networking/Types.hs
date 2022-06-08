@@ -5,7 +5,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Ambient.FunctionOverride.Overrides.Networking.Types
+module Ambient.Syscall.Overrides.Networking.Types
   ( -- * @ServerSocketInfo@ and friends
     ServerSocketInfo(..)
   , SocketDomain(..)
@@ -31,7 +31,7 @@ import           Data.Word ( Word16 )
 import qualified System.FilePath as FP
 
 -- See Note [The networking story] in
--- Ambient.FunctionOverride.Overrides.Networking for a high-level overview of
+-- Ambient.Syscall.Overrides.Networking for a high-level overview of
 -- how these data types are used to model network IO.
 
 -- | A collection of metadata about sockets that is useful for server programs
@@ -39,10 +39,10 @@ import qualified System.FilePath as FP
 data ServerSocketInfo (domain :: SocketDomain) = ServerSocketInfo
   { serverSocketDomain :: SocketDomainRepr domain
     -- ^ The socket's domain as specified by the first argument to the
-    -- @socket()@ function.
+    -- @socket()@ syscall.
   , serverSocketType :: SocketType
     -- ^ The socket's type as specified by the second argument to the
-    -- @socket()@ function.
+    -- @socket()@ syscall.
   , serverSocketAddress :: Maybe (SocketAddress domain)
     -- ^ If this socket has been assigned via @bind()@, this is
     -- @'Just' addr@. If not, this is 'Nothing'. The type of @addr@ depends on
@@ -101,7 +101,7 @@ data SocketType
 
 -- These functions implement the file path conventions described in
 -- Note [The networking story] in
--- Ambient.FunctionOverride.Overrides.Networking.
+-- Ambient.Syscall.Overrides.Networking.
 
 -- | In our @socket()@ override, the returned socket file descriptor is modeled
 -- with a file located at @/network/<domain_macro>/<type_macro>/socket@.

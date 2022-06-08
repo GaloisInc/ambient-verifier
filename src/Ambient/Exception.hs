@@ -74,7 +74,7 @@ data AmbientException where
   -- implementation
   UnhandledPLTStub :: ALV.VersionedFunctionName -> AmbientException
   -- | The @socket@ function was invoked with an unsupported argument.
-  -- See @Note [The networking story]@ in "Ambient.FunctionOverride.Overrides".
+  -- See @Note [The networking story]@ in "Ambient.Syscall.Overrides".
   UnsupportedSocketArgument :: NetworkFunctionArgument -> Integer -> AmbientException
   -- | A provided shared object had a different ELF machine value than the main
   -- binary.  The first argument is the 'DE.ElfMachine' for the shared object

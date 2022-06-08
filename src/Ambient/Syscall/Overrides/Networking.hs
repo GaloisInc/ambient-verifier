@@ -6,12 +6,14 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
-module Ambient.FunctionOverride.Overrides.Networking
+module Ambient.Syscall.Overrides.Networking
   ( networkOverrides
   , buildAcceptOverride
   , callAccept
   , buildBindOverride
   , callBind
+  , buildConnectOverride
+  , callConnect
   , buildListenOverride
   , callListen
   , buildRecvOverride
@@ -53,12 +55,12 @@ import qualified What4.ProgramLoc as WP
 
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
-import           Ambient.FunctionOverride
-import           Ambient.FunctionOverride.Overrides.Networking.Types
+import           Ambient.Syscall
+import           Ambient.Syscall.Overrides.Networking.Types
 import qualified Ambient.Memory as AM
 import           Ambient.Override
 import qualified Ambient.Panic as AP
-import qualified Ambient.Syscall.Overrides as ASO
+import qualified Ambient.Syscall.Overrides.SymIO as ASOS
 import qualified Ambient.Verifier.Concretize as AVC
 
 {-
@@ -168,7 +170,7 @@ There are a variety of limitations surrounding how this works to be aware of:
   files under the /network directory must be specified ahead of time in the
   initial symbolic filesystem.
 
-* The accept() override, unlike the function it models, completely ignores the
+* The accept() override, unlike the syscall it models, completely ignores the
   addr and addrlen arguments. To model accept() more faithfully, it should fill
   in these arguments with information about the peer socket address. See #77.
 -}
@@ -186,15 +188,15 @@ networkOverrides :: ( LCLM.HasLLVMAnn sym
                  -> Map.Map (DMC.MemWord w) String
                  -- ^ Mapping from unsupported relocation addresses to the names of the
                  -- unsupported relocation types.
-                 -> [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
+                 -> [SomeSyscall (AExt.AmbientSimulatorState sym arch) sym ext]
 networkOverrides fs initialMem unsupportedRelocs =
-  [ SomeFunctionOverride (buildAcceptOverride fs)
-  , SomeFunctionOverride (buildBindOverride fs initialMem unsupportedRelocs)
-  , SomeFunctionOverride buildConnectOverride
-  , SomeFunctionOverride buildListenOverride
-  , SomeFunctionOverride (buildRecvOverride fs memVar)
-  , SomeFunctionOverride (buildSendOverride fs memVar)
-  , SomeFunctionOverride (buildSocketOverride fs)
+  [ SomeSyscall (buildAcceptOverride fs)
+  , SomeSyscall (buildBindOverride fs initialMem unsupportedRelocs)
+  , SomeSyscall buildConnectOverride
+  , SomeSyscall buildListenOverride
+  , SomeSyscall (buildRecvOverride fs memVar)
+  , SomeSyscall (buildSendOverride fs memVar)
+  , SomeSyscall (buildSocketOverride fs)
   ]
   where
     memVar = AM.imMemVar initialMem
@@ -203,17 +205,17 @@ buildAcceptOverride :: ( LCLM.HasPtrWidth w
                        , w ~ DMC.ArchAddrWidth arch
                        )
                     => LCLS.LLVMFileSystem w
-                    -> FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
-                                        (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                      Ctx.::> LCLM.LLVMPointerType w
-                                                      Ctx.::> LCLM.LLVMPointerType w) ext
-                                        (LCLM.LLVMPointerType w)
+                    -> Syscall (AExt.AmbientSimulatorState sym arch) sym
+                               (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                             Ctx.::> LCLM.LLVMPointerType w
+                                             Ctx.::> LCLM.LLVMPointerType w) ext
+                               (LCLM.LLVMPointerType w)
 buildAcceptOverride fs =
   WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "accept" $ \bak args ->
+  mkSyscall "accept" $ \bak args ->
     Ctx.uncurryAssignment (callAccept fs bak) args
 
--- | Override for the @accept@ function. This function looks up the metadata
+-- | Override for the @accept(2)@ syscall. This function looks up the metadata
 -- associated with the socket file descriptor argument, allocates a new socket
 -- file with a unique name, and records this information in the
 -- 'AE.AmbientSimulatorState'. See Note @[The networking story]@ for the full
@@ -270,17 +272,17 @@ buildBindOverride :: ( LCLM.HasPtrWidth w
                   -> Map.Map (DMC.MemWord w) String
                   -- ^ Mapping from unsupported relocation addresses to the names of the
                   -- unsupported relocation types.
-                  -> FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
-                                      (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                    Ctx.::> LCLM.LLVMPointerType w
-                                                    Ctx.::> LCLM.LLVMPointerType w) ext
-                                      (LCLM.LLVMPointerType w)
+                  -> Syscall (AExt.AmbientSimulatorState sym arch) sym
+                             (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                           Ctx.::> LCLM.LLVMPointerType w
+                                           Ctx.::> LCLM.LLVMPointerType w) ext
+                             (LCLM.LLVMPointerType w)
 buildBindOverride fs initialMem unsupportedRelocs =
   WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "bind" $ \bak args ->
+  mkSyscall "bind" $ \bak args ->
     Ctx.uncurryAssignment (callBind fs initialMem unsupportedRelocs bak) args
 
--- | Override for the @bind@ function. This function reads the port number from
+-- | Override for the @bind(2)@ syscall. This function reads the port number from
 -- the @addr@ struct, ensures that it is concrete, and records it for later
 -- calls to @accept()@. See Note @[The networking story]@ for the full details.
 callBind :: forall sym bak arch w p solver scope st fs ext r args ret
@@ -461,23 +463,23 @@ loadSockaddrUnPath bak mem initialMem unsupportedRelocs sockaddrUnPtr = do
 buildConnectOverride :: ( LCLM.HasPtrWidth w
                         , w ~ DMC.ArchAddrWidth arch
                         )
-                     => FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
-                                         (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                       Ctx.::> LCLM.LLVMPointerType w
-                                                       Ctx.::> LCLM.LLVMPointerType w) ext
-                                         (LCLM.LLVMPointerType w)
+                     => Syscall (AExt.AmbientSimulatorState sym arch) sym
+                                (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                              Ctx.::> LCLM.LLVMPointerType w
+                                              Ctx.::> LCLM.LLVMPointerType w) ext
+                                (LCLM.LLVMPointerType w)
 buildConnectOverride =
   WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "connect" $ \bak args ->
+  mkSyscall "connect" $ \bak args ->
     Ctx.uncurryAssignment (callConnect bak) args
 
 
--- | Override for the @connect@ function. This implementation is very simple, as
+-- | Override for the @connect(2)@ syscall. This implementation is very simple, as
 -- it only checks to see if the socket file descriptor argument has previously
 -- been registered. If it has, it will return 0, indicating success. If not, it
 -- will return -1, indicating failure.
 --
--- Like @bind@, the @connect@ function also takes an @addr@ argument. However,
+-- Like @bind@, the @connect@ syscall also takes an @addr@ argument. However,
 -- we never need to examine what port it uses, since this override always
 -- assumes that the connection was successfully initiated (FD registration
 -- notwithstanding).
@@ -499,16 +501,16 @@ callConnect bak sockfd _addr _addrlen = checkSocketFDInUse bak "connect" sockfd
 buildListenOverride :: ( LCLM.HasPtrWidth w
                        , w ~ DMC.ArchAddrWidth arch
                        )
-                    => FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
-                                        (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                      Ctx.::> LCLM.LLVMPointerType w) ext
-                                        (LCLM.LLVMPointerType w)
+                    => Syscall (AExt.AmbientSimulatorState sym arch) sym
+                               (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                             Ctx.::> LCLM.LLVMPointerType w) ext
+                               (LCLM.LLVMPointerType w)
 buildListenOverride =
   WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "listen" $ \bak args ->
+  mkSyscall "listen" $ \bak args ->
     Ctx.uncurryAssignment (callListen bak) args
 
--- | Override for the @listen@ function. This implementation is very simple, as
+-- | Override for the @listen(2)@ syscall. This implementation is very simple, as
 -- it only checks to see if the socket file descriptor argument has previously
 -- been registered. If it has, it will return 0, indicating success. If not, it
 -- will return -1, indicating failure.
@@ -557,17 +559,17 @@ buildRecvOverride :: ( LCLM.HasLLVMAnn sym
                      )
                   => LCLS.LLVMFileSystem w
                   -> LCS.GlobalVar LCLM.Mem
-                  -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                          Ctx.::> LCLM.LLVMPointerType w
-                                                          Ctx.::> LCLM.LLVMPointerType w
-                                                          Ctx.::> LCLM.LLVMPointerType w) ext
-                                            (LCLM.LLVMPointerType w)
+                  -> Syscall p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                                 Ctx.::> LCLM.LLVMPointerType w
+                                                 Ctx.::> LCLM.LLVMPointerType w
+                                                 Ctx.::> LCLM.LLVMPointerType w) ext
+                                   (LCLM.LLVMPointerType w)
 buildRecvOverride fs memVar =
   WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "recv" $ \bak args ->
+  mkSyscall "recv" $ \bak args ->
     Ctx.uncurryAssignment (callRecv fs memVar bak) args
 
--- | Override for the @recv@ function. For now, we treat it identically to
+-- | Override for the @recv(2)@ syscall. For now, we treat it identically to
 -- @read@, ignoring the @flags@ argument entirely.
 callRecv :: ( LCLM.HasLLVMAnn sym
             , LCB.IsSymBackend sym bak
@@ -582,24 +584,24 @@ callRecv :: ( LCLM.HasLLVMAnn sym
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callRecv fs memVar bak sockfd buf len _flags =
-  ASO.callRead fs memVar bak sockfd buf len
+  ASOS.callRead fs memVar bak sockfd buf len
 
 buildSendOverride :: ( LCLM.HasLLVMAnn sym
                      , LCLM.HasPtrWidth w
                      )
                   => LCLS.LLVMFileSystem w
                   -> LCS.GlobalVar LCLM.Mem
-                  -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                          Ctx.::> LCLM.LLVMPointerType w
-                                                          Ctx.::> LCLM.LLVMPointerType w
-                                                          Ctx.::> LCLM.LLVMPointerType w) ext
-                                            (LCLM.LLVMPointerType w)
+                  -> Syscall p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                                 Ctx.::> LCLM.LLVMPointerType w
+                                                 Ctx.::> LCLM.LLVMPointerType w
+                                                 Ctx.::> LCLM.LLVMPointerType w) ext
+                                   (LCLM.LLVMPointerType w)
 buildSendOverride fs memVar =
   WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "send" $ \bak args ->
+  mkSyscall "send" $ \bak args ->
     Ctx.uncurryAssignment (callSend fs memVar bak) args
 
--- | Override for the @send@ function. For now, we treat it identically to
+-- | Override for the @send(2)@ syscall. For now, we treat it identically to
 -- @write@, ignoring the @flags@ argument entirely.
 callSend :: ( LCLM.HasLLVMAnn sym
             , LCB.IsSymBackend sym bak
@@ -614,23 +616,23 @@ callSend :: ( LCLM.HasLLVMAnn sym
          -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
          -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callSend fs memVar bak sockfd buf len _flags =
-  ASO.callWrite fs memVar bak sockfd buf len
+  ASOS.callWrite fs memVar bak sockfd buf len
 
 buildSocketOverride :: ( LCLM.HasPtrWidth w
                        , w ~ DMC.ArchAddrWidth arch
                        )
                     => LCLS.LLVMFileSystem w
-                    -> FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
-                                        (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                      Ctx.::> LCLM.LLVMPointerType w
-                                                      Ctx.::> LCLM.LLVMPointerType w) ext
-                                        (LCLM.LLVMPointerType w)
+                    -> Syscall (AExt.AmbientSimulatorState sym arch) sym
+                               (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                             Ctx.::> LCLM.LLVMPointerType w
+                                             Ctx.::> LCLM.LLVMPointerType w) ext
+                               (LCLM.LLVMPointerType w)
 buildSocketOverride fs =
   WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "socket" $ \bak args ->
+  mkSyscall "socket" $ \bak args ->
     Ctx.uncurryAssignment (callSocket fs bak) args
 
--- | Override for the @socket@ function. This checks to see if the appropriate
+-- | Override for the @socket(2)@ syscall. This checks to see if the appropriate
 -- arguments are concrete, and if so, open a file with the appropriate name
 -- representing the socket. See Note @[The networking story]@ for the full
 -- details.

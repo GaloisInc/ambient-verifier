@@ -81,10 +81,10 @@ import qualified What4.Protocol.Online as WPO
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions.Memory as AEM
 import qualified Ambient.FunctionOverride as AF
-import qualified Ambient.FunctionOverride.Overrides.Networking.Types as AFONT
 import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.SharedMemory as AMS
 import qualified Ambient.Syscall as ASy
+import qualified Ambient.Syscall.Overrides.Networking.Types as ASONT
 import qualified Ambient.Verifier.Concretize as AVC
 
 -- | Return @ambient-verifier@ extension evaluation functions.
@@ -941,10 +941,10 @@ data AmbientSimulatorState sym arch = AmbientSimulatorState
     -- ^ The regions of memory which we have populated with symbolic bytes in
     -- the 'AEM.MemPtrTable' backing global memory.
     -- See @Note [Lazy memory initialization@ in "Ambient.Extensions.Memory".
-  , _serverSocketFDs :: Map.Map Integer (Some AFONT.ServerSocketInfo)
+  , _serverSocketFDs :: Map.Map Integer (Some ASONT.ServerSocketInfo)
     -- ^ A map from registered socket file descriptors to their corresponding
     -- metadata. See @Note [The networking story]@ in
-    -- "Ambient.FunctionOverride.Overrides".
+    -- "Ambient.Syscall.Overrides.Networking".
   , _simulationStats :: AmbientSimulationStats
     -- ^ Metrics from the Ambient simulator
   , _overrideLookupFunctionHandle :: Maybe (DMSMO.LookupFunctionHandle (AmbientSimulatorState sym arch) sym arch)
@@ -1000,7 +1000,7 @@ populatedMemChunks = lens _populatedMemChunks
                           (\s v -> s { _populatedMemChunks = v })
 
 serverSocketFDs :: Lens' (AmbientSimulatorState sym arch)
-                       (Map.Map Integer (Some AFONT.ServerSocketInfo))
+                       (Map.Map Integer (Some ASONT.ServerSocketInfo))
 serverSocketFDs = lens _serverSocketFDs
                        (\s v -> s { _serverSocketFDs = v })
 
