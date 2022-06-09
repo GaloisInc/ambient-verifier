@@ -24,13 +24,12 @@ module Ambient.FunctionOverride.Overrides
   , module Ambient.FunctionOverride.Overrides.Printf
     -- * Crucible string–related overrides
   , module Ambient.FunctionOverride.Overrides.CrucibleStrings
-    -- * Functions wrapping system calls
-  , module Ambient.FunctionOverride.Overrides.SyscallWrappers
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
 import qualified Control.Monad.State as CMS
 import qualified Data.Map.Strict as Map
+import           Data.Maybe ( mapMaybe )
 import qualified Data.Parameterized.Context as Ctx
 
 import qualified Data.Macaw.CFG as DMC
@@ -49,9 +48,10 @@ import qualified Ambient.Extensions as AExt
 import           Ambient.FunctionOverride
 import           Ambient.FunctionOverride.Overrides.CrucibleStrings
 import           Ambient.FunctionOverride.Overrides.Printf
-import           Ambient.FunctionOverride.Overrides.SyscallWrappers
 import qualified Ambient.Memory as AM
 import           Ambient.Override
+import qualified Ambient.Syscall as AS
+import qualified Ambient.Syscall.Overrides as ASO
 
 -------------------------------------------------------------------------------
 -- Memory-related overrides
@@ -80,7 +80,14 @@ allOverrides fs initialMem unsupportedRelocs =
   -- Memory
   memOverrides initialMem ++
   -- Syscall wrappers
-  syscallWrapperOverrides fs initialMem unsupportedRelocs
+  syscallWrapperOverrides
+  where
+    syscallWrapperOverrides =
+      mapMaybe (\(AS.SomeSyscall syscall) ->
+                 if AS.syscallHasWrapperFunction syscall
+                    then Just $ SomeFunctionOverride $ syscallToFunctionOverride syscall
+                    else Nothing)
+               (ASO.allOverrides fs initialMem unsupportedRelocs)
 
 -- | All of the memory-related overrides, packaged up for your convenience.
 memOverrides ::

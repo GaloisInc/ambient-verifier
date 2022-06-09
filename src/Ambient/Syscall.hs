@@ -52,6 +52,9 @@ data Syscall p sym args ext ret =
           -- ^ Types of the arguments to the syscall
           , syscallReturnType :: LCT.TypeRepr ret
           -- ^ Return type of the syscall
+          , syscallHasWrapperFunction :: Bool
+          -- ^ If 'True', there is also a corresponding wrapper function of the
+          -- same name in @libc@ that should use the same override.
           , syscallOverride
               :: forall bak solver scope st fs
                . ( LCB.IsSymBackend sym bak
@@ -66,8 +69,11 @@ data Syscall p sym args ext ret =
           -- ^ Override capturing behavior of the syscall
           }
 
--- | A smart constructor for 'Syscall' for the common case when the argument
--- and result types are statically known.
+-- | A smart constructor for 'Syscall' for the common case when:
+--
+-- * The argument and result types are statically known.
+--
+-- * There is a wrapper function of the same name.
 mkSyscall ::
   ( LCT.KnownRepr LCT.CtxRepr args
   , LCT.KnownRepr LCT.TypeRepr ret
@@ -87,6 +93,7 @@ mkSyscall name ov = Syscall
   { syscallName = name
   , syscallArgTypes = LCT.knownRepr
   , syscallReturnType = LCT.knownRepr
+  , syscallHasWrapperFunction = True
   , syscallOverride = ov
   }
 
