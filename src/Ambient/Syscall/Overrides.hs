@@ -69,21 +69,22 @@ allOverrides ::
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
   [SomeSyscall (AExt.AmbientSimulatorState sym arch) sym ext]
-allOverrides fs initialMem unsupportedRelocs =
-  [ SomeSyscall buildExecveOverride
-  , SomeSyscall exitOverride
-  , SomeSyscall getppidOverride
-  , SomeSyscall (buildShmgetOverride memVar)
-  , SomeSyscall shmatOverride
-    -- FIXME: This no-op override is for tracking purposes
-    -- only.  It should be replaced with a more faithful
-    -- override at some point.
-  , SomeSyscall buildNoOpMkdirOverride
-  ] ++
-  -- -- Networking
-  networkOverrides fs initialMem unsupportedRelocs ++
-  -- Symbolic IO
-  symIOOverrides fs initialMem unsupportedRelocs
+allOverrides fs initialMem unsupportedRelocs = concat
+  [ [ SomeSyscall buildExecveOverride
+    , SomeSyscall exitOverride
+    , SomeSyscall getppidOverride
+    , SomeSyscall (buildShmgetOverride memVar)
+    , SomeSyscall shmatOverride
+      -- FIXME: This no-op override is for tracking purposes
+      -- only.  It should be replaced with a more faithful
+      -- override at some point.
+    , SomeSyscall buildNoOpMkdirOverride
+    ]
+    -- Networking
+  , networkOverrides fs initialMem unsupportedRelocs
+    -- Symbolic IO
+  , symIOOverrides fs initialMem unsupportedRelocs
+  ]
   where
     memVar = AM.imMemVar initialMem
 

@@ -72,15 +72,16 @@ allOverrides ::
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
   [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
-allOverrides fs initialMem unsupportedRelocs =
-  -- Printf
-  [SomeFunctionOverride (buildSprintfOverride initialMem unsupportedRelocs)] ++
-  -- Crucible strings
-  crucibleStringOverrides initialMem unsupportedRelocs ++
-  -- Memory
-  memOverrides initialMem ++
-  -- Syscall wrappers
-  syscallWrapperOverrides
+allOverrides fs initialMem unsupportedRelocs = concat
+  [ -- Printf
+    [SomeFunctionOverride (buildSprintfOverride initialMem unsupportedRelocs)]
+    -- Crucible strings
+  , crucibleStringOverrides initialMem unsupportedRelocs
+    -- Memory
+  , memOverrides initialMem
+    -- Syscall wrappers
+  , syscallWrapperOverrides
+  ]
   where
     syscallWrapperOverrides =
       mapMaybe (\(AS.SomeSyscall syscall) ->

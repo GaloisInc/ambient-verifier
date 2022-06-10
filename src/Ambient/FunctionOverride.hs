@@ -128,7 +128,8 @@ mkFunctionOverride name ov = FunctionOverride
   }
 
 -- | Convert a 'AS.Syscall' override to a 'FunctionOverride' with the same
--- semantics.
+-- semantics. Note that this override will not perform any error-checking on
+-- the value returned by the syscall. (See #144.)
 syscallToFunctionOverride ::
   AS.Syscall p sym args ext ret ->
   FunctionOverride p sym args ext ret
