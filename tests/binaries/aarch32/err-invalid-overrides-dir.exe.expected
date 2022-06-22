@@ -1,0 +1,5 @@
+successful: 0
+failed: 0
+fsRoot: tests/filesystems/read
+overrideDir: somethingthatdoesntexist
+throwsException: true

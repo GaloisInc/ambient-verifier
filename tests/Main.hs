@@ -1,13 +1,19 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Main ( main ) where
 
 import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
+import qualified Control.Exception as CE
+import           Control.Monad ( unless )
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.List as List
 import           Data.Maybe ( fromMaybe, maybeToList )
 import qualified Data.Text as DT
+import qualified Data.Text.Lazy as DTL
+import qualified Data.Text.Lazy.Encoding as TLE
 import           Data.Word ( Word64 )
 import qualified Data.Yaml as DY
 import           GHC.Generics ( Generic )
@@ -20,6 +26,7 @@ import qualified Test.Tasty.Runners.AntXML as TTRA
 import qualified Test.Tasty.ExpectedFailure as TTE
 import qualified Test.Tasty.HUnit as TTH
 
+import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.CFG.Reg as LCCR
 import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
@@ -28,6 +35,7 @@ import qualified Ambient.ABI as AA
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Encoding as AEnc
 import qualified Ambient.EntryPoint as AEp
+import qualified Ambient.Exception as AE
 import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
@@ -60,6 +68,8 @@ data ExpectedGoals =
                   -- If we ever opt to write ExpectedGoals' FromJSON instance
                   -- by hand, as proposed in #90, we could change this field
                   -- from type Maybe [Text] to just [Text] at that time.
+                , throwsException :: Maybe Bool
+                  -- Similar to above, Nothing represents False, as does Just False
                 }
   deriving (Eq, Ord, Read, Show, Generic)
 
@@ -76,6 +86,7 @@ emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , entryPointAddr = Nothing
                                    , argv0 = Nothing
                                    , arguments = Nothing
+                                   , throwsException = Nothing
                                    }
 
 -- | A simple logger that just sends diagnostics to a channel; an asynchronous
@@ -105,6 +116,22 @@ loadProperty fp = do
   bytes <- BS.readFile fp
   val <- DY.decodeThrow bytes
   APD.parseProperty val
+
+data CaughtVerifyException =
+    CaughtAbortExecReason LCB.AbortExecReason
+  | CaughtAmbientException AE.AmbientException
+
+showVerifyException :: CaughtVerifyException -> String
+showVerifyException (CaughtAbortExecReason aer) = show aer
+showVerifyException (CaughtAmbientException ae) = show ae
+
+-- | The result of running verify
+-- 
+-- Either the output metrics, or a caught exception (which might
+-- be acceptable if the test expects it).
+data VerifyResult = 
+    CaughtVerifyException CaughtVerifyException
+  | VerifyOK AV.Metrics
 
 -- | Create a test for a given expected output
 --
@@ -156,37 +183,74 @@ toTest expectedOutputFile = TTH.testCase testName $ do
 
   chan <- CC.newChan
   logger <- CCA.async (analyzeSolvedGoals chan)
-  metrics <- AV.verify (logAction chan) pinst AT.defaultTimeout
+  metricsOrErr <- (VerifyOK <$> AV.verify (logAction chan) pinst AT.defaultTimeout)
+                    `CE.catches` [CE.Handler (\ (ex :: LCB.AbortExecReason) -> return $ CaughtVerifyException (CaughtAbortExecReason ex)),
+                                  CE.Handler (\ (ex :: AE.AmbientException) -> return $ CaughtVerifyException (CaughtAmbientException ex))]
 
-  CC.writeChan chan Nothing
-  res <- CCA.wait logger
+  -- If throwsException is set, catch AbortExecReason's
+  let doCatchErr = fromMaybe False $ throwsException expectedResult
+  if doCatchErr then
+      case metricsOrErr of
+        CaughtVerifyException e -> do
+          handleExpectedException (showVerifyException e)
+        VerifyOK _ -> do
+          -- Failed! Didn't error when doCatchErr was true
+          TTH.assertFailure "Exception was expected, but none were caught"
+    else
+      case metricsOrErr of
+        CaughtVerifyException e -> do
+          -- Failed! Error when doCatchErr was false
+          TTH.assertFailure $ "Unexpected exception: " ++ (showVerifyException e)
+        VerifyOK metrics -> do
+          assertMetricsOK chan logger expectedResult metrics
 
-  -- This is a bit odd since we are using the expected result structure to
-  -- specify both the initial state and expected state. To produce the actual
-  -- result, we copy over the goal numbers, which could differ from what is
-  -- expected. We leave alone the other fields, which are constants, to just
-  -- make the comparison work out.
-  let res' = expectedResult { successful = successful res
-                            , failed     = failed res
-                            }
-  TTH.assertEqual "Expected Output" expectedResult res'
-
-  -- Check that goal values in metrics match the expected number of goals
-  let proofStats = AV.proofStats metrics
-  TTH.assertEqual "Total expected number of goals"
-                  (successful expectedResult + failed expectedResult)
-                  (AVP.psGoals proofStats)
-  TTH.assertEqual "Expected successful goals"
-                  (successful expectedResult)
-                  (AVP.psSuccessfulGoals proofStats)
-  TTH.assertEqual "Expected failed goals"
-                  (failed expectedResult)
-                  (AVP.psFailedGoals proofStats)
-  TTH.assertEqual "Expected timeouts" 0 (AVP.psTimeouts proofStats)
-  TTH.assertEqual "Expected errors" 0 (AVP.psErrors proofStats)
   where
     testName = SF.dropExtension expectedOutputFile
     binaryFilePath = testName
+    handleExpectedException exStr = do
+          let exceptionPath = SF.replaceExtension expectedOutputFile "exception"
+          exceptionFileExists <- SD.doesFileExist exceptionPath
+          unless exceptionFileExists $
+              -- We're meant to catch an exception, but no exception
+              -- file exists. We should inform the user of this
+              TTH.assertFailure $ "throwsException was set to true, but no .exe.exception file was found. Expected: \"" ++ exStr ++ "\""
+
+          -- We're meant to catch an exception, and need to
+          -- compare it against the exception file given.
+          -- To do this, we'll just use the appropriate Show instance
+          excFile <- BS.readFile exceptionPath
+          let actualErr = BL.toStrict $ TLE.encodeUtf8 $ DTL.pack exStr
+          -- Compare the exception file to the actual error
+          TTH.assertEqual "Expected exception" excFile actualErr
+
+    assertMetricsOK chan logger expectedResult metrics = do
+        -- We weren't expecting errors, and we didn't get any
+        CC.writeChan chan Nothing
+        res <- CCA.wait logger
+
+        -- This is a bit odd since we are using the expected result structure to
+        -- specify both the initial state and expected state. To produce the actual
+        -- result, we copy over the goal numbers, which could differ from what is
+        -- expected. We leave alone the other fields, which are constants, to just
+        -- make the comparison work out.
+        let res' = expectedResult { successful = successful res
+                                  , failed     = failed res
+                                  }
+        TTH.assertEqual "Expected Output" expectedResult res'
+
+        -- Check that goal values in metrics match the expected number of goals
+        let proofStats = AV.proofStats metrics
+        TTH.assertEqual "Total expected number of goals"
+                        (successful expectedResult + failed expectedResult)
+                        (AVP.psGoals proofStats)
+        TTH.assertEqual "Expected successful goals"
+                        (successful expectedResult)
+                        (AVP.psSuccessfulGoals proofStats)
+        TTH.assertEqual "Expected failed goals"
+                        (failed expectedResult)
+                        (AVP.psFailedGoals proofStats)
+        TTH.assertEqual "Expected timeouts" 0 (AVP.psTimeouts proofStats)
+        TTH.assertEqual "Expected errors" 0 (AVP.psErrors proofStats)
 
 -- | Create a test that is expected to fail for a given output
 --
