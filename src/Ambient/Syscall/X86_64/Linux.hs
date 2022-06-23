@@ -82,7 +82,7 @@ x86_64LinuxSyscallArgumentRegisters bak regTyps regs syscallTyps
         -- Extract argument registers and put in list.
         let regEntries = map toRegEntry [rdi, rsi, rdx, r10, r8, r9] in
         -- Build an assignment from 'regEntries'
-        AO.buildArgumentRegisterAssignment bak syscallTyps regEntries
+        AO.buildArgumentAssignment bak syscallTyps regEntries
   | otherwise
   = AP.panic AP.Syscall
              "x86_64LinuxSyscallArgumentRegisters"

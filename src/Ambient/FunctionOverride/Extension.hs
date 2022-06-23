@@ -299,7 +299,7 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
               LCSy.emptyInitialFileSystemContents
               [] (AM.imGlobals initMem)
           let functionABI =
-                buildFunctionABI fs initMem
+                buildFunctionABI fs initMem archVals
                   Map.empty -- Because we are testing outside of a binary, we
                             -- need not concern ourselves with which
                             -- relocations are not supported.

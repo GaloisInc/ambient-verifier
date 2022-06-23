@@ -67,7 +67,7 @@ mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
             let resEntry0 = LCS.RegEntry (AF.functionReturnType resolvedFnOv) resValue
             -- Step (4)
             resEntry1 <- liftIO $
-              AO.narrowRegisterType bak fwdDecRetType resEntry0
+              AO.narrowPointerType bak fwdDecRetType resEntry0
             -- Step (5)
             resEntry2 <- liftIO $
               AFA.convertBitvector bak (LCF.handleReturnType fwdDecHandle) resEntry1
@@ -89,7 +89,7 @@ mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
     -- If there is a mismatch in the number of arguments, we throw an exception
     -- here. It is also possible for there to be mismatches in the types of
     -- individual arguments, but that is checked separately in
-    -- 'AO.extendToRegisterType'.
+    -- 'AO.extendPointerType'.
     extendToRegisterAssignment ::
       forall narrowTps regTps.
       LCT.CtxRepr regTps ->
@@ -103,7 +103,7 @@ mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
               IO (Ctx.Assignment (LCS.RegEntry sym) regTps')
         go Ctx.Empty Ctx.Empty = pure Ctx.Empty
         go (regTypeReprs Ctx.:> regTypeRepr) (narrowEntries Ctx.:> narrowEntry) = do
-          regEntry <- AO.extendToRegisterType bak regTypeRepr narrowEntry
+          regEntry <- AO.extendPointerType bak regTypeRepr narrowEntry
           regEntries <- go regTypeReprs narrowEntries
           pure (regEntries Ctx.:> regEntry)
         go _ _ = CMC.throwM $ AE.ForwardDeclarationArgumentNumberMismatch
@@ -156,7 +156,7 @@ and similarly for the result. We proceed as follows:
    override.
 
 4. Next, take the result and truncate it if necessary using
-   A.Override.narrowRegisterType. If @bar is another syntax override, this is
+   A.Override.narrowPointerType. If @bar is another syntax override, this is
    a no-op but if @bar is a Haskell override, then this will truncate the
    argument from an `LLVMPointer ?ptrWidth` to an `LLVMPointer 8`.
 
@@ -164,7 +164,7 @@ and similarly for the result. We proceed as follows:
    using A.FunctionOverride.ArgumentMapping.convertBitvector.
 
 This process bears a resemblance to the pipe-fitting code used to implement
-`functionIntegerArgumentRegisters` and `functionIntegerReturnRegisters` in a
+`functionIntegerArguments` and `functionIntegerReturnRegisters` in a
 FunctionABI, but the pipe-fitting used for forward declarations does not have
 to worry about explicitly passing values to/from `macaw` register structs.
 (At the moment, forward declarations cannot be used to invoke functions defined

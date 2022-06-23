@@ -9,7 +9,7 @@
 {-# LANGUAGE TypeOperators #-}
 
 module Ambient.FunctionOverride.X86_64.Linux (
-    x86_64LinuxIntegerArgumentRegisters
+    x86_64LinuxIntegerArguments
   , x86_64LinuxIntegerReturnRegisters
   , x86_64LinuxFunctionABI
   , x86_64LinuxTypes
@@ -27,8 +27,8 @@ import qualified Data.Macaw.X86 as DMX
 import qualified Data.Macaw.X86.Symbolic as DMXS
 import qualified Data.Macaw.X86.X86Reg as DMXR
 import qualified Lang.Crucible.Backend as LCB
-import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Interface as WI
 
@@ -38,23 +38,46 @@ import qualified Ambient.Panic as AP
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.Overrides as AFO
+import qualified Ambient.FunctionOverride.StackArguments as AFS
 
--- | Extract integer arguments from x86_64 registers.
-x86_64LinuxIntegerArgumentRegisters
-  :: (LCB.IsSymBackend sym bak)
+-- | Extract integer arguments from the corresponding six x86_64 registers.
+-- Any additional arguments are read from the stack at @8(%rsp)@, @16(%rsp)@,
+-- etc.
+x86_64LinuxIntegerArguments
+  :: forall atps sym bak mem
+   . ( LCB.IsSymBackend sym bak
+     , LCLM.HasLLVMAnn sym
+     , ?memOpts :: LCLM.MemOptions
+     )
   => bak
+  -> DMS.GenArchVals mem DMX.X86_64
+  -- ^ x86_64-specific architecture information
   -> LCT.CtxRepr atps
   -- ^ Types of argument registers
   -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes DMX.X86_64)
   -- ^ Argument register values
+  -> LCLM.MemImpl sym
+  -- ^ The memory state at the time of the function call
   -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
-x86_64LinuxIntegerArgumentRegisters bak argTypes regs =
-  let regList = map lookupReg DMX.x86ArgumentRegs in
-  AO.buildArgumentRegisterAssignment bak argTypes regList
+x86_64LinuxIntegerArguments bak archVals argTypes regs mem = do
+  let ?ptrWidth = ptrWidth
+  stackArgList <-
+    traverse (AFS.loadIntegerStackArgument bak archVals regs mem)
+             -- Note that we are starting the indices for stack arguments at 1,
+             -- not 0, as the first stack argument is located at @8(%rsp)@
+             -- instead of @0(%rsp)@ (which is where the return address
+             -- resides).
+             [1 .. numStackArgs]
+  let argList = regArgList ++ stackArgList
+  AO.buildArgumentAssignment bak argTypes argList
   where
+    ptrWidth = WI.knownNat @64
+    regArgList = map lookupReg DMX.x86ArgumentRegs
+    numStackArgs = Ctx.sizeInt (Ctx.size argTypes) - length regArgList
+
     lookupReg r =
       case DMXS.lookupX86Reg r regs of
-        Just v -> (LCS.RegEntry (LCLM.LLVMPointerRepr (WI.knownNat @64))
+        Just v -> (LCS.RegEntry (LCLM.LLVMPointerRepr ptrWidth)
                                 (LCS.unRV v))
         Nothing -> AP.panic AP.FunctionOverride
                             "x86_64LinuxIntegerArgumentRegisters"
@@ -117,11 +140,12 @@ x86_64LinuxIntegerReturnRegisters bak ovTyp ovSim initRegs =
 
 x86_64LinuxFunctionABI :: (?memOpts :: LCLM.MemOptions)
                        => AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
-x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs addrOvs namedOvs ->
+x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @64 in
   let customNamedOvs = AFO.allOverrides fs initialMem unsupportedRelocs
-  in AF.FunctionABI { AF.functionIntegerArgumentRegisters = x86_64LinuxIntegerArgumentRegisters
+  in AF.FunctionABI { AF.functionIntegerArguments = \bak ->
+                        x86_64LinuxIntegerArguments bak archVals
                     , AF.functionMainArgumentRegisters = (DMXR.RDI, DMXR.RSI)
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
                     , AF.functionNameMapping =

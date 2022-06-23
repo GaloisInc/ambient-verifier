@@ -60,6 +60,7 @@ library
                       Ambient.FunctionOverride.Overrides.CrucibleStrings,
                       Ambient.FunctionOverride.Overrides.ForwardDeclarations,
                       Ambient.FunctionOverride.Overrides.Printf,
+                      Ambient.FunctionOverride.StackArguments,
                       Ambient.FunctionOverride.AArch32.Linux,
                       Ambient.FunctionOverride.X86_64.Linux,
                       Ambient.Lift,

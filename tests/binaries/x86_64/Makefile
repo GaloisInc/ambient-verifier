@@ -189,6 +189,9 @@ memcpy.exe: memcpy.c ambient_assert.o
 crucible-strings/crucible-strings.exe: crucible-strings/crucible-strings.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
 
+way-too-many-arguments/way-too-many-arguments.exe: way-too-many-arguments/way-too-many-arguments.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

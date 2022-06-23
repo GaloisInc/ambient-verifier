@@ -39,28 +39,43 @@ import qualified Ambient.Extensions as AE
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.Overrides as AFO
+import qualified Ambient.FunctionOverride.StackArguments as AFS
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 
--- | Integer arguments are passed in the first four registers in ARM
-aarch32LinuxIntegerArgumentRegisters
-  :: forall atps sym bak
-   . (LCB.IsSymBackend sym bak)
+-- | Integer arguments are passed in the first four registers in ARM. Functions
+-- that require additional arguments are passed on the stack at @[sp, #0]@,
+-- @[sp, #4]@, etc.
+aarch32LinuxIntegerArguments
+  :: forall atps sym bak mem
+   . ( LCB.IsSymBackend sym bak
+     , LCLM.HasLLVMAnn sym
+     , ?memOpts :: LCLM.MemOptions
+     )
   => bak
+  -> DMS.GenArchVals mem DMA.ARM
+  -- ^ ARM-specific architecture information
   -> LCT.CtxRepr atps
   -- ^ The argument types
   -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes DMA.ARM)
   -- ^ A register structure containing symbolic values
+  -> LCLM.MemImpl sym
+  -- ^ The memory state at the time of the function call
   -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
-aarch32LinuxIntegerArgumentRegisters bak argTypes regFile =
-  AO.buildArgumentRegisterAssignment bak argTypes regList
+aarch32LinuxIntegerArguments bak archVals argTypes regFile mem = do
+  let ?ptrWidth = ptrWidth
+  stackArgList <- traverse (AFS.loadIntegerStackArgument bak archVals regFile mem)
+                           [0 .. numStackArgs-1]
+  let argList = regArgList ++ stackArgList
+  AO.buildArgumentAssignment bak argTypes argList
   where
     ptrWidth = PN.knownNat @32
-    regList = map lookupReg [ ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
-                            , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
-                            , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R2")
-                            , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R3")
-                            ]
+    regArgList = map lookupReg [ ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
+                               , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
+                               , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R2")
+                               , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R3")
+                               ]
+    numStackArgs = Ctx.sizeInt (Ctx.size argTypes) - length regArgList
     lookupReg r = LCS.RegEntry (LCLM.LLVMPointerRepr ptrWidth)
                                (LCS.unRV (DMAS.lookupReg r regFile))
 
@@ -129,7 +144,7 @@ aarch32LinuxFunctionABI ::
   => LCCC.GlobalVar (LCLM.LLVMPointerType 32)
      -- ^ Global variable for TLS
   -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
-aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupportedRelocs addrOvs namedOvs ->
+aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
   let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @32 in
   let customNamedOvs = AFO.allOverrides fs initialMem unsupportedRelocs in
@@ -139,7 +154,8 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem unsupport
         [ -- __kuser_get_tls (See Note [AArch32 and TLS])
           (AF.AddrFromKernel 0xffff0fe0, AF.SomeFunctionOverride (buildKUserGetTLSOverride tlsGlob))
         ] in
-  AF.FunctionABI { AF.functionIntegerArgumentRegisters = aarch32LinuxIntegerArgumentRegisters
+  AF.FunctionABI { AF.functionIntegerArguments = \bak ->
+                     aarch32LinuxIntegerArguments bak archVals
                  , AF.functionMainArgumentRegisters =
                      ( ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
                      , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")

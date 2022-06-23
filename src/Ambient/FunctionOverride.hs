@@ -187,15 +187,17 @@ data FunctionAddrLoc w
 data FunctionABI arch sym p =
   FunctionABI {
     -- Given a full register state, extract all of the arguments we need for
-    -- the function call
-    functionIntegerArgumentRegisters
+    -- the function call. See Note [Passing arguments to functions].
+    functionIntegerArguments
       :: forall bak atps
        . LCB.IsSymBackend sym bak
       => bak
       -> LCT.CtxRepr atps
-      -- Types of argument registers
+      -- Types of arguments
       -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes arch)
       -- Argument register values
+      -> LCLM.MemImpl sym
+      -- The memory state at the time of the function call
       -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
       -- Function argument values
 
@@ -248,9 +250,12 @@ data FunctionABI arch sym p =
 
 -- A function to construct a FunctionABI with memory access
 newtype BuildFunctionABI arch sym p = BuildFunctionABI (
-       LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
+       forall mem
+     . LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
     -- File system to use in overrides
     -> AM.InitialMemory sym (DMC.ArchAddrWidth arch)
+    -> DMS.GenArchVals mem arch
+    -- Architecture-specific information
     -> Map.Map (DMC.MemWord (DMC.ArchAddrWidth arch)) String
     -- ^ Mapping from unsupported relocation addresses to the names of the
     -- unsupported relocation types.
@@ -261,3 +266,35 @@ newtype BuildFunctionABI arch sym p = BuildFunctionABI (
     -- Overrides for functions with particular names
     -> FunctionABI arch sym p
   )
+
+{-
+Note [Passing arguments to functions]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Under most circumstances, a function's arguments will be passed by way of
+registers. Extracting argument values from registers is a relatively
+straightforward process of looking up the appropriate entry in the register
+assignment that is passed to `functionIntegerArguments` in a `FunctionABI`.
+
+If a function has a sufficiently large number of arguments, however, the
+arguments that cannot be put into registers will instead be stored on the
+stack. Extracting argument values from the stack is a slightly more involved
+process, since it requires reading values from memory. The
+A.FunctionOverride.StackArguments.loadStackArgument function takes care of most
+of these fiddly details. The remaining fiddly detail is determining _which_
+stack entries to read, since this varies depending on the calling convention.
+For instance, the System V x86_64 ABI puts the first stack argument at
+8(%rsp), since 0(%rsp) is reserved for the callee's function address. On the
+other hand, the AArch32 calling convention puts the first stack argument at
+[sp, #0]. These ABI-specific details are handled in each `FunctionABI`'s
+implementation of `functionIntegerArguments`.
+
+At present, we only support integer arguments whose size matches the size of
+a pointer on the given architecture. Notably, we do not support any of the
+following:
+
+* Floating-point arguments
+* Struct arguments. These complicate matters due to the fact that struct values
+  can be split up into multiple registers or stack values depending on the size
+  of the struct.
+* Eight-byte values of 32-bit architectures
+-}

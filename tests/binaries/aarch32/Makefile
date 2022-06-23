@@ -183,6 +183,9 @@ weak-symbol/libweak-symbol-foo.so: weak-symbol/weak-symbol-foo.c
 weak-symbol/weak-symbol-main.exe: weak-symbol/weak-symbol-main.c weak-symbol/libweak-symbol-foo.so
 	$(CC) -nostdlib -Lweak-symbol/ weak-symbol/weak-symbol-main.c -lweak-symbol-foo -o $@
 
+way-too-many-arguments/way-too-many-arguments.exe: way-too-many-arguments/way-too-many-arguments.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

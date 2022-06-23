@@ -52,7 +52,7 @@ listOverrides logAction pinst = do
   AS.withOnlineSolver (AV.piSolver pinst) (AV.piFloatMode pinst) ng $ \bak ->
     let sym = LCB.backendGetSym bak in
     AL.withBinary (AV.piPath pinst) (AV.piBinary pinst) (AV.piSharedObjectDir pinst) hdlAlloc sym $
-        \(archInfo :: DMAI.ArchitectureInfo arch) _archVals
+        \(archInfo :: DMAI.ArchitectureInfo arch) archVals
         (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI)
         parserHooks buildGlobals _numBytes binConf -> do
       AFE.CrucibleSyntaxOverrides{AFE.csoAddressOverrides, AFE.csoNamedOverrides} <-
@@ -71,7 +71,7 @@ listOverrides logAction pinst = do
       (fs, _, LCLS.SomeOverrideSim _initFSOverride) <- liftIO $
         LCLS.initialLLVMFileSystem hdlAlloc sym WI.knownRepr fileContents [] (AM.imGlobals initialMem)
       let syscallABI = buildSyscallABI fs initialMem Map.empty
-      let functionABI = buildFunctionABI fs initialMem Map.empty csoAddressOverrides csoNamedOverrides
+      let functionABI = buildFunctionABI fs initialMem archVals Map.empty csoAddressOverrides csoNamedOverrides
 
       let ?recordLLVMAnnotation = \_ _ _ -> return ()
       let ols = mkOverrideLists syscallABI functionABI
