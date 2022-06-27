@@ -9,6 +9,7 @@ module Ambient.Discovery (
     discoverFunction
   ) where
 
+import           Control.Lens ( (&), (.~) )
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Parameterized.Some as Some
 import qualified Lumberjack as LJ
@@ -54,7 +55,9 @@ discoverFunction ::
 discoverFunction logAction archInfo loadedBinaryPath addr = do
   let mem = DMB.memoryImage $ ALB.lbpBinary loadedBinaryPath
   let symMap = ALB.lbpAddrSymMap loadedBinaryPath
+  let pltEntryPoints = ALB.lbpTrustedPltEntryPoints loadedBinaryPath
   let s0 = DMD.emptyDiscoveryState mem symMap archInfo
+             & DMD.trustedFunctionEntryPoints .~ pltEntryPoints
   DMA.withArchConstraints archInfo $ do
     (_state, funInfo) <-
       DMUI.processIncCompLogs (logDiscoveryEvent logAction symMap) $ DMUI.runIncCompM $ do

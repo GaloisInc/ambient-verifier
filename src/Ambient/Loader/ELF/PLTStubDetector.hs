@@ -40,52 +40,49 @@ data SomeRel tp where
 --
 -- See Note [PLT Stub Names] for details
 pltStubSymbols
-  :: forall f w proxy reloc arch
+  :: forall w proxy reloc arch
    . ( w ~ DEP.RelocationWidth reloc
      , w ~ DMC.ArchAddrWidth arch
      , Integral (DEP.ElfWordType w)
      , DEP.IsRelocationType reloc
      , DMM.MemWidth w
-     , Foldable f
      )
   => AA.ABI
   -> proxy reloc
-  -> f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w))
+  -> DMB.LoadedBinary arch (DE.ElfHeaderInfo w)
   -> Map.Map (DMM.MemWord w) ALV.VersionedFunctionName
-pltStubSymbols abi _ loadedBinaries = Map.fromList $ foldl' go [] loadedBinaries
+pltStubSymbols abi _ loadedBinary = Map.fromList $ fromMaybe [] $ do
+  let elfHeaderInfo = DMB.originalBinary loadedBinary
+  let loadOptions = DMB.loadOptions loadedBinary
+  let (_, elf) = DE.getElf elfHeaderInfo
+  let phdrs = DE.headerPhdrs elfHeaderInfo
+  let elfBytes = DE.headerFileContents elfHeaderInfo
+
+  vam <- DEP.virtAddrMap elfBytes phdrs
+  rawDynSec <- listToMaybe (DE.findSectionByName (BSC.pack ".dynamic") elf)
+
+  let dynBytes = DE.elfSectionData rawDynSec
+  dynSec <- case DEP.dynamicEntries (DE.elfData elf) (DE.elfClass elf) dynBytes of
+    Left _dynErr -> Nothing
+    Right dynSec -> return dynSec
+
+  vdefm <- case DEP.dynVersionDefMap dynSec vam of
+    Left _dynErr -> Nothing
+    Right vm -> return vm
+
+  vreqm <- case DEP.dynVersionReqMap dynSec vam of
+    Left _dynErr -> Nothing
+    Right vm -> return vm
+
+  let pltAddrs = case extractPltAddrs dynSec vam vdefm vreqm loadOptions elf of
+        Nothing -> []
+        Just addrs -> addrs
+
+  let pltGotAddrs = case extractPltGotAddrs dynSec vam vdefm vreqm loadOptions elf of
+        Nothing -> []
+        Just addrs -> addrs
+  return (pltAddrs ++ pltGotAddrs)
   where
-    go acc loadedBinary = fromMaybe acc $ do
-      let elfHeaderInfo = DMB.originalBinary loadedBinary
-      let loadOptions = DMB.loadOptions loadedBinary
-      let (_, elf) = DE.getElf elfHeaderInfo
-      let phdrs = DE.headerPhdrs elfHeaderInfo
-      let elfBytes = DE.headerFileContents elfHeaderInfo
-
-      vam <- DEP.virtAddrMap elfBytes phdrs
-      rawDynSec <- listToMaybe (DE.findSectionByName (BSC.pack ".dynamic") elf)
-
-      let dynBytes = DE.elfSectionData rawDynSec
-      dynSec <- case DEP.dynamicEntries (DE.elfData elf) (DE.elfClass elf) dynBytes of
-        Left _dynErr -> Nothing
-        Right dynSec -> return dynSec
-
-      vdefm <- case DEP.dynVersionDefMap dynSec vam of
-        Left _dynErr -> Nothing
-        Right vm -> return vm
-
-      vreqm <- case DEP.dynVersionReqMap dynSec vam of
-        Left _dynErr -> Nothing
-        Right vm -> return vm
-
-      let pltAddrs = case extractPltAddrs dynSec vam vdefm vreqm loadOptions elf of
-            Nothing -> []
-            Just addrs -> addrs
-
-      let pltGotAddrs = case extractPltGotAddrs dynSec vam vdefm vreqm loadOptions elf of
-            Nothing -> []
-            Just addrs -> addrs
-      return (pltAddrs ++ pltGotAddrs ++ acc)
-
     pltStubAddress dynSec vam vdefm vreqm getRelSymIdx accum rel
       | Right (symtabEntry, versionedVal) <- DEP.dynSymEntry dynSec vam vdefm vreqm (getRelSymIdx rel) =
           let versym = ALV.VerSym { ALV.versymSymbol = ALES.symtabEntryFunctionName symtabEntry

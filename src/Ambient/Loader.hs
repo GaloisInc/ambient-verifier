@@ -219,6 +219,7 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
                   { ALB.lbpBinary = bin
                   , ALB.lbpPath = path
                   , ALB.lbpEntryPoints = ALES.elfEntryPointAddrMap bin
+                  , ALB.lbpPltStubs = ALEP.pltStubSymbols abi proxyReloc bin
                   })
               binsAndPaths
       let bins = NEV.map fst binsAndPaths
@@ -227,7 +228,7 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
         { ALB.bcBinaries = loadedBinaryPaths
         , ALB.bcMainBinarySymbolMap = ALES.elfEntryPointSymbolMap $ NEV.head bins
         , ALB.bcDynamicFuncSymbolMap = dynFuncSymMap
-        , ALB.bcPltStubs = ALEP.pltStubSymbols abi proxyReloc bins
+        , ALB.bcPltStubs = Map.unions $ fmap ALB.lbpPltStubs loadedBinaryPaths
         , ALB.bcGlobalVarAddrs = globals
         , ALB.bcUnsuportedRelocations = unsupportedRels
         }

@@ -9,7 +9,7 @@
 module Ambient.Verifier.WME (wmExecutor) where
 
 import           Control.Applicative ( (<|>) )
-import           Control.Lens ( (^.), set )
+import           Control.Lens ( (^.), (&), (.~), set )
 import qualified Control.Monad.Reader as CMR
 import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
@@ -121,7 +121,9 @@ buildCfgFromAddr archInfo loadedBinaryPath hdlAlloc addr symArchFns = do
   let mOff = DMBE.resolveAbsoluteAddress mem (fromInteger addr)
   case mOff of
     Just off -> do
+      let pltEntryPoints = ALB.lbpTrustedPltEntryPoints loadedBinaryPath
       let discoveryState = DMD.cfgFromAddrs archInfo mem symMap [off] []
+                             & DMD.trustedFunctionEntryPoints .~ pltEntryPoints
       someCfg <- lift ((discoveryState ^. DMD.funInfo) Map.! off)
       return (Just someCfg)
     Nothing -> return Nothing
