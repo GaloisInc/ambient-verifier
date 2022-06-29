@@ -207,6 +207,7 @@ lookupFunction :: forall sym bak arch binFmt p ext w scope solver st fs args ret
      )
    => LJ.LogAction IO AD.Diagnostic
    -> bak
+   -> AM.InitialMemory sym w
    -> DMS.GenArchVals mem arch
    -> ALB.BinaryConfig arch binFmt
    -- ^ Information about the loaded binaries
@@ -217,12 +218,12 @@ lookupFunction :: forall sym bak arch binFmt p ext w scope solver st fs args ret
    -> AET.Properties
    -- ^ The properties to be checked, along with their corresponding global traces
    -> DMS.LookupFunctionHandle p sym arch
-lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
-  DMS.LookupFunctionHandle $ \state0 mem regs -> do
+lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo props =
+  DMS.LookupFunctionHandle $ \state0 _mem regs -> do
     -- Extract instruction pointer value and look the address up in
     -- 'addressToFnHandle'
     funcAddr <- fromIntegral <$> extractIP bak archVals regs
-    (hdl, state1) <- lookupHandle funcAddr mem state0
+    (hdl, state1) <- lookupHandle funcAddr state0
     state2 <- recordFunctionEvent sym (LCF.handleName hdl) props state1
     pure (hdl, state2)
 
@@ -252,8 +253,7 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
     lazilyRegisterHandle ::
          forall key rtp blocks r ctx
        . Ord key
-      => LCLM.MemImpl sym
-      -> LCS.CrucibleState p sym ext rtp blocks r ctx
+      => LCS.CrucibleState p sym ext rtp blocks r ctx
       -> key
          -- ^ The type of function. This can be a MemWord (for kernel-specific
          --   functions) or a FunctionName (for other kinds of functions).
@@ -274,7 +274,7 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
             , LCS.CrucibleState p sym ext rtp blocks r ctx
             )
          -- The function handle to use, as well as the updated state.
-    lazilyRegisterHandle mem state key ovHandlesL fnAbiMap noFnFoundInAbiMap = do
+    lazilyRegisterHandle state key ovHandlesL fnAbiMap noFnFoundInAbiMap = do
       -- Step (1)
       case Map.lookup key (state ^. LCS.stateContext . LCS.cruciblePersonality . ovHandlesL) of
         Just handle -> pure (handle, incrementOvsApplied state)
@@ -282,7 +282,7 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
           -- Step (2)
           case Map.lookup key fnAbiMap of
             Just (AF.SomeFunctionOverride fnOverride) -> do
-              (handle, state') <- mkAndBindOverride mem state fnOverride
+              (handle, state') <- mkAndBindOverride state fnOverride
               let state'' = over (LCS.stateContext . LCS.cruciblePersonality . ovHandlesL)
                                  (Map.insert key handle)
                                  state'
@@ -324,14 +324,13 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
     lookupHandle
       :: forall rtp blocks r ctx
        . DMM.MemWord w
-      -> LCLM.MemImpl sym
       -> LCS.CrucibleState p sym ext rtp blocks r ctx
       -> IO ( LCF.FnHandle args ret
             , LCS.CrucibleState p sym ext rtp blocks r ctx
             )
-    lookupHandle funcAddr mem state =
+    lookupHandle funcAddr state =
       -- Step (1)
-      lazilyRegisterHandle mem state
+      lazilyRegisterHandle state
                            (AF.AddrFromKernel funcAddr)
                            AExt.functionAddrOvHandles
                            (AF.functionAddrMapping abi) $
@@ -346,16 +345,16 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
             -- and completely ignore the version. In the future, we will want
             -- to allow users to specify overrides that only apply to
             -- particular versions. See #104.
-            lazilyRegisterHandle mem state
+            lazilyRegisterHandle state
                                  (ALV.versymSymbol pltStubVersym)
                                  AExt.functionOvHandles
                                  (AF.functionNameMapping abi) $ do
               -- Step (2)(b)
               (funcAddrOff, bin) <- resolvePLTStub pltStubVersym
-              dispatchFuncAddrOff funcAddr funcAddrOff bin mem state
+              dispatchFuncAddrOff funcAddr funcAddrOff bin state
           Nothing -> do
             (funcAddrOff, bin) <- resolveFuncAddr funcAddr
-            dispatchFuncAddrOff funcAddr funcAddrOff bin mem state
+            dispatchFuncAddrOff funcAddr funcAddrOff bin state
 
     -- Resolve the address that a PLT stub will jump to, also returning the
     -- binary that the address resides in (see
@@ -393,17 +392,16 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
       -- ^ The address offset
       ALB.LoadedBinaryPath arch binFmt ->
       -- ^ The binary that the address resides in
-      LCLM.MemImpl sym ->
       LCS.CrucibleState p sym ext rtp blocks r ctx ->
       IO ( LCF.FnHandle args ret
          , LCS.CrucibleState p sym ext rtp blocks r ctx
          )
-    dispatchFuncAddrOff funcAddr funcAddrOff bin mem state =
+    dispatchFuncAddrOff funcAddr funcAddrOff bin state =
       -- Step (3)
       --
       -- Note that we call `takeFileName` on the binary path since the
       -- @overrides.yaml@ file only cares about the file name, not the full path.
-      lazilyRegisterHandle mem state
+      lazilyRegisterHandle state
                            (AF.AddrInBinary funcAddr (SF.takeFileName (ALB.lbpPath bin)))
                            AExt.functionAddrOvHandles
                            (AF.functionAddrMapping abi) $
@@ -414,7 +412,7 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
           -- and completely ignore the version. In the future, we will want
           -- to allow users to specify overrides that only apply to
           -- particular versions. See #104.
-          lazilyRegisterHandle mem state (ALV.versymSymbol fnVersym)
+          lazilyRegisterHandle state (ALV.versymSymbol fnVersym)
                                AExt.functionOvHandles
                                (AF.functionNameMapping abi) $
             discoverFuncAddrOff funcAddrOff bin state
@@ -450,19 +448,19 @@ lookupFunction logAction bak archVals binConf abi hdlAlloc archInfo props =
           pure (LCCC.cfgHandle cfg, state2)
 
     mkAndBindOverride :: forall fnArgs fnRet rtp blocks r ctx
-                       . LCLM.MemImpl sym
-                      -> LCS.CrucibleState p sym ext rtp blocks r ctx
+                       . LCS.CrucibleState p sym ext rtp blocks r ctx
                       -> AF.FunctionOverride p sym fnArgs ext fnRet
                       -> IO ( LCF.FnHandle args ret
                             , LCS.CrucibleState p sym ext rtp blocks r ctx
                             )
-    mkAndBindOverride mem state0 fnOverride = do
+    mkAndBindOverride state0 fnOverride = do
       -- First, construct an override for the function.
       let retOV :: forall r'
                  . LCSO.OverrideSim p sym ext r' args ret
                                    (Ctx.Assignment (LCS.RegValue' sym)
                                                    (DMS.CtxToCrucibleType (DMS.ArchRegContext arch)))
           retOV = do
+            mem <- LCS.readGlobal $ AM.imMemVar initialMem
             argMap <- LCS.getOverrideArgs
             let argReg = massageRegAssignment $ LCS.regMap argMap
             args <- liftIO $
@@ -1143,7 +1141,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig)) (ALB.bcUnsuportedRelocations binConf)
+    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak initialMem archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig)) (ALB.bcUnsuportedRelocations binConf)
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
                                        LCF.emptyHandleMap
