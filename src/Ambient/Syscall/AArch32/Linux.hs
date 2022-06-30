@@ -125,9 +125,13 @@ aarch32LinuxSyscallArgumentRegisters
 aarch32LinuxSyscallArgumentRegisters bak regTypes regs syscallTypes
   | Just PC.Refl <- PC.testEquality regTypes syscallABIRepr =
       case LCS.regValue regs of
-        Ctx.Empty Ctx.:> r0 Ctx.:> r1 Ctx.:> r2 Ctx.:> r3 Ctx.:> r4 Ctx.:> r5 Ctx.:> r6 Ctx.:> _ ->
-          let regEntries = map toRegEntry [r0, r1, r2, r3, r4, r5, r6]
-          in AO.buildArgumentAssignment bak syscallTypes regEntries
+        Ctx.Empty Ctx.:> r0 Ctx.:> r1 Ctx.:> r2 Ctx.:> r3 Ctx.:> r4 Ctx.:> r5 Ctx.:> r6 Ctx.:> _ -> do
+          let regEntries = map (pure . toRegEntry) [r0, r1, r2, r3, r4, r5, r6]
+          -- No syscalls make use of variadic arguments (see Note [Varargs] in
+          -- Ambient.FunctionOverride), so we do not make use of the GetVarArg
+          -- callback.
+          (regAssn, _getVarArg) <- AO.buildArgumentAssignment bak syscallTypes regEntries
+          pure regAssn
   | otherwise = AP.panic AP.Syscall "aarch32LinuxSyscallArgumentRegisters" [ "Unexpected argument register shape: " ++ show regTypes ]
   where
     ptrWidth = PN.knownNat @32

@@ -291,9 +291,14 @@ overrides:
 * ``shmat :: Int -> Pointer -> Int -> Pointer``
 * ``shmget :: SizeT -> SizeT -> Int -> Int``
 * ``socket :: Int -> Int -> Int -> Int``
-* ``sprintf :: Pointer -> Pointer -> ... -> Int``
 * ``read :: Int -> Pointer -> SizeT -> SizeT``
 * ``write :: Int -> Pointer -> SizeT -> SizeT``
+
+The following overrides can be invoked from both binaries and syntax overrides,
+but with the limitation that they can only be invoked from syntax overrides
+without any variadic arguments:
+
+* ``sprintf :: Pointer -> Pointer -> ... -> Int``
 
 The following overrides can only be invoked from syntax overrides:
 

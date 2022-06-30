@@ -27,47 +27,92 @@ import qualified Lang.Crucible.Types as LCT
 import qualified What4.Interface as WI
 
 import qualified Ambient.Exception as AE
+import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Panic as AP
 
--- | Build an Assignment representing the arguments to a system call or
--- function argument from a list of arguments. For system calls, this list will
--- consist solely of register arguments. For function calls, the beginning of
--- the list will consist of register arguments, but if the function has
--- sufficiently many arguments, the rest of the list will contain arguments
--- from the stack. See @Note [Passing arguments to functions]@ in
--- "Ambient.FunctionOverride".
+-- | Given argument types and a list of potential argument values, return a
+-- a pair consisting of (1) an 'Ctx.Assignment' of the argument values, possibly
+-- narrowed to the appropriate types, and (2) a 'AF.GetVarArg' callback for
+-- retrieving additional variadic arguments (see @Note [Varargs]@ in
+-- "Ambient.FunctionOverride").
+--
+-- The contents of the list of potential arguments can vary depending on
+-- whether this function is used for a system call or function call. For system
+-- calls, this will be a finite list of solely register arguments. For function
+-- calls, this list will be infinite, where the beginning of the list will
+-- consist of register arguments and the remainder of the list will consist of
+-- different stack offsets to read arguments from memory. Each entry in the
+-- list is monadic because of the possible need to load a value from memory.
+-- See @Note [Passing arguments to functions]@ in "Ambient.FunctionOverride".
 buildArgumentAssignment
   :: forall w args sym bak
    . (1 <= w, KnownNat w, LCB.IsSymBackend sym bak)
   => bak
   -> LCT.CtxRepr args
   -- ^ Types of arguments
-  -> [LCS.RegEntry sym (LCLM.LLVMPointerType w)]
-  -- ^ List of argument values
-  -> IO (Ctx.Assignment (LCS.RegEntry sym) args)
-  -- ^ Argument values
-buildArgumentAssignment bak argTyps argEntries = go argTyps argEntries'
+  -> [IO (LCS.RegEntry sym (LCLM.LLVMPointerType w))]
+  -- ^ List of potential argument values
+  -> IO (Ctx.Assignment (LCS.RegEntry sym) args, AF.GetVarArg sym)
+  -- ^ The argument values and a callback for retrieving variadic arguments
+buildArgumentAssignment bak argTyps argEntries = do
+  (knownArgs, variadicArgs) <- buildAssignment argTyps argEntries
+  pure ( knownArgs
+       , AF.GetVarArg $ \tp -> getVarArg tp variadicArgs
+       )
   where
-    -- Drop unused arguments from argEntries and reverse list to account for
-    -- right-to-left processing when using 'Ctx.viewAssign'
-    argEntries' = reverse (take (Ctx.sizeInt (Ctx.size argTyps)) argEntries)
+    -- Build an 'Ctx.Assignment' for the a subset of the arguments,
+    -- returning a 'AF.GetVarArg' callback for retrieiving the leftover
+    -- arguments.
+    buildAssignment
+      :: forall args'
+       . LCT.CtxRepr args'
+      -> [IO (LCS.RegEntry sym (LCLM.LLVMPointerType w))]
+      -> IO ( Ctx.Assignment (LCS.RegEntry sym) args'
+            , [IO (LCS.RegEntry sym (LCLM.LLVMPointerType w))]
+            )
+    buildAssignment typs args = do
+      -- Split the arguments we want to build an Assignment for off from the
+      -- other arguments proceeding.
+      let (argsPrefix, argsLeftOver) = splitAt (Ctx.sizeInt (Ctx.size typs)) args
+      -- Also make sure to reverse the arguments passed here to ensure that it
+      -- matches the right-to-left processing when using 'Ctx.viewAssign'.
+      argAssn <- go typs $ reverse argsPrefix
+      pure (argAssn, argsLeftOver)
 
+    -- Retrieve a single variadic argument from head the vararg list, and
+    -- also return a new callback that uses the tail of the vararg list.
+    -- (See Note [Varargs] in Ambient.FunctionOverride for what \"vararg list\"
+    -- means in this context.)
+    getVarArg ::
+      forall tp.
+      LCT.TypeRepr tp ->
+      [IO (LCS.RegEntry sym (LCLM.LLVMPointerType w))] ->
+      -- ^ The vararg list
+      IO (LCS.RegEntry sym tp, AF.GetVarArg sym)
+    getVarArg tp args = do
+      (Ctx.Empty Ctx.:> argEntry, argsLeftOver) <-
+        buildAssignment (Ctx.singleton tp) args
+      pure (argEntry, AF.GetVarArg $ \tp' -> getVarArg tp' argsLeftOver)
+
+    -- Loop through a subset of the arguments, narrowing each argument's
+    -- type if necessary. Note that this function has an invariant that the
+    -- list of potential arguments must be equal to the size of the
+    -- 'LCT.CtxRepr'.
     go :: forall args'
         . LCT.CtxRepr args'
-       -> [LCS.RegEntry sym (LCLM.LLVMPointerType w)]
+       -> [IO (LCS.RegEntry sym (LCLM.LLVMPointerType w))]
        -> IO (Ctx.Assignment (LCS.RegEntry sym) args')
     go typs args =
-      case args of
-        [] ->
-          case Ctx.viewAssign typs of
-            Ctx.AssignEmpty -> return Ctx.empty
-            _ -> AP.panic AP.Override
-                          "buildArgumentRegisterAssignment"
-                          ["Override expects too many arguments"]
-        arg : args' ->
-          case Ctx.viewAssign typs of
-            Ctx.AssignEmpty -> return Ctx.empty
-            Ctx.AssignExtend typs' trep -> do
+      case Ctx.viewAssign typs of
+        Ctx.AssignEmpty -> return Ctx.empty
+        Ctx.AssignExtend typs' trep ->
+          case args of
+            [] -> AP.panic AP.Override "buildArgumentAssignment"
+                           [ "Invariant violated"
+                           , "Override expects too many arguments"
+                           ]
+            mkArg : args' -> do
+              arg <- mkArg
               arg' <- narrowPointerType bak trep arg
               rest <- go typs' args'
               return (rest Ctx.:> arg')

@@ -443,7 +443,10 @@ acfgToFunctionOverride name globals fwdDecs auxCFGs (LCSC.ACFG argTypes retType 
          , AF.functionReturnType = retRepr
          , AF.functionAuxiliaryFnBindings = map acfgToFnBinding auxCFGs
          , AF.functionForwardDeclarations = fwdDecs
-         , AF.functionOverride = \bak args -> do
+           -- Note that we do not use the GetVarArg callback below since syntax
+           -- overrides do not have a mechanism for variadic arguments. See
+           -- Note [Varargs] in Ambient.FunctionOverride.
+         , AF.functionOverride = \bak args _getVarArg -> do
              -- Translate any arguments that are LLVMPointers but should be Bitvectors into Bitvectors
              --
              -- This generates side conditions asserting that the block ID is zero

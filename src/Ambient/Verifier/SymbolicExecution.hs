@@ -463,13 +463,13 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
             mem <- LCS.readGlobal $ AM.imMemVar initialMem
             argMap <- LCS.getOverrideArgs
             let argReg = massageRegAssignment $ LCS.regMap argMap
-            args <- liftIO $
+            (args, getVarArg) <- liftIO $
               AF.functionIntegerArguments abi bak
                                           (AF.functionArgTypes fnOverride)
                                           argReg mem
             AF.functionIntegerReturnRegisters abi bak
                                               (AF.functionReturnType fnOverride)
-                                              (AF.functionOverride fnOverride bak args)
+                                              (AF.functionOverride fnOverride bak args getVarArg)
                                               argReg
 
       let ov :: LCSO.Override p sym ext args ret

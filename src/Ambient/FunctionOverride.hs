@@ -7,7 +7,9 @@
 module Ambient.FunctionOverride (
     FunctionOverride(..)
   , mkFunctionOverride
+  , mkVariadicFunctionOverride
   , syscallToFunctionOverride
+  , GetVarArg(..)
   , SomeFunctionOverride(..)
   , FunctionOverrideHandle
   , FunctionAddrLoc(..)
@@ -88,7 +90,9 @@ data FunctionOverride p sym args ext ret =
                           )
                        => bak
                        -> Ctx.Assignment (LCS.RegEntry sym) args
-                       -- Arguments to function
+                       -- Known arguments to function
+                       -> GetVarArg sym
+                       -- Variadic arguments to function
                        -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))
                    -- ^ Override capturing behavior of the function
                    }
@@ -102,6 +106,9 @@ data FunctionOverride p sym args ext ret =
 -- * No auxiliary function bindings are used.
 --
 -- * No forward declarations are used.
+--
+-- * The override does not make use of variadic arguments (see
+--   @Note [Varargs]@).
 mkFunctionOverride ::
   ( LCT.KnownRepr LCT.CtxRepr args
   , LCT.KnownRepr LCT.TypeRepr ret
@@ -117,7 +124,28 @@ mkFunctionOverride ::
     -> Ctx.Assignment (LCS.RegEntry sym) args
     -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))) ->
   FunctionOverride p sym args ext ret
-mkFunctionOverride name ov = FunctionOverride
+mkFunctionOverride name ov =
+  mkVariadicFunctionOverride name $ \bak args _getVarArg -> ov bak args
+
+-- | Like 'mkFunctionOverride', but where the function override can make use of
+-- variadic arguments (see @Note [Varargs]@).
+mkVariadicFunctionOverride ::
+  ( LCT.KnownRepr LCT.CtxRepr args
+  , LCT.KnownRepr LCT.TypeRepr ret
+  ) =>
+  WF.FunctionName ->
+  (forall bak solver scope st fs
+     . ( LCB.IsSymBackend sym bak
+       , sym ~ WE.ExprBuilder scope st fs
+       , bak ~ LCBO.OnlineBackend solver scope st fs
+       , WPO.OnlineSolver solver
+       )
+    => bak
+    -> Ctx.Assignment (LCS.RegEntry sym) args
+    -> GetVarArg sym
+    -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))) ->
+  FunctionOverride p sym args ext ret
+mkVariadicFunctionOverride name ov = FunctionOverride
   { functionName = name
   , functionGlobals = []
   , functionArgTypes = LCT.knownRepr
@@ -140,8 +168,19 @@ syscallToFunctionOverride syscallOv = FunctionOverride
   , functionReturnType = AS.syscallReturnType syscallOv
   , functionAuxiliaryFnBindings = []
   , functionForwardDeclarations = Map.empty
-  , functionOverride = AS.syscallOverride syscallOv
+  , functionOverride = \bak args _getVarArg ->
+      AS.syscallOverride syscallOv bak args
   }
+
+-- | Given a type, retrieve the value of a variadic argument in a function
+-- override, as well a callback for retrieving the next variadic argument.
+-- This is monadic since there is a possibility that the variadic argument must
+-- be loaded from the stack. See @Note [Varargs]@.
+newtype GetVarArg sym = GetVarArg
+  ( forall tp.
+    LCT.TypeRepr tp ->
+    IO (LCS.RegEntry sym tp, GetVarArg sym)
+  )
 
 data SomeFunctionOverride p sym ext =
   forall args ret . SomeFunctionOverride (FunctionOverride p sym args ext ret)
@@ -198,8 +237,9 @@ data FunctionABI arch sym p =
       -- Argument register values
       -> LCLM.MemImpl sym
       -- The memory state at the time of the function call
-      -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
-      -- Function argument values
+      -> IO (Ctx.Assignment (LCS.RegEntry sym) atps, GetVarArg sym)
+      -- A pair containing the function argument values and a callback for
+      -- retrieving variadic arguments.
 
     -- The two registers used to store arguments in an
     -- @int main(int argc, char *argv[])@ function.
@@ -297,4 +337,99 @@ following:
   can be split up into multiple registers or stack values depending on the size
   of the struct.
 * Eight-byte values of 32-bit architectures
+
+Note [Varargs]
+~~~~~~~~~~~~~~
+Various C functions accept variadic arguments (or varargs for short), e.g.,
+
+  int sprintf(char *str, const char *format, ...);
+
+Here, the `...` represents zero or more arguments of possibly differing types.
+At the machine code level, however, there is no distinction between varargs and
+the arguments that come before them. If a C program calls
+sprintf(out, "%d %s", 42, "abc"), then at the machine code level, the sprintf
+function will be called with all of its arguments placed in registers. If
+sprintf is called with even more arguments, then some of those arguments may be
+spilled to the stack. (See Note [Passing arguments to functions] for more
+about how stack arguments work.)
+
+While varargs are not particularly remarkable at the machine level, they pose
+an interesting challenge for function overrides. For instance, we have a
+built-in override for sprintf, and we would like to only define the override
+once such that it works with any numbers of arguments. However, we do not know
+in advance how many arguments sprintf will be given. When running the built-in
+override for sprintf, we need to be able to load additional arguments on demand
+based on the contents of the format string.
+
+Our solution to this problem is to pass a GetVarArg callback to the type of
+`functionOverride`, where GetVarArg is defined as:
+
+  newtype GetVarArg sym = GetVarArg
+    ( forall tp.
+      LCT.TypeRepr tp ->
+      IO (LCS.RegEntry sym tp, GetVarArg sym)
+    )
+
+Given a type, this callback will return a pair containing (1) the vararg value
+of that type, and (2) another callback for loading the next vararg. The design
+of GetVarArg is very similar to that of C's va_arg macro, which also loads
+arguments one at a time in a type-directed fashion. In the case of the sprintf
+example, the sprintf override can invoke GetVarArg as many times as needed
+based on the contents of the format string.
+
+The Ambient.Override.buildArgumentAssignment function is responsible for
+implementing the GetVarArg callback that is passed to `functionOverride`. This
+function takes a set of known (i.e., non-variadic) argument types and matches
+them up to register or stack values as appropriate. The argument values that
+are left over (let's call this the "vararg list") are then used to implement a
+GetVarArg callback. Each time you invoke GetVarArg, it will pop off a value
+from the vararg list and return a pair containing that value and another
+GetVarArg callback that uses the remainder of the vararg list. Because there
+could be an arbitrary number of variadic arguments, the vararg list is an
+infinite list. After exhausing the register values, the vararg list will
+read from the stack at higher and higher offsets.
+
+As a concrete example, let's suppose you invoke the sprintf function override
+on AArch32 like so:
+
+  sprintf(out, "%d %s %d", 42, "abc", 27);
+
+When invoking buildArgumentAssignment, the first two arguments will immediately
+be paired up with registers (r0 and r1 on AArch32), since they are non-variadic
+arguments. The remaining arguments are variadic, so they will be taken from a
+vararg list that looks like this:
+
+  {r3, r4, [sp, #0], [sp #4], [sp #8], [sp #12], ...}
+
+Here, the first two entries (r3 and r4) are registers, and all other entries
+are different offsets into the stack pointer (sp). The sprintf override will
+call GetVarArg three times, causing the first three entries to be read for
+their values. That is all the arguments that this particular example needs,
+but the same approach would work for an even greater number of arguments, since
+the vararg list is infinite.
+
+Some follow-up observations about the verifier's implementation of varargs:
+
+* Although buildArgumentAssignment always returns a GetVarArg callback, not
+  all call sites of buildArgumentAssignment actually make use of it. For
+  instance, syscall overrides use buildArgumentAssignment solely for register
+  arguments, and no system call uses variadic arguments.
+
+* Similarly, although the type of `functionOverride` always includes a
+  GetVarArg callback, most function overrides don't actually use it. For
+  instance, syntax overrides never make use of the GetVarArg callback since
+  they do not have a mechanism for handling varargs.
+
+* What happens if a .cbl file `declare`s a built-in override for a variadic
+  function like sprintf? We permit this, but we only permit the `declare`d
+  type to contain the non-variadic arguments. For instance, the `delcare`d
+  type of `sprintf` must be:
+
+    (declare @sprintf ((str Pointer) (format Pointer)) Int)
+
+  Attempting to `declare` it with any more argument types will result in a type
+  error. This is admittedly pretty limiting, but designing a way to robustly
+  handle varargs at the syntax override level will take some thought and
+  effort. We will wait for someone to complain about this before initiating
+  that effort.
 -}

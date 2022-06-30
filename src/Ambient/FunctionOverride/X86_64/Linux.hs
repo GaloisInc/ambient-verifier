@@ -58,27 +58,26 @@ x86_64LinuxIntegerArguments
   -- ^ Argument register values
   -> LCLM.MemImpl sym
   -- ^ The memory state at the time of the function call
-  -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
+  -> IO (Ctx.Assignment (LCS.RegEntry sym) atps, AF.GetVarArg sym)
 x86_64LinuxIntegerArguments bak archVals argTypes regs mem = do
   let ?ptrWidth = ptrWidth
-  stackArgList <-
-    traverse (AFS.loadIntegerStackArgument bak archVals regs mem)
+  let stackArgList =
+        map (AFS.loadIntegerStackArgument bak archVals regs mem)
              -- Note that we are starting the indices for stack arguments at 1,
              -- not 0, as the first stack argument is located at @8(%rsp)@
              -- instead of @0(%rsp)@ (which is where the return address
              -- resides).
-             [1 .. numStackArgs]
+             [1..]
   let argList = regArgList ++ stackArgList
   AO.buildArgumentAssignment bak argTypes argList
   where
     ptrWidth = WI.knownNat @64
     regArgList = map lookupReg DMX.x86ArgumentRegs
-    numStackArgs = Ctx.sizeInt (Ctx.size argTypes) - length regArgList
 
     lookupReg r =
       case DMXS.lookupX86Reg r regs of
-        Just v -> (LCS.RegEntry (LCLM.LLVMPointerRepr ptrWidth)
-                                (LCS.unRV v))
+        Just v -> pure (LCS.RegEntry (LCLM.LLVMPointerRepr ptrWidth)
+                                     (LCS.unRV v))
         Nothing -> AP.panic AP.FunctionOverride
                             "x86_64LinuxIntegerArgumentRegisters"
                             ["Failed to lookup register: " ++ (show r)]

@@ -121,6 +121,9 @@ data AmbientException where
   -- different number of arguments than stated in the declaration.
   ForwardDeclarationArgumentNumberMismatch ::
     WF.FunctionName -> LCT.CtxRepr fwdDecArgTys -> LCT.CtxRepr resolvedFnArgTys -> AmbientException
+  -- | A forward declaration to a function attempted to load a variadic
+  -- argument, which is not supported.
+  ForwardDeclarationVarArgError :: WF.FunctionName -> AmbientException
   -- | Unable to narrow a type down from a specific bitvector length when invoking a function.
   FunctionTypeBvNarrowingError :: LCT.NatRepr w -> AmbientException
   -- | Unable to zero-extend a type to a specific bitvector length when invoking a function.
@@ -286,6 +289,11 @@ instance PP.Pretty AmbientException where
                   PP.pretty "arguments, but"
                 , PP.pretty "the resolved function has" PP.<+>
                   PP.pretty (Ctx.sizeInt (Ctx.size resolvedFnArgTys)) PP.<+> PP.pretty "arguments"
+                ]
+      ForwardDeclarationVarArgError fwdDecName ->
+        PP.vcat [ PP.pretty "The forward declaration for" PP.<+> PP.squotes (PP.pretty fwdDecName) PP.<+>
+                  PP.pretty "attempted to retrieve a variadic argument,"
+                , PP.pretty "which is not supported for syntax overrides."
                 ]
       -- These error messages would be improved if the Pretty instance for
       -- TypeRepr were more human-readable.

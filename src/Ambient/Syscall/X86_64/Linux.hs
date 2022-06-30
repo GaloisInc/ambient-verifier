@@ -78,11 +78,15 @@ x86_64LinuxSyscallArgumentRegisters bak regTyps regs syscallTyps
                 Ctx.:> rdx
                 Ctx.:> r10
                 Ctx.:> r8
-                Ctx.:> r9 ->
+                Ctx.:> r9 -> do
         -- Extract argument registers and put in list.
-        let regEntries = map toRegEntry [rdi, rsi, rdx, r10, r8, r9] in
+        let regEntries = map (pure . toRegEntry) [rdi, rsi, rdx, r10, r8, r9]
         -- Build an assignment from 'regEntries'
-        AO.buildArgumentAssignment bak syscallTyps regEntries
+        (regAssn, _) <- AO.buildArgumentAssignment bak syscallTyps regEntries
+        -- No syscalls make use of variadic arguments (see Note [Varargs] in
+        -- Ambient.FunctionOverride), so we do not make use of the GetVarArg
+        -- callback.
+        pure regAssn
   | otherwise
   = AP.panic AP.Syscall
              "x86_64LinuxSyscallArgumentRegisters"

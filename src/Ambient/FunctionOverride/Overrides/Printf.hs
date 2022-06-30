@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -44,12 +45,10 @@ import           Ambient.FunctionOverride
 import qualified Ambient.Memory as AM
 import           Ambient.Override
 
--- | Override for the @sprintf@ function.  This override has the following
--- limitations:
--- * All string arguments must be concrete.  This override adds failing
---   assertions for symbolic strings.  The override renders symbolic integers
---   as @?@ characters.  See ticket #118.
--- * The override only supports up to two format arguments.  See ticket #117.
+-- | Override for the @sprintf@ function.  This override has the limitation
+-- that all string arguments must be concrete.  This override adds failing
+-- assertions for symbolic strings.  The override renders symbolic integers as
+-- @?@ characters.  See ticket #118.
 callSprintf
   :: forall sym bak w p ext r args ret arch scope st fs solver
    . ( LCB.IsSymBackend sym bak
@@ -69,20 +68,16 @@ callSprintf
   -> Map.Map (DMC.MemWord w) String
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
-  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-  -- ^ Output pointer
-  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-  -- ^ Format string
-  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-  -- ^ Format argument 1
-  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
-  -- ^ Format argument 2
+  -> Ctx.Assignment (LCS.RegEntry sym)
+                    (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                                  Ctx.::> LCLM.LLVMPointerType w)
+  -- ^ The non-variadic arguments, consisting of (1) the output pointer, and
+  -- (2) the format string
+  -> GetVarArg sym
+  -- ^ The variadic arguments
   -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callSprintf bak initialMem unsupportedRelocs
-  (LCS.regValue -> outPtr)
-  strPtr
-  (LCS.regValue -> va0)
-  (LCS.regValue -> va1) = do
+  (Ctx.Empty Ctx.:> (LCS.regValue -> outPtr) Ctx.:> strPtr) gva = do
     let mvar = AM.imMemVar initialMem
     mem0 <- LCS.readGlobal mvar
     -- Read format string
@@ -93,8 +88,7 @@ callSprintf bak initialMem unsupportedRelocs
         LCS.AssertFailureSimError "Format string parsing failed" err
       Right ds -> do
         -- Compute output
-        let valist =
-              DV.fromList $ map (LCS.AnyValue (LCLM.LLVMPointerRepr ?ptrWidth)) [va0, va1]
+        valist <- liftIO $ getPrintfVarArgs (DV.fromList ds) gva
         ((str, n), mem1) <-
           CMS.runStateT
             (LCLP.executeDirectives (printfOps bak initialMem unsupportedRelocs valist)
@@ -148,14 +142,12 @@ buildSprintfOverride
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
   -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                          Ctx.::> LCLM.LLVMPointerType w
-                                          Ctx.::> LCLM.LLVMPointerType w
                                           Ctx.::> LCLM.LLVMPointerType w) ext
                             (LCLM.LLVMPointerType w)
 buildSprintfOverride initialMem unsupportedRelocs =
   WI.withKnownNat ?ptrWidth $
-  mkFunctionOverride "sprintf" $ \bak args ->
-    Ctx.uncurryAssignment (callSprintf bak initialMem unsupportedRelocs) args
+  mkVariadicFunctionOverride "sprintf" $ \bak args getVarArg ->
+    callSprintf bak initialMem unsupportedRelocs args getVarArg
 
 -- | Define handlers for the various printf directives.
 --
@@ -313,3 +305,49 @@ printfOps bak initialMem unsupportedRelocs valist =
                     (unwords ["Index:", show i])
   }
 
+-- | Given the directives in a @printf@-style format string, retrieve the
+-- corresponding variadic arguments. See @Note [Varargs]@ in
+-- "Ambient.FunctionOverride" for a more detailed explanation of the mechanisms
+-- at play.
+getPrintfVarArgs ::
+  forall sym w.
+  LCLM.HasPtrWidth w =>
+  DV.Vector LCLP.PrintfDirective ->
+  GetVarArg sym ->
+  IO (DV.Vector (LCS.AnyValue sym))
+getPrintfVarArgs pds =
+  CMS.evalStateT (DV.mapMaybeM (CMS.StateT . getPrintfVarArg) pds)
+
+-- | Given a single directive in a @printf@-style format string:
+--
+-- * If it is a conversion directive (i.e., beginning with a @%@ character),
+--   retrieve a variadic argument @arg@ of the corresponding type and return
+--   @'Just' (arg, gva)@, where @gva@ is the callback for retrieving the next
+--   variadic argument. See @Note [Varargs]@ in "Ambient.FunctionOverride".
+--
+-- * Otherwise, return 'Nothing'.
+getPrintfVarArg ::
+  forall sym w.
+  LCLM.HasPtrWidth w =>
+  LCLP.PrintfDirective ->
+  GetVarArg sym ->
+  IO (Maybe (LCS.AnyValue sym), GetVarArg sym)
+getPrintfVarArg pd gva@(GetVarArg getVarArg) =
+  case pd of
+    LCLP.StringDirective{} -> pure (Nothing, gva)
+    LCLP.ConversionDirective cd ->
+      case LCLP.printfType cd of
+        LCLP.Conversion_Integer{}    -> getArgWithType LCLM.PtrRepr
+        LCLP.Conversion_Char{}       -> getArgWithType LCLM.PtrRepr
+        LCLP.Conversion_String{}     -> getArgWithType LCLM.PtrRepr
+        LCLP.Conversion_Pointer{}    -> getArgWithType LCLM.PtrRepr
+        LCLP.Conversion_CountChars{} -> getArgWithType LCLM.PtrRepr
+        LCLP.Conversion_Floating{}   -> getArgWithType $ LCT.FloatRepr WIFloat.DoubleFloatRepr
+  where
+    getArgWithType ::
+      forall arg.
+      LCT.TypeRepr arg ->
+      IO (Maybe (LCS.AnyValue sym), GetVarArg sym)
+    getArgWithType tpRepr = do
+      (LCS.RegEntry ty val, gva') <- getVarArg tpRepr
+      pure (Just (LCS.AnyValue ty val), gva')

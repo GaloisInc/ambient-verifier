@@ -61,21 +61,21 @@ aarch32LinuxIntegerArguments
   -- ^ A register structure containing symbolic values
   -> LCLM.MemImpl sym
   -- ^ The memory state at the time of the function call
-  -> IO (Ctx.Assignment (LCS.RegEntry sym) atps)
+  -> IO (Ctx.Assignment (LCS.RegEntry sym) atps, AF.GetVarArg sym)
 aarch32LinuxIntegerArguments bak archVals argTypes regFile mem = do
   let ?ptrWidth = ptrWidth
-  stackArgList <- traverse (AFS.loadIntegerStackArgument bak archVals regFile mem)
-                           [0 .. numStackArgs-1]
+  let stackArgList = map (AFS.loadIntegerStackArgument bak archVals regFile mem)
+                         [0..]
   let argList = regArgList ++ stackArgList
   AO.buildArgumentAssignment bak argTypes argList
   where
     ptrWidth = PN.knownNat @32
-    regArgList = map lookupReg [ ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
-                               , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
-                               , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R2")
-                               , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R3")
-                               ]
-    numStackArgs = Ctx.sizeInt (Ctx.size argTypes) - length regArgList
+    regArgList = map (pure . lookupReg)
+                     [ ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
+                     , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
+                     , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R2")
+                     , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R3")
+                     ]
     lookupReg r = LCS.RegEntry (LCLM.LLVMPointerRepr ptrWidth)
                                (LCS.unRV (DMAS.lookupReg r regFile))
 

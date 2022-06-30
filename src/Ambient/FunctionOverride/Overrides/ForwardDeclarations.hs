@@ -63,7 +63,7 @@ mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
             -- Step (2)
             args2 <- liftIO $ extendToRegisterAssignment (AF.functionArgTypes resolvedFnOv) args1
             -- Step (3)
-            resValue <- AF.functionOverride resolvedFnOv bak args2
+            resValue <- AF.functionOverride resolvedFnOv bak args2 dummyGetVarArg
             let resEntry0 = LCS.RegEntry (AF.functionReturnType resolvedFnOv) resValue
             -- Step (4)
             resEntry1 <- liftIO $
@@ -110,6 +110,23 @@ mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
                                 fwdDecName regTys narrowTys
 
         narrowTys = PC.fmapFC LCS.regType narrowEs
+
+    -- Syntax overrides do not have a mechanism for variadic arguments—see
+    -- Note [Varargs] in Ambient.FunctionOverride. We do permit forward
+    -- declarations to refer to variadic functions, but with the caveat that
+    -- they are not allowed to make use of variadic functions. For example,
+    -- a forward declaration to sprintf with two arguments is acceptable, but
+    -- a foward declaration to sprintf with more than two arguments is a type
+    -- error.
+    --
+    -- Still, a crafty user could try to invoke sprintf with a \"%d\" format
+    -- string and no other arguments, which would still cause the built-in
+    -- sprintf override to invoke its GetVarArg function. Anticipating this
+    -- scenario, the dummy GetVarArg callback below simply throws an exception
+    -- when it is invoked to cast shame in the user's direction.
+    dummyGetVarArg :: AF.GetVarArg sym
+    dummyGetVarArg = AF.GetVarArg $ \_ -> CMC.throwM $
+      AE.ForwardDeclarationVarArgError fwdDecName
 
 {-
 Note [Resolving forward declarations]
