@@ -27,7 +27,6 @@ module Ambient.FunctionOverride.Overrides
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
-import qualified Control.Monad.State as CMS
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( mapMaybe )
 import qualified Data.Parameterized.Context as Ctx
@@ -49,6 +48,7 @@ import           Ambient.FunctionOverride
 import           Ambient.FunctionOverride.Overrides.CrucibleStrings
 import           Ambient.FunctionOverride.Overrides.Printf
 import qualified Ambient.Memory as AM
+import qualified Ambient.MonadState as AMS
 import           Ambient.Override
 import qualified Ambient.Syscall as AS
 import qualified Ambient.Syscall.Overrides as ASO
@@ -73,8 +73,8 @@ allOverrides ::
   -- unsupported relocation types.
   [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
 allOverrides fs initialMem unsupportedRelocs = concat
-  [ -- Printf
-    [SomeFunctionOverride (buildSprintfOverride initialMem unsupportedRelocs)]
+  [ -- Printf family
+    printfFamilyOverrides initialMem unsupportedRelocs
     -- Crucible strings
   , crucibleStringOverrides initialMem unsupportedRelocs
     -- Memory
@@ -140,15 +140,6 @@ callCalloc bak mvar (LCS.regValue -> num) (LCS.regValue -> sz) =
   do numBV <- LCLM.projectLLVM_bv bak num
      szBV  <- LCLM.projectLLVM_bv bak sz
      LCLM.doCalloc bak mem szBV numBV LCLD.noAlignment
-
--- | Given a function that modifies state, this function wraps the call in
--- @get@ and @put@ operations to update the state in the state monad.
-modifyM :: (CMS.MonadState s m) => (s -> m (a, s)) -> m a
-modifyM fn = do
-  s <- CMS.get
-  (a, s') <- fn s
-  CMS.put s'
-  return a
 
 buildMallocOverride :: ( ?memOpts :: LCLM.MemOptions
                        , LCLM.HasLLVMAnn sym
@@ -217,8 +208,8 @@ callMemcpy bak initialMem dest src (LCS.regValue -> sz) =
   LCS.modifyGlobal (AM.imMemVar initialMem) $ \mem0 ->
   do szBV <- liftIO $ LCLM.projectLLVM_bv bak sz
      let ?memOpts = overrideMemOptions
-     src' <- modifyM (liftIO . AExt.resolveAndPopulate bak mem0 initialMem szBV src)
-     dest' <- modifyM (liftIO . AExt.resolveAndPopulate bak mem0 initialMem szBV dest)
+     src' <- AMS.modifyM (liftIO . AExt.resolveAndPopulate bak mem0 initialMem szBV src)
+     dest' <- AMS.modifyM (liftIO . AExt.resolveAndPopulate bak mem0 initialMem szBV dest)
      mem1 <- LCS.readGlobal (AM.imMemVar initialMem)
      mem2 <- liftIO $ LCLM.doMemcpy bak (LCLM.ptrWidth sz) mem1 True dest' src' szBV
      pure ((), mem2)
@@ -266,7 +257,7 @@ callMemset bak initialMem dest val (LCS.regValue -> sz) =
      valBV <- liftIO $ ptrToBv8 bak w val
      szBV <- liftIO $ LCLM.projectLLVM_bv bak sz
      dest' <-
-        modifyM (liftIO . AExt.resolveAndPopulate bak mem0 initialMem szBV dest)
+        AMS.modifyM (liftIO . AExt.resolveAndPopulate bak mem0 initialMem szBV dest)
      mem1 <- LCS.readGlobal mvar
      mem2 <- liftIO $ LCLM.doMemset bak w mem1 dest' (LCS.regValue valBV) szBV
      pure ((), mem2)

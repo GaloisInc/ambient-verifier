@@ -299,6 +299,7 @@ but with the limitation that they can only be invoked from syntax overrides
 without any variadic arguments:
 
 * ``sprintf :: Pointer -> Pointer -> ... -> Int``
+* ``sscanf :: Pointer -> Pointer -> ... -> Int``
 
 The following overrides can only be invoked from syntax overrides:
 
