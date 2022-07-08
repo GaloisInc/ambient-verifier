@@ -19,6 +19,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ElfEdit as DE
 import qualified Data.Foldable as F
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe, listToMaybe )
 import qualified Data.Text.Encoding as DTE
@@ -194,30 +195,38 @@ elfDynamicGlobalSymbolMap = elfDynamicSymbolMap
   isGlobalVar
 
 -- | Given a binary, map the resolved address offset of each entry point
--- function to its name. This includes entry points in both the static and
--- dynamic symbol tables.
+-- function to its symbol names. This includes entry points in both the static
+-- and dynamic symbol tables.
+--
+-- Most of the time, each function address is only associated with a single
+-- name, but it is certainly possible for an address to have multiple names.
+-- For example, it is quite common for @libc@ implementations to have names
+-- like @__open64@, @open64@, @__open@, and @open@ all refer to the same
+-- address.
 elfEntryPointAddrMap ::
   (w ~ DMC.ArchAddrWidth arch, DMM.MemWidth w) =>
   DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
-  Map.Map (DMM.MemSegmentOff w) ALV.VersionedFunctionName
+  Map.Map (DMM.MemSegmentOff w) (NEL.NonEmpty ALV.VersionedFunctionName)
 elfEntryPointAddrMap loadedBinary =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
-  -- The use of `Map.fromList` here is questionable, since it will favor later
-  -- addresses in the list over ones that appear earlier in the list. A
-  -- consequence of this is that each function address can only be associated
-  -- with a single name, even though it is quite possible for an address to
-  -- have multiple function names (e.g., @setuid@ and @__setuid@). See #142 for
-  -- an alternative design which would solve this issue.
-  Map.fromList [ ( case DMBE.resolveAbsoluteAddress mem addr of
-                     Just addrOff -> addrOff
-                     Nothing -> AP.panic AP.Loader "elfEntryPointAddrMap"
-                                  ["Failed to resolve function address: " ++ show addr]
-                 , fmap symtabEntryFunctionName versym
-                 )
-               | versym <- elfEntryPoints elfHeaderInfo
-               , let ste = ALV.versymSymbol versym
-               , let addr = fromIntegral (DE.steValue ste) + fromIntegral offset
-               ]
+  Map.fromListWith
+    -- If we encounter a function address that already has symbol names
+    -- associated with it, prepend the new name to the front of the list.
+    -- This choice doesn't have particularly deep ramifications; the only thing
+    -- that it affects is what function symbols will be reported in @macaw@
+    -- logs. See the Haddocks for A.Loader.BinaryConfig.lbpAddrSymMap for more
+    -- details.
+    (\new old -> new <> old)
+    [ ( case DMBE.resolveAbsoluteAddress mem addr of
+          Just addrOff -> addrOff
+          Nothing -> AP.panic AP.Loader "elfEntryPointAddrMap"
+                       ["Failed to resolve function address: " ++ show addr]
+      , fmap symtabEntryFunctionName versym NEL.:| []
+      )
+    | versym <- elfEntryPoints elfHeaderInfo
+    , let ste = ALV.versymSymbol versym
+    , let addr = fromIntegral (DE.steValue ste) + fromIntegral offset
+    ]
   where
     mem = DMB.memoryImage loadedBinary
     elfHeaderInfo = DMB.originalBinary loadedBinary

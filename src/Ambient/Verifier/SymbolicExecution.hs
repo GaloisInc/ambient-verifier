@@ -309,8 +309,8 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
     --     If the address does not point to a PLT stub, proceed to (3).
     -- (3) Check for an user-specified override for the given address in an
     --     @overrides.yaml@ file. If not found, proceed to (4).
-    -- (4) Look up the function name corresponding to the address. If an
-    --     override is registered to that name, dispatch the override.
+    -- (4) Look up the function names corresponding to the address. If an
+    --     override is registered to one of those names, dispatch the override.
     --     Otherwise, proceed to (5).
     -- (5) Perform incremental code discovery on the function at the address
     --     (see Note [Incremental code discovery] in A.Extensions) and return
@@ -407,15 +407,21 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
                            (AF.functionAddrMapping abi) $
       -- Step (4)
       case Map.lookup funcAddrOff (ALB.lbpEntryPoints bin) of
-        Just fnVersym ->
+        Just fnVersyms ->
+          -- Look up each of the symbol names associated with each address.
+          -- If we find a handle for one of the names, stop searching and
+          -- return that handle. Otherwise, fall back on 'discoverFuncAddrOff'.
+          let findHandleForSym fnSym findNextSym =
+                lazilyRegisterHandle state fnSym
+                                     AExt.functionOvHandles
+                                     (AF.functionNameMapping abi)
+                                     findNextSym in
+          let fallback = discoverFuncAddrOff funcAddrOff bin state in
           -- NB: When looking up overrides, we only consult the function name
           -- and completely ignore the version. In the future, we will want
           -- to allow users to specify overrides that only apply to
           -- particular versions. See #104.
-          lazilyRegisterHandle state (ALV.versymSymbol fnVersym)
-                               AExt.functionOvHandles
-                               (AF.functionNameMapping abi) $
-            discoverFuncAddrOff funcAddrOff bin state
+          foldr findHandleForSym fallback (fmap ALV.versymSymbol fnVersyms)
         Nothing ->
           discoverFuncAddrOff funcAddrOff bin state
 

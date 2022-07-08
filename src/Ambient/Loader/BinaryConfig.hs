@@ -6,6 +6,7 @@ module Ambient.Loader.BinaryConfig
   , lbpTrustedPltEntryPoints
   ) where
 
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Text.Encoding as DTE
 import qualified Data.Vector.NonEmpty as NEV
 import qualified Data.Map.Strict as Map
@@ -87,9 +88,11 @@ data LoadedBinaryPath arch binFmt = LoadedBinaryPath {
   , lbpPath :: FilePath
   -- ^ The path the 'lbpBinary' was loaded from.
 
-  , lbpEntryPoints :: Map.Map (DMC.ArchSegmentOff arch) ALV.VersionedFunctionName
+  , lbpEntryPoints :: Map.Map (DMC.ArchSegmentOff arch) (NEL.NonEmpty ALV.VersionedFunctionName)
   -- ^ This maps the entry point addresses in the 'lbpBinary' to their
-  -- corresponding function names. This information is used for two purposes:
+  -- corresponding function names. Note that a single function address can have
+  -- multiple symbol names, hence the use of 'NEL.NonEmpty'. This information is
+  -- used for two purposes:
   --
   -- * Seeding code discovery (see "Ambient.Discovery"), and
   --
@@ -110,11 +113,18 @@ data LoadedBinaryPath arch binFmt = LoadedBinaryPath {
   -- "Ambient.ELF.Loader.PLTStubDetector".
   }
 
--- | Like 'lbpEntryPoints', but with the function names converted to
--- @ByteString@s. This conversion is needed so that the map can be passed to
--- code discovery–related functions in @macaw@.
+-- | Convert the 'lbpEntryPoints' in a 'LoadedBinaryPath' to an
+-- 'DMD.AddrSymMap'. This is accomplished by taking the first symbol name
+-- associated with each function address and converting it to a @ByteString@.
+--
+-- This function is used exclusively for the benefit of @macaw@'s code
+-- discovery, which consults the 'DMD.AddrSymMap' for logging purposes. As
+-- such, it's OK to drop all of the symbol names associated with each function
+-- address except for the first name. The worst thing that can happen is that
+-- @macaw@'s code discovery logs might print out a function name that you
+-- weren't expecting.
 lbpAddrSymMap :: LoadedBinaryPath arch binFmt -> DMD.AddrSymMap (DMC.ArchAddrWidth arch)
-lbpAddrSymMap = fmap (DTE.encodeUtf8 . WF.functionName . ALV.versymSymbol) . lbpEntryPoints
+lbpAddrSymMap = fmap (DTE.encodeUtf8 . WF.functionName . ALV.versymSymbol . NEL.head) . lbpEntryPoints
 
 -- | Given a 'LoadedBinaryPath', construct a map of trusted entry points
 -- consisting of the addresses of the binary's PLT stubs.
