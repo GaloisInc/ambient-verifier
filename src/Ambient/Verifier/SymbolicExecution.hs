@@ -496,29 +496,17 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
       let ov :: LCSO.Override p sym ext args ret
           ov = LCSO.mkOverride' (AF.functionName fnOverride) regsRepr retOV
 
-      -- Next, register any auxiliary functions that are used in the override.
-      let state1 =
-            F.foldl' (\state (LCS.FnBinding fnHdl fnSt) ->
-                       insertFunctionHandle state fnHdl fnSt)
-                     state0
-                     (AF.functionAuxiliaryFnBindings fnOverride)
-
-      -- Next, register overrides for any forward declarations. See
-      -- Note [Resolving forward declarations] in
-      -- Ambient.FunctionOverride.Overrides.ForwardDeclarations.
-      state2 <-
-        F.foldlM
-          (\state (fwdDecName, LCF.SomeHandle fwdDecHandle) ->
-            do ovSim <- AFOF.mkForwardDeclarationOverride
-                          bak (AF.functionNameMapping abi) fwdDecName fwdDecHandle
-               pure $ insertFunctionHandle state fwdDecHandle
-                    $ LCS.UseOverride ovSim)
-          state1
-          (Map.toAscList $ AF.functionForwardDeclarations fnOverride)
+      -- Next, register any auxiliary functions or forward declarations that are
+      -- used in the override.
+      let LCS.FnBindings curHandles = state0 ^. LCS.stateContext ^. LCS.functionBindings
+      newHandles <- insertFunctionOverrideHandles bak abi fnOverride curHandles
+      let state1 = set (LCS.stateContext . LCS.functionBindings)
+                       (LCS.FnBindings newHandles)
+                       state0
 
       -- Finally, build a function handle for the override and insert it into
       -- the state.
-      bindOverrideHandle state2 hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
+      bindOverrideHandle state1 hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov
 
     -- Massage the RegEntry Assignment that getOverrideArgs provides into the
     -- form that FunctionABI expects.
@@ -641,6 +629,46 @@ insertFunctionHandle state handle fnState =
   let newHandles = LCS.FnBindings $
                    LCF.insertHandleMap handle fnState curHandles in
   set (LCS.stateContext . LCS.functionBindings) newHandles state
+
+-- | A 'AF.FunctionOverride' can contain references to auxiliary functions or
+-- forward declarations (see @Note [Resolving forward declarations]@ in
+-- "Ambient.FunctionOverride.Overrides.ForwardDeclarations"), all of which have
+-- associated 'LCF.FnHandle's. This inserts all of these handles into a
+-- 'LCF.FnHandleMap'.
+--
+-- This function is monadic because constructing the overrides for forward
+-- declarations can fail if the declared function name cannot be found.
+insertFunctionOverrideHandles ::
+  ( LCB.IsSymBackend sym bak
+  , LCLM.HasLLVMAnn sym
+  , ext ~ DMS.MacawExt arch
+  , sym ~ WE.ExprBuilder scope st fs
+  , bak ~ LCBO.OnlineBackend solver scope st fs
+  , WPO.OnlineSolver solver
+  ) =>
+  bak ->
+  AF.FunctionABI arch sym p ->
+  AF.FunctionOverride p sym args ext ret ->
+  LCF.FnHandleMap (LCS.FnState p sym ext) ->
+  IO (LCF.FnHandleMap (LCS.FnState p sym ext))
+insertFunctionOverrideHandles bak abi fnOverride handles0 = do
+  -- Register any auxiliary functions that are used in the override...
+  let handles1 =
+        F.foldl' (\hdls (LCS.FnBinding fnHdl fnSt) ->
+                   LCF.insertHandleMap fnHdl fnSt hdls)
+                 handles0
+                 (AF.functionAuxiliaryFnBindings fnOverride)
+
+  -- ...and register overrides for any forward declarations.
+  F.foldlM
+    (\hdls (fwdDecName, LCF.SomeHandle fwdDecHandle) ->
+      do ovSim <- AFOF.mkForwardDeclarationOverride
+                    bak (AF.functionNameMapping abi) fwdDecName fwdDecHandle
+         pure $ LCF.insertHandleMap fwdDecHandle
+                                    (LCS.UseOverride ovSim)
+                                    hdls)
+    handles1
+    (Map.toAscList $ AF.functionForwardDeclarations fnOverride)
 
 -- | This function is used to generate a function handle for an override once a
 -- syscall is encountered
