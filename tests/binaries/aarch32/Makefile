@@ -189,6 +189,9 @@ way-too-many-arguments/way-too-many-arguments.exe: way-too-many-arguments/way-to
 sscanf.exe: sscanf.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie $^ -o $@
 
+nested-pointers/nested-pointers.exe: nested-pointers/nested-pointers.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

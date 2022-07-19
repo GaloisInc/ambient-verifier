@@ -25,7 +25,7 @@ module Ambient.FunctionOverride.Extension (
   , machineCodeParserHooks
   ) where
 
-import           Control.Applicative ( empty )
+import           Control.Applicative ( Alternative(empty) )
 import           Control.Monad ( void, unless )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(liftIO) )
@@ -496,10 +496,72 @@ extensionTypeParser types = do
     Just someTypeRepr -> return someTypeRepr
     Nothing -> empty
 
--- | Convert a NatRepr containing a value in bytes to one containing a value in
--- bits.
-bytesToBits :: WI.NatRepr m -> WI.NatRepr (8 WI.* m)
-bytesToBits = PN.natMultiply (WI.knownNat @8)
+-- | Check that a 'WI.NatRepr' containing a value in bits is a multiple of 8.
+-- If so, pass the result of the value divided by 8 (i.e., as bytes) to the
+-- continuation. Otherwise, return a default result.
+bitsToBytes ::
+  WI.NatRepr bits ->
+  a ->
+  -- ^ Default value to use if @bits@ is not a multiple of 8
+  (forall bytes. ((8 WI.* bytes) ~ bits) => WI.NatRepr bytes -> a) ->
+  -- ^ Continuation to invoke is @bits@ is a multiple of 8
+  a
+bitsToBytes bitsRep nonMultipleOf8 multipleOf8 =
+  PN.withDivModNat bitsRep w8 $ \bytesRep modRep ->
+    case PN.isZeroNat modRep of
+      PN.NonZeroNat -> nonMultipleOf8
+      PN.ZeroNat
+        |  PN.Refl <- PN.mulComm bytesRep w8
+        -> multipleOf8 bytesRep
+  where
+    w8 = PN.knownNat @8
+
+-- | Perform a case analysis on the type argument to @pointer-read@ or
+-- @pointer-write@. If the supplied type is not supported, return 'empty'.
+-- This function packages factors out all of the grungy pattern-matching and
+-- constraint wrangling that @pointer-read@ and @pointer-write@ share in
+-- common.
+withSupportedPointerReadWriteTypes ::
+  Alternative f =>
+  LCT.TypeRepr tp ->
+  -- ^ The type argument
+  (forall bits bytes.
+     ( tp ~ LCT.BVType bits
+     , (8 WI.* bytes) ~ bits
+     , 1 <= bits
+     , 1 <= bytes
+     ) =>
+     WI.NatRepr bits ->
+     WI.NatRepr bytes ->
+     f a) ->
+  -- ^ Continuation to use if the argument is @'LCT.BVRepr (8 'WI.*' bytes)@
+  -- (for some positive number @bytes@).
+  (forall bits bytes.
+     ( tp ~ LCLM.LLVMPointerType bits
+     , (8 WI.* bytes) ~ bits
+     , 1 <= bits
+     , 1 <= bytes
+     ) =>
+     WI.NatRepr bits ->
+     WI.NatRepr bytes ->
+     f a) ->
+  -- ^ Continuation to use if the argument is
+  -- @'LCLM.LLVMPointerRepr (8 'WI.*' bytes)@ (for some positive number
+  -- @bytes@).
+  f a
+withSupportedPointerReadWriteTypes tp bvK ptrK =
+  case tp of
+    LCT.BVRepr bits ->
+      bitsToBytes bits empty $ \bytes ->
+        case PN.isPosNat bytes of
+          Nothing -> empty
+          Just PN.LeqProof -> bvK bits bytes
+    LCLM.LLVMPointerRepr bits ->
+      bitsToBytes bits empty $ \bytes ->
+        case PN.isPosNat bytes of
+          Nothing -> empty
+          Just PN.LeqProof -> ptrK bits bytes
+    _ -> empty
 
 -- | Parser for syntax extensions to crucible syntax
 --
@@ -524,41 +586,32 @@ extensionParser :: forall s m ext arch w
                 -> m (Pair.Pair LCT.TypeRepr (LCCR.Atom s))
                 -- ^ A pair containing a result type and an atom of that type
 extensionParser wrappers hooks =
+  let ?parserHooks = hooks in
   LCSE.depCons LCSC.atomName $ \name ->
     case name of
       LCSA.AtomName "pointer-read" -> do
-        -- Pointer reads are a special case because we must parse the number of
-        -- bytes to read as well as the endianness of the read before parsing
-        -- the additional arguments as Atoms.
-        LCSE.depCons LCSC.nat $ \bytes ->
+        -- Pointer reads are a special case because we must parse the type of
+        -- the value to read as well as the endianness of the read before
+        -- parsing the additional arguments as Atoms.
+        LCSE.depCons LCSC.isType $ \(Some tp) ->
           LCSE.depCons LCSC.atomName $ \endiannessName ->
             case endiannessFromAtomName endiannessName of
               Just endianness ->
-                case PN.mkNatRepr bytes of
-                  Some bytesRepr | Just PN.LeqProof <- PN.isPosNat bytesRepr
-                                 , Just PN.LeqProof <-
-                                     PN.isPosNat (bytesToBits bytesRepr) -> do
-                    let readWrapper = buildPointerReadWrapper bytesRepr
-                                                              endianness
-                    go (SomeExtensionWrapper readWrapper)
-                  _ -> empty
+                let readWrapper =
+                      buildPointerReadWrapper tp endianness in
+                go (SomeExtensionWrapper readWrapper)
               Nothing -> empty
       LCSA.AtomName "pointer-write" -> do
-        -- Pointer writes are a special case because we must parse the number
-        -- of bytes to write out as well as the endianness of the write before
+        -- Pointer writes are a special case because we must parse the type of
+        -- the value to write out as well as the endianness of the write before
         -- parsing the additional arguments as Atoms.
-        LCSE.depCons LCSC.nat $ \bytes ->
+        LCSE.depCons LCSC.isType $ \(Some tp) ->
           LCSE.depCons LCSC.atomName $ \endiannessName ->
             case endiannessFromAtomName endiannessName of
               Just endianness ->
-                case PN.mkNatRepr bytes of
-                  Some bytesRepr | Just PN.LeqProof <- PN.isPosNat bytesRepr
-                                 , Just PN.LeqProof <-
-                                     PN.isPosNat (bytesToBits bytesRepr) -> do
-                    let writeWrapper = buildPointerWriteWrapper bytesRepr
-                                                                endianness
-                    go (SomeExtensionWrapper writeWrapper)
-                  _ -> empty
+                let writeWrapper =
+                      buildPointerWriteWrapper tp endianness in
+                go (SomeExtensionWrapper writeWrapper)
               Nothing -> empty
       LCSA.AtomName "bv-typed-literal" -> do
         -- Bitvector literals with a type argument are a special case.  We must
@@ -574,9 +627,11 @@ extensionParser wrappers hooks =
           Nothing -> empty
           Just w -> go w
   where
+    go :: (?parserHooks :: LCSC.ParserHooks ext)
+       => SomeExtensionWrapper arch
+       -> m (Pair.Pair LCT.TypeRepr (LCCR.Atom s))
     go (SomeExtensionWrapper wrapper) = do
       loc <- LCSE.position
-      let ?parserHooks = hooks
       -- Generate atoms for the arguments to this extension
       operandAtoms <- LCSC.operands (extArgTypes wrapper)
       -- Pass these atoms to the extension wrapper and return an atom for the
@@ -750,27 +805,25 @@ wrapPointerEq = ExtensionWrapper
  , extWrapper = \args -> Ctx.uncurryAssignment (binop (DMS.PtrEq . DMM.addrWidthRepr)) args }
 
 -- | Wrapper for the 'DMS.MacawReadMem' syntax extension that enables users to
--- read through a pointer to retrieve a bitvector of data at the underlying
--- memory location.
+-- read through a pointer to retrieve data at the underlying memory location.
 --
--- > pointer-read bytes endianness ptr
+-- > pointer-read type endianness ptr
 buildPointerReadWrapper
   :: ( 1 <= w
      , KnownNat w
      , DMC.MemWidth w
      , w ~ DMC.ArchAddrWidth arch
-     , 1 <= sz
-     , 1 <= (8 WI.* sz) )
-  => WI.NatRepr sz
+     )
+  => LCT.TypeRepr tp
   -> DMM.Endianness
   -> ExtensionWrapper arch
                       (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w)
-                      (LCT.BVType (8 WI.* sz))
-buildPointerReadWrapper bytes endianness = ExtensionWrapper
+                      tp
+buildPointerReadWrapper tp endianness = ExtensionWrapper
   { extName = LCSA.AtomName "pointer-read"
   , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
   , extWrapper =
-      \args -> Ctx.uncurryAssignment (pointerRead bytes endianness) args }
+      \args -> Ctx.uncurryAssignment (pointerRead tp endianness) args }
 
 -- | Read through a pointer using 'DMS.MacawReadMem'.
 pointerRead :: ( w ~ DMC.ArchAddrWidth arch
@@ -778,43 +831,45 @@ pointerRead :: ( w ~ DMC.ArchAddrWidth arch
                , KnownNat w
                , ExtensionParser m ext s
                , ext ~ DMS.MacawExt arch
-               , 1 <= sz
-               , 1 <= (8 WI.* sz) )
-            => WI.NatRepr sz
+               )
+            => LCT.TypeRepr tp
             -> DMM.Endianness
             -> LCCR.Atom s (LCLM.LLVMPointerType w)
-            -> m (LCCR.AtomValue ext s (LCT.BVType (8 WI.* sz)))
-pointerRead bytes endianness ptr = do
-  let readInfo = DMC.BVMemRepr bytes endianness
-  let bits = bytesToBits bytes
-  let readExt = DMS.MacawReadMem (DMC.addrWidthRepr WI.knownNat) readInfo ptr
-  readAtom <- LCSC.freshAtom WP.InternalPos (LCCR.EvalExt readExt)
-  return (LCCR.EvalApp (LCE.ExtensionApp (DMS.PtrToBits bits readAtom)))
+            -> m (LCCR.AtomValue ext s tp)
+pointerRead tp endianness ptr =
+  withSupportedPointerReadWriteTypes tp
+    (\bits bytes -> do -- `Bitvector w` case
+      let readInfo = DMC.BVMemRepr bytes endianness
+      let readExt = DMS.MacawReadMem (DMC.addrWidthRepr WI.knownNat) readInfo ptr
+      readAtom <- LCSC.freshAtom WP.InternalPos (LCCR.EvalExt readExt)
+      return (LCCR.EvalApp (LCE.ExtensionApp (DMS.PtrToBits bits readAtom))))
+    (\_bits bytes -> do -- `Pointer` case
+      let readInfo = DMC.BVMemRepr bytes endianness
+      let readExt = DMS.MacawReadMem (DMC.addrWidthRepr WI.knownNat) readInfo ptr
+      return (LCCR.EvalExt readExt))
 
 -- | Wrapper for the 'DMS.MacawWriteMem' syntax extension that enables users to
--- write a bitvector of data through a pointer to the underlying memory
--- location.
+-- write data through a pointer to the underlying memory location.
 --
--- > pointer-write bytes endianness ptr bitvector
+-- > pointer-write type endianness ptr (val :: type)
 buildPointerWriteWrapper
   :: ( w ~ DMC.ArchAddrWidth arch
      , DMM.MemWidth w
      , KnownNat w
      , ext ~ DMS.MacawExt arch
-     , 1 <= sz
-     , 1 <= (8 WI.* sz) )
-  => WI.NatRepr sz
+     )
+  => LCT.TypeRepr tp
   -> DMM.Endianness
   -> ExtensionWrapper arch
                       (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                    Ctx.::> LCT.BVType (8 WI.* sz))
+                                    Ctx.::> tp)
                       LCT.UnitType
-buildPointerWriteWrapper bytes endianness = ExtensionWrapper
+buildPointerWriteWrapper tp endianness = ExtensionWrapper
   { extName = LCSA.AtomName "pointer-write"
   , extArgTypes = Ctx.empty Ctx.:> LCLM.LLVMPointerRepr LCT.knownNat
-                            Ctx.:> LCT.BVRepr (bytesToBits bytes)
+                            Ctx.:> tp
   , extWrapper =
-      \args -> Ctx.uncurryAssignment (pointerWrite bytes endianness) args }
+      \args -> Ctx.uncurryAssignment (pointerWrite tp endianness) args }
 
 -- | Read through a pointer using 'DMS.MacawWriteMem'.
 pointerWrite :: ( w ~ DMC.ArchAddrWidth arch
@@ -822,22 +877,30 @@ pointerWrite :: ( w ~ DMC.ArchAddrWidth arch
                 , KnownNat w
                 , ExtensionParser m ext s
                 , ext ~ DMS.MacawExt arch
-                , 1 <= sz
-                , 1 <= (8 WI.* sz) )
-              => WI.NatRepr sz
+                )
+              => LCT.TypeRepr tp
               -> DMM.Endianness
               -> LCCR.Atom s (LCLM.LLVMPointerType w)
-              -> LCCR.Atom s (LCT.BVType (8 WI.* sz))
+              -> LCCR.Atom s tp
               -> m (LCCR.AtomValue ext s LCT.UnitType)
-pointerWrite bytes endianness ptr val = do
-  let bits = bytesToBits bytes
-  toPtrAtom <- LCSC.freshAtom WP.InternalPos (LCCR.EvalApp (LCE.ExtensionApp (DMS.BitsToPtr bits val)))
-  let writeInfo = DMC.BVMemRepr bytes endianness
-  let writeExt = DMS.MacawWriteMem (DMC.addrWidthRepr WI.knownNat)
-                                   writeInfo
-                                   ptr
-                                   toPtrAtom
-  return (LCCR.EvalExt writeExt)
+pointerWrite tp endianness ptr val =
+  withSupportedPointerReadWriteTypes tp
+    (\bits bytes -> do -- `Bitvector w` case
+      toPtrAtom <- LCSC.freshAtom WP.InternalPos
+        (LCCR.EvalApp (LCE.ExtensionApp (DMS.BitsToPtr bits val)))
+      let writeInfo = DMC.BVMemRepr bytes endianness
+      let writeExt = DMS.MacawWriteMem (DMC.addrWidthRepr WI.knownNat)
+                                       writeInfo
+                                       ptr
+                                       toPtrAtom
+      return (LCCR.EvalExt writeExt))
+    (\_bits bytes -> do -- `Pointer` case
+      let writeInfo = DMC.BVMemRepr bytes endianness
+      let writeExt = DMS.MacawWriteMem (DMC.addrWidthRepr WI.knownNat)
+                                       writeInfo
+                                       ptr
+                                       val
+      return (LCCR.EvalExt writeExt))
 
 -- | Wrapper for constructing bitvector literals matching the size of an
 -- 'LCT.BVRepr'.  This enables users to instantiate literals with portable
