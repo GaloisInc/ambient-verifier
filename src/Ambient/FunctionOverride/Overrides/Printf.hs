@@ -30,8 +30,8 @@ import qualified Control.Monad.State as CMS
 import qualified Control.Monad.Trans as CMT
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Char as C
-import           Data.Foldable.WithIndex ( ifoldlM )
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe )
 import qualified Data.Parameterized.Context as Ctx
@@ -56,7 +56,6 @@ import qualified What4.Expr as WE
 import qualified What4.Interface as WI
 import qualified What4.InterpretedFloatingPoint as WIFloat
 import qualified What4.Protocol.Online as WPO
-import qualified What4.Symbol as WS
 
 import qualified Ambient.Extensions as AExt
 import           Ambient.FunctionOverride
@@ -116,7 +115,7 @@ callSprintf
   -- ^ The variadic arguments
   -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
 callSprintf bak initialMem unsupportedRelocs
-  (Ctx.Empty Ctx.:> (LCS.regValue -> outPtr) Ctx.:> strPtr) gva = do
+  (Ctx.Empty Ctx.:> outPtr Ctx.:> strPtr) gva = do
     let mvar = AM.imMemVar initialMem
     mem0 <- LCS.readGlobal mvar
     -- Read format string
@@ -130,41 +129,17 @@ callSprintf bak initialMem unsupportedRelocs
         valist <- liftIO $ getPrintfVarArgs (DV.fromList ds) gva
         ((str, n), mem1) <-
           CMS.runStateT
-            (LCLP.executeDirectives (printfOps bak initialMem unsupportedRelocs valist)
-                                    ds)
+            (executeDirectivesPrintf (printfOps bak initialMem unsupportedRelocs valist)
+                                     ds)
             mem0
 
-        -- Convert resulting string into an array
-        let arrayName = WS.safeSymbol "sprintf output"
-        let arrayRepr =
-              WI.BaseArrayRepr (Ctx.singleton (WI.BaseBVRepr ?ptrWidth))
-                               (WI.BaseBVRepr (WI.knownNat @8))
-        symArray <- liftIO $ WI.freshConstant sym arrayName arrayRepr
-        symArray' <- liftIO $ populateArray symArray str
-
         -- Write to output pointer
+        mem2 <- AExt.storeString bak mem1 initialMem outPtr (BS.unpack str)
         nBv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.mkBV ?ptrWidth (toInteger n))
-        mem2 <- liftIO $ LCLM.doArrayStore bak mem1 outPtr LCLD.noAlignment symArray' nBv
         LCS.writeGlobal mvar mem2
         liftIO $ bvToPtr sym nBv ?ptrWidth
   where
     sym = LCB.backendGetSym bak
-
-    populateArray
-      :: WI.SymArray sym (LCT.SingleCtx (WI.BaseBVType w)) (WI.BaseBVType 8)
-      -> String
-      -> IO (WI.SymArray sym (LCT.SingleCtx (WI.BaseBVType w)) (WI.BaseBVType 8))
-    populateArray array str = ifoldlM updateArray array str
-
-    updateArray
-      :: Int
-      -> WI.SymArray sym (LCT.SingleCtx (WI.BaseBVType w)) (WI.BaseBVType 8)
-      -> Char
-      -> IO (WI.SymArray sym (LCT.SingleCtx (WI.BaseBVType w)) (WI.BaseBVType 8))
-    updateArray index array char = do
-      index_bv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.mkBV ?ptrWidth (fromIntegral index))
-      char_bv <- liftIO $ WI.bvLit sym (WI.knownNat @8) (BVS.mkBV (WI.knownNat @8) (fromIntegral (C.ord char)))
-      WI.arrayUpdate sym array (Ctx.singleton index_bv) char_bv
 
 buildSprintfOverride
   :: ( DMC.MemWidth w
@@ -737,3 +712,70 @@ getScanfVarArg pd gva@(GetVarArg getVarArg) =
     LCLP.ConversionDirective{} -> do
       (LCS.RegEntry _ val, gva') <- getVarArg LCLM.PtrRepr
       pure (Just val, gva')
+
+-- | Given a set of 'PrintfOperations' to perform and a list of directives in a
+-- @printf@ format string, parse the input string and perform the appropriate
+-- operation for each directive.  This function returns a bytestring containing
+-- the rendered string and an int containing the number of bytes in the
+-- rendered string.
+--
+-- This is heavily based on 'Lang.Crucible.LLVM.Printf.executeDirectives' with
+-- the notable difference that this implementation treats the rendered string as
+-- a sequence of bytes, while the Crucible implementation treats the string as
+-- UTF-8 encoded.  This distinction is important for us because interpreting
+-- exploit payloads as UTF-8 encoded can break them.  See Crucible issue #1010
+-- (https://github.com/GaloisInc/crucible/issues/1010) for more info.
+executeDirectivesPrintf :: forall m. Monad m
+                        => LCLP.PrintfOperations m
+                        -> [LCLP.PrintfDirective]
+                        -> m (BS.ByteString, Int)
+executeDirectivesPrintf ops = go id 0 0
+  where
+    go :: (BS.ByteString -> BS.ByteString) -> Int -> Int -> [LCLP.PrintfDirective] -> m (BS.ByteString, Int)
+    go fstr !len !_fld [] = return (fstr BS.empty, len)
+    go fstr !len !fld ((LCLP.StringDirective bs):xs) = do
+        let len'  = len + BS.length bs
+        let fstr' = fstr . BS.append bs
+        go fstr' len' fld xs
+    go fstr !len !fld (LCLP.ConversionDirective d:xs) =
+        let fld' = fromMaybe (fld+1) (LCLP.printfAccessField d) in
+        case LCLP.printfType d of
+          LCLP.Conversion_Integer fmt -> do
+            let sgn = signedIntFormat fmt
+            i <- LCLP.printfGetInteger ops fld' sgn (LCLP.printfLengthMod d)
+            let istr  = BSC.pack $ LCLP.formatInteger i fmt (LCLP.printfMinWidth d) (LCLP.printfPrecision d) (LCLP.printfFlags d)
+            let len'  = len + BS.length istr
+            let fstr' = fstr . BS.append istr
+            go fstr' len' fld' xs
+          LCLP.Conversion_Floating fmt -> do
+            r <- LCLP.printfGetFloat ops fld' (LCLP.printfLengthMod d)
+            rstr <- BSC.pack <$>
+                    case LCLP.formatRational r fmt
+                            (LCLP.printfMinWidth d)
+                            (LCLP.printfPrecision d)
+                            (LCLP.printfFlags d) of
+                      Left err -> LCLP.printfUnsupported ops err
+                      Right a -> return a
+            let len'  = len + BS.length rstr
+            let fstr' = fstr . BS.append rstr
+            go fstr' len' fld' xs
+          LCLP.Conversion_String -> do
+            s <- BS.pack <$> LCLP.printfGetString ops fld' (LCLP.printfPrecision d)
+            let len'  = len + BS.length s
+            let fstr' = fstr . BS.append s
+            go fstr' len' fld' xs
+          LCLP.Conversion_Char -> do
+            let sgn  = False -- unsigned
+            i <- LCLP.printfGetInteger ops fld' sgn LCLP.Len_NoMod
+            let c :: Char = maybe '?' (toEnum . fromInteger) i
+            let len'  = len + 1
+            let fstr' = fstr . BSC.cons c
+            go fstr' len' fld' xs
+          LCLP.Conversion_Pointer -> do
+            pstr <- BSC.pack <$> LCLP.printfGetPointer ops fld'
+            let len'  = len + BS.length pstr
+            let fstr' = fstr . BS.append pstr
+            go fstr' len' fld' xs
+          LCLP.Conversion_CountChars -> do
+            LCLP.printfSetInteger ops fld' (LCLP.printfLengthMod d) len
+            go fstr len fld' xs

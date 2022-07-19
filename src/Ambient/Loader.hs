@@ -79,6 +79,7 @@ withBinary
   :: forall m sym a
    . ( CMC.MonadThrow m
      , MonadIO m
+     , LCLM.HasLLVMAnn sym
      )
   => FilePath
   -- ^ Path to binary

@@ -12,9 +12,12 @@ import qualified Control.Concurrent.Async as CCA
 import qualified Control.Concurrent.QSem as CCQ
 import qualified Control.Exception as X
 import           Control.Lens ( (^.) )
+import           Control.Monad ( unless )
 import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as DA
 import qualified Data.IORef as IORef
+import qualified Data.Map as Map
+import           Data.Maybe ( isJust )
 import qualified Data.MultiSet as MSet
 import qualified Data.Time.Clock as DTC
 import qualified GHC.Conc as GC
@@ -25,6 +28,9 @@ import qualified What4.Interface as WI
 import qualified What4.Solver as WS
 
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.LLVM.Errors as LCLE
+import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.MemModel.Partial as LCLMP
 import qualified Lang.Crucible.Simulator.SimError as LCSS
 
 import qualified Ambient.Diagnostic as AD
@@ -174,8 +180,9 @@ proveObligations
   -> bak
   -> WS.SolverAdapter st
   -> AT.Timeout
+  -> LCLM.LLVMAnnMap sym
   -> m ProofStats
-proveObligations logAction bak adapter timeoutDuration = do
+proveObligations logAction bak adapter timeoutDuration badBehaviors = do
   mobligations <- liftIO (LCB.getProofObligations bak)
   case mobligations of
     Nothing -> return zeroProofStats
@@ -206,4 +213,27 @@ proveObligations logAction bak adapter timeoutDuration = do
         LCB.ProveConj children1 children2 -> do
           go workers sem assumptionsInScope children1
           go workers sem assumptionsInScope children2
-        LCB.Prove p -> liftIO $ proveOneGoal logAction sym adapter workers sem assumptionsInScope p timeoutDuration
+        LCB.Prove p ->
+          -- Prove a goal, unless it is a check for undefined behavior.  If the
+          -- goal is an undefined behavior check, skip it.
+          --
+          -- Skipping checks for undefined behavior is motivated by the exploit
+          -- demonstrated in the X86_64 sprintf_bof test.  This exploit
+          -- overwrites the lower 4 bytes of a stored return address and leaves
+          -- the upper 4 bytes untouched.  The resulting pointer is therefore a
+          -- combination of 2 writes, which triggers a failing undefined
+          -- behavior check.  Although this behavior may be undefined at the C
+          -- level, it has defined semantics at the X86_64 binary level.
+          -- Because many exploits rely on C level undefined behavior, we elide
+          -- these checks.
+          unless (isUndefinedBehaviorPred p)
+            (liftIO $ proveOneGoal logAction sym adapter workers sem assumptionsInScope p timeoutDuration)
+
+    -- Check whether a predicate is annotated as an undefined behavior check
+    isUndefinedBehaviorPred p = isJust $ do
+      ann <- WI.getAnnotation sym (p ^. LCB.labeledPred)
+      (_, badBehavior) <- Map.lookup (LCLMP.BoolAnn ann) badBehaviors
+      case badBehavior of
+        LCLE.BBUndefinedBehavior{} -> Just ()
+        LCLE.BBMemoryError{} -> Nothing
+

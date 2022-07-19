@@ -195,6 +195,9 @@ way-too-many-arguments/way-too-many-arguments.exe: way-too-many-arguments/way-to
 sscanf.exe: sscanf.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie $^ -o $@
 
+sprintf-bof.exe: sprintf-bof.c
+	$(MUSL_CC) -fcf-protection=none -fno-stack-protector -static $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

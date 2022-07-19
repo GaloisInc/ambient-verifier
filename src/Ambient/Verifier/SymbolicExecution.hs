@@ -10,6 +10,7 @@
 {-# LANGUAGE TypeOperators #-}
 module Ambient.Verifier.SymbolicExecution (
     SymbolicExecutionConfig(..)
+  , SymbolicExecutionResult(..)
   , symbolicallyExecute
   , insertFreshGlobals
   , initializeMemory
@@ -111,6 +112,20 @@ data SymbolicExecutionConfig arch sym =
                           , secLogBranches :: Bool
                           -- ^ Report symbolic branches
                           }
+
+-- | Results from symbolic execution
+data SymbolicExecutionResult arch sym = SymbolicExecutionResult
+  { serMemVar :: LCS.GlobalVar LCLM.Mem
+ -- ^ MemVar used in simulation
+  , serCrucibleExecResult :: LCS.ExecResult (AExt.AmbientSimulatorState sym arch)
+                                            sym
+                                            (DMS.MacawExt arch)
+                                            (LCS.RegEntry sym (DMS.ArchRegStruct arch))
+ -- ^ Crucible execution result
+  , serWMConfig :: AVW.WMConfig
+ -- ^ Configuration used in weird machine monitor
+  }
+
 
 -- | The stack size in bytes
 stackSize :: Integer
@@ -890,6 +905,7 @@ initializeMemory
    . ( ?memOpts :: LCLM.MemOptions
      , MonadIO m
      , LCB.IsSymBackend sym bak
+     , LCLM.HasLLVMAnn sym
      , w ~ DMC.ArchAddrWidth arch
      , DMM.MemWidth w
      , KnownNat w
@@ -912,7 +928,6 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
 
   -- Initialize memory
   let endianness = DMSM.toCrucibleEndian (DMA.archEndianness archInfo)
-  let ?recordLLVMAnnotation = \_ _ _ -> return ()
   (initMem, memPtrTbl) <- AEM.newMemPtrTable (globalMemoryHooks globals) bak endianness mems
   let validityCheck = AEM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = AEM.mapRegionPointers memPtrTbl
@@ -1195,6 +1210,7 @@ symbolicallyExecute
      , WPO.OnlineSolver solver
      , ?memOpts :: LCLM.MemOptions
      , p ~ AExt.AmbientSimulatorState sym arch
+     , LCLM.HasLLVMAnn sym
      )
   => LJ.LogAction IO AD.Diagnostic
   -> bak
@@ -1216,10 +1232,7 @@ symbolicallyExecute
   -- ^ Configuration parameters concerning functions and overrides
   -> [BS.ByteString]
   -- ^ The user-supplied command-line arguments
-  -> m ( LCS.GlobalVar LCLM.Mem
-       , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
-       , AVW.WMConfig
-       )
+  -> m (SymbolicExecutionResult arch sym)
 symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures entryPointAddr initGlobals mFsRoot binConf fnConf cliArgs = do
   let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
   initialMem <- initializeMemory bak
@@ -1229,5 +1242,8 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures e
                                  initGlobals
                                  (AFET.csoNamedOverrides (fcCrucibleSyntaxOverrides fnConf))
                                  (ALB.bcGlobalVarAddrs binConf)
-  let ?recordLLVMAnnotation = \_ _ _ -> return ()
-  simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs
+  (memVar, crucibleExecResult, wmConfig) <- simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs
+  return $ SymbolicExecutionResult { serMemVar = memVar
+                                   , serCrucibleExecResult = crucibleExecResult
+                                   , serWMConfig = wmConfig
+                                   }

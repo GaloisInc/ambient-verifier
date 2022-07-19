@@ -140,12 +140,11 @@ callKUserGetTLSOverride _bak tlsGlob = do
     Just tlsPtr -> pure tlsPtr
 
 aarch32LinuxFunctionABI ::
-     (?memOpts :: LCLM.MemOptions)
+     (?memOpts :: LCLM.MemOptions, LCLM.HasLLVMAnn sym)
   => LCCC.GlobalVar (LCLM.LLVMPointerType 32)
      -- ^ Global variable for TLS
   -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
 aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
-  let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @32 in
   let customNamedOvs = AFO.allOverrides fs initialMem unsupportedRelocs in
   let customKernelOvs =

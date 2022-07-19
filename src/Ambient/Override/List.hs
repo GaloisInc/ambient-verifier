@@ -51,6 +51,11 @@ listOverrides logAction pinst = do
   Some ng <- liftIO PN.newIONonceGenerator
   AS.withOnlineSolver (AV.piSolver pinst) (AV.piFloatMode pinst) ng $ \bak ->
     let sym = LCB.backendGetSym bak in
+    -- We don't use 'Ambient.Verifier.buildRecordLLVMAnnotation' to set
+    -- '?recordLLVMAnnotation' here because listing overrides doesn't generate
+    -- any goals that later check, so there is no need to track potential bad
+    -- behaviors in overrides.
+    let ?recordLLVMAnnotation = \_ _ _ -> return () in
     AL.withBinary (AV.piPath pinst) (AV.piBinary pinst) (AV.piSharedObjectDir pinst) hdlAlloc sym $
         \(archInfo :: DMAI.ArchitectureInfo arch) archVals
         (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI)
@@ -73,6 +78,5 @@ listOverrides logAction pinst = do
       let syscallABI = buildSyscallABI fs initialMem Map.empty
       let functionABI = buildFunctionABI fs initialMem archVals Map.empty csoAddressOverrides csoNamedOverrides
 
-      let ?recordLLVMAnnotation = \_ _ _ -> return ()
       let ols = mkOverrideLists syscallABI functionABI
       LJ.writeLog logAction $ AD.ListingOverrides ols

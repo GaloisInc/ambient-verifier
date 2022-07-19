@@ -243,6 +243,7 @@ writeMem :: forall sym scope st fs bak solver arch p w ext rtp f args ty.
      , LCLM.HasLLVMAnn sym
      , p ~ AmbientSimulatorState sym arch
      , w ~ DMC.ArchAddrWidth arch
+     , ?memOpts :: LCLM.MemOptions
      )
   => bak
   -> LCLM.MemImpl sym

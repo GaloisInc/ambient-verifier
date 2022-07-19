@@ -14,6 +14,7 @@ module Ambient.Verifier (
     ProgramInstance(..)
   , Metrics(..)
   , verify
+  , buildRecordLLVMAnnotation
   ) where
 
 import qualified Control.Concurrent as CC
@@ -26,7 +27,8 @@ import           Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as DA
 import qualified Data.ByteString as BS
 import qualified Data.Foldable as F
-import           Data.IORef ( readIORef )
+import           Data.IORef ( IORef, newIORef, modifyIORef', readIORef )
+import qualified Data.Map as Map
 import           Data.Maybe ( catMaybes, isJust )
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
@@ -45,7 +47,10 @@ import qualified Data.Macaw.Architecture.Info as DMA
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.FunctionHandle as LCF
+import qualified Lang.Crucible.LLVM.Errors as LCLE
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.MemModel.CallStack as LCLMC
+import qualified Lang.Crucible.LLVM.MemModel.Partial as LCLMP
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.BoundedExec as LCSBE
 import qualified Lang.Crucible.Simulator.BoundedRecursion as LCSBR
@@ -278,6 +283,20 @@ createDirectoriesAndWriteFile path bs = do
   Dir.createDirectoryIfMissing True dir
   BS.writeFile path bs
 
+-- | Build an LLVM annotation tracker to record instances of bad behavior
+-- checks.  Bad behavior encompasses both undefined behavior, and memory
+-- errors.  This function returns a function to set '?recordLLVMAnnotation' to,
+-- as well as a reference to the record of bad behaviors that will be built up.
+buildRecordLLVMAnnotation
+  :: LCB.IsSymInterface sym
+  => IO ( LCLMC.CallStack -> LCLMP.BoolAnn sym -> LCLE.BadBehavior sym -> IO ()
+        , IORef (LCLM.LLVMAnnMap sym) )
+buildRecordLLVMAnnotation = do
+  badBehavior <- liftIO $ newIORef Map.empty
+  let recordFn = \cs ann behavior ->
+        modifyIORef' badBehavior (Map.insert ann (cs, behavior))
+  return (recordFn , badBehavior)
+
 -- | Verify that the given 'ProgramInstance' terminates (with the given input)
 -- without raising an error
 verify
@@ -306,6 +325,10 @@ verify logAction pinst timeoutDuration = do
         void $ WConf.setOption interactionFileSetter
                                (WC.ConcreteString (WI.UnicodeLiteral (DT.pack path)))
       Nothing -> return ()
+
+    -- Track instances of bad behavior (undefined behavior and memory errors)
+    (recordFn, badBehavior) <- liftIO $ buildRecordLLVMAnnotation
+    let ?recordLLVMAnnotation = recordFn
 
     -- Load up the binary, which existentially introduces the architecture of the
     -- binary in the context of the continuation
@@ -356,9 +379,12 @@ verify logAction pinst timeoutDuration = do
         , AVS.fcBuildFunctionABI = functionABI
         , AVS.fcCrucibleSyntaxOverrides = csOverrides
         }
-      (_, execResult, wmConfig) <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) binConf fnConf (piCommandLineArguments pinst)
 
-      liftIO $ mapM_ (assertPropertySatisfied logAction bak execResult) (AEt.properties (AVW.wmProperties wmConfig))
+      ambientExecResult <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) binConf fnConf (piCommandLineArguments pinst)
+      let crucibleExecResult = AVS.serCrucibleExecResult ambientExecResult
+      badBehavior' <- liftIO $ readIORef badBehavior
+
+      liftIO $ mapM_ (assertPropertySatisfied logAction bak crucibleExecResult) (AEt.properties (AVW.wmProperties (AVS.serWMConfig ambientExecResult)))
 
       -- Prove all of the side conditions asserted during symbolic execution;
       -- these are captured in the symbolic backend (sym)
@@ -369,7 +395,7 @@ verify logAction pinst timeoutDuration = do
       -- NOTE: We currently use the same solver for goal solving as we do for
       -- symbolic execution/path sat checking. This is not required, and we
       -- could easily support allowing the user to choose two different solvers.
-      metricProofStats <- AVP.proveObligations logAction bak (AS.offlineSolver (piSolver pinst)) timeoutDuration
+      metricProofStats <- AVP.proveObligations logAction bak (AS.offlineSolver (piSolver pinst)) timeoutDuration badBehavior'
 
       crucMetrics <- liftIO $ LCSProf.readMetrics profTab
       _ <- liftIO $ mapM CCA.cancel (fmap snd profFeature)
@@ -381,7 +407,7 @@ verify logAction pinst timeoutDuration = do
                         , LCSProf.cgEvent_type e == LCSProf.BLOCK ]
       let uniqueBlockEvents = Set.fromList blockEvents
 
-      aSymSt <- liftIO $ getPersonality execResult
+      aSymSt <- liftIO $ getPersonality crucibleExecResult
 
       t1 <- liftIO $ DTC.getCurrentTime
       return Metrics

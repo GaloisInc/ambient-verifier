@@ -6,6 +6,7 @@ module Ambient.OverrideTester (
   , testOverrides
   ) where
 
+import qualified Data.IORef as IORef
 import qualified Data.Parameterized.Nonce as PN
 import           Data.Parameterized.Some ( Some(..) )
 import           Data.Proxy ( Proxy(..) )
@@ -26,6 +27,7 @@ import qualified Ambient.Memory.AArch32.Linux as AMAL
 import qualified Ambient.Memory.X86_64.Linux as AMXL
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
+import qualified Ambient.Verifier as AV
 import qualified Ambient.Verifier.Prove as AVP
 
 -- | A definition of the tests to be run
@@ -55,6 +57,8 @@ testOverrides logAction tinst timeoutDuration = do
   Some ng <- PN.newIONonceGenerator
   AS.withOnlineSolver (tiSolver tinst) (tiFloatMode tinst) ng $ \sym -> do
     let ?memOpts = LCLM.defaultMemOptions
+    (recordFn, badBehavior) <- AV.buildRecordLLVMAnnotation
+    let ?recordLLVMAnnotation = recordFn
     case tiAbi tinst of
       AA.X86_64Linux ->
         case DMS.archVals (Proxy @DMX.X86_64) Nothing of
@@ -91,8 +95,10 @@ testOverrides logAction tinst timeoutDuration = do
                                  hdlAlloc
                                  parserHooks
           Nothing -> error "Failed to build archVals for AArch32"
+    badBehavior' <- IORef.readIORef badBehavior
     _ <- AVP.proveObligations logAction
                               sym
                               (AS.offlineSolver (tiSolver tinst))
                               timeoutDuration
+                              badBehavior'
     return ()

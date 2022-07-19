@@ -137,10 +137,10 @@ x86_64LinuxIntegerReturnRegisters bak ovTyp ovSim initRegs =
                             "x86_64LinuxIntegerReturnRegisters"
                             ["Failed to update rax register"]
 
-x86_64LinuxFunctionABI :: (?memOpts :: LCLM.MemOptions)
+x86_64LinuxFunctionABI :: ( LCLM.HasLLVMAnn sym
+                          , ?memOpts :: LCLM.MemOptions )
                        => AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
 x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
-  let ?recordLLVMAnnotation = \_ _ _ -> return () in
   let ?ptrWidth = PN.knownNat @64 in
   let customNamedOvs = AFO.allOverrides fs initialMem unsupportedRelocs
   in AF.FunctionABI { AF.functionIntegerArguments = \bak ->

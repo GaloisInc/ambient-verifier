@@ -208,6 +208,7 @@ loadCrucibleSyntaxOverride path ng halloc hooks = do
 -- function with a name starting with @test_@.
 runOverrideTests :: forall ext s sym bak arch w solver scope st fs p
                   . ( ?memOpts :: LCLM.MemOptions
+                    , LCLM.HasLLVMAnn sym
                     , ext ~ DMS.MacawExt arch
                     , LCCE.IsSyntaxExtension ext
                     , LCB.IsSymBackend sym bak
@@ -307,7 +308,6 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
                             -- cannot invoke function addresses, so we do not
                             -- need to register any function address overrides.
                   cblNameOvs
-          let ?recordLLVMAnnotation = \_ _ _ -> return ()
           fwdDecBindings <- resolveForwardDecs (AF.functionNameMapping functionABI) fwdDecsMap
           -- Make sure to also include functions that don't begin with `test_`
           -- (i.e., the `auxCFGs`), as they might be used during simulation.
@@ -315,7 +315,6 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
           -- need to include the CFG for @foobar itself.
           let fns = LCS.fnBindingsFromList $
                     fwdDecBindings ++ map acfgToFnBinding (acfg : auxCFGs)
-          let ?recordLLVMAnnotation = \_ _ _ -> return ()
           DMS.withArchEval archVals sym $ \archEvalFn -> do
             let fnLookup = DMS.unsupportedFunctionCalls "Ambient override tests"
             let syscallLookup = DMS.unsupportedSyscalls "Ambient override tests"
