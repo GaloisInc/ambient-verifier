@@ -304,6 +304,8 @@ without any variadic arguments:
 
 The following overrides can only be invoked from syntax overrides:
 
+* ``malloc-global :: SizeT -> Pointer`` is like ``malloc``, except that it is
+  explicitly meant for allocating memory for use in global variables.
 * ``read-c-string :: Pointer -> String Unicode`` reads a null-terminated,
   UTF-8–encoded, concrete string from the ``Pointer`` and converts it to a
   ``String``. Representing it as a ``String`` can be more convenient in the

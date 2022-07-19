@@ -14,6 +14,8 @@ module Ambient.FunctionOverride.Overrides
   , memOverrides
   , buildMallocOverride
   , callMalloc
+  , buildMallocGlobalOverride
+  , callMallocGlobal
   , buildCallocOverride
   , callCalloc
   , buildMemcpyOverride
@@ -104,6 +106,7 @@ memOverrides ::
 memOverrides initialMem =
   [ SomeFunctionOverride (buildCallocOverride memVar)
   , SomeFunctionOverride (buildMallocOverride memVar)
+  , SomeFunctionOverride (buildMallocGlobalOverride memVar)
   , SomeFunctionOverride (buildMemcpyOverride initialMem)
   , SomeFunctionOverride (buildMemsetOverride initialMem)
   ]
@@ -168,6 +171,41 @@ callMalloc bak mvar (LCS.regValue -> sz) =
   do let displayString = "<malloc function override>"
      szBV <- LCLM.projectLLVM_bv bak sz
      LCLM.doMalloc bak LCLM.HeapAlloc LCLM.Mutable displayString mem szBV LCLD.noAlignment
+
+buildMallocGlobalOverride ::
+  ( ?memOpts :: LCLM.MemOptions
+  , LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  ) =>
+  LCS.GlobalVar LCLM.Mem ->
+  FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext
+                         (LCLM.LLVMPointerType w)
+buildMallocGlobalOverride mvar =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "malloc-global" $ \bak args ->
+    Ctx.uncurryAssignment (callMalloc bak mvar) args
+
+-- | An override for a special @malloc-global@ function that is meant only to
+-- be invoked from syntax overrides. @malloc-global@ is like @malloc@, but for
+-- global memory. Implementation-wise, the only difference is that we pass
+-- 'LCLM.GlobalAlloc' to 'LCLM.doMalloc' instead of 'LCLM.HeapAlloc' so that
+-- Crucible can properly distinguish between the two kinds of memory.
+callMallocGlobal ::
+  ( LCB.IsSymBackend sym bak
+  , ?memOpts :: LCLM.MemOptions
+  , LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  ) =>
+  bak ->
+  LCS.GlobalVar LCLM.Mem ->
+  LCS.RegEntry sym (LCLM.LLVMPointerType w) ->
+  -- ^ The number of bytes to allocate
+  LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callMallocGlobal bak mvar (LCS.regValue -> sz) =
+  LCS.modifyGlobal mvar $ \mem -> liftIO $
+  do let displayString = "<malloc-global function override>"
+     szBV <- LCLM.projectLLVM_bv bak sz
+     LCLM.doMalloc bak LCLM.GlobalAlloc LCLM.Mutable displayString mem szBV LCLD.noAlignment
 
 buildMemcpyOverride :: ( LCLM.HasPtrWidth w
                        , LCLM.HasLLVMAnn sym
