@@ -9,6 +9,7 @@ module Ambient.Loader.ELF.Symbols
   ( elfDynamicFuncSymbolMap
   , elfEntryPointAddrMap
   , elfEntryPointSymbolMap
+  , elfGlobalSymbolMap
   , elfDynamicGlobalSymbolMap
   , symtabEntryFunctionName
   , versionTableValueToSymbolVersion
@@ -240,15 +241,47 @@ elfEntryPointSymbolMap ::
   Map.Map WF.FunctionName (DMM.MemWord w)
 elfEntryPointSymbolMap loadedBinary =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
+  elfSymbolMap symtabEntryFunctionName loadedBinary (elfEntryPoints elfHeaderInfo)
+  where
+    elfHeaderInfo = DMB.originalBinary loadedBinary
+
+-- | Given a binary, map the name of each entry global symbol to its address.
+-- This includes entry points in both the static and dynamic symbol tables.
+elfGlobalSymbolMap ::
+  (w ~ DMC.ArchAddrWidth arch, DMM.MemWidth w) =>
+  DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
+  Map.Map BS.ByteString (DMM.MemWord w)
+elfGlobalSymbolMap loadedBinary =
+  DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
+  elfSymbolMap DE.steName loadedBinary (elfGlobalVars elfHeaderInfo)
+  where
+    elfHeaderInfo = DMB.originalBinary loadedBinary
+
+-- | Given a list of symbols from a binary, insert each symbol into a map,
+-- where the keys are the symbol names and the values are the corresponding
+-- addresses. This generally favors symbols that appear earlier in the list,
+-- with global symbols always given priority over weak symbols. (See the
+-- Haddocks for 'addSymbolWithPriority' for more information.)
+elfSymbolMap ::
+  ( w ~ DMC.ArchAddrWidth arch
+  , DMM.MemWidth w
+  , Ord symbol
+  ) =>
+  (DE.SymtabEntry BS.ByteString (DE.ElfWordType w) -> symbol) ->
+  -- ^ Function to extract the symbol name from a 'DE.SymtabEntry'
+  DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
+  [VersionedSymtabEntry BS.ByteString (DE.ElfWordType w)] ->
+  Map.Map symbol (DMM.MemWord w)
+elfSymbolMap getSymbol loadedBinary symbols =
+  DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
   fmap snd $
   F.foldl'
-    (\m (ste, addr) ->
-      addSymbolWithPriority (symtabEntryFunctionName ste) ste addr m)
+    (\m (ste, addr) -> addSymbolWithPriority (getSymbol ste) ste addr m)
     Map.empty
     [ ( ste
       , fromIntegral (DE.steValue ste) + fromIntegral offset
       )
-    | versym <- elfEntryPoints elfHeaderInfo
+    | versym <- symbols
     , let ste = ALV.versymSymbol versym
     ]
   where
@@ -256,15 +289,35 @@ elfEntryPointSymbolMap loadedBinary =
     offset = fromMaybe 0 $ DMML.loadOffset $ DMB.loadOptions loadedBinary
 
 -- | Return all of the entry points from the static and dynamic symbol tables
--- of a function. Here, \"entry point\" refers to an ELF function symbol
+-- of a binary. Here, \"entry point\" refers to an ELF function symbol
 -- ('DE.STT_FUNC') with a non-zero address.
 elfEntryPoints ::
   (DE.ElfWidthConstraints w, DMM.MemWidth w) =>
   DE.ElfHeaderInfo w ->
   [VersionedSymtabEntry BS.ByteString (DE.ElfWordType w)]
-elfEntryPoints elfHeaderInfo =
+elfEntryPoints = elfSymbols (\ste -> DE.steType ste == DE.STT_FUNC)
+
+-- | Return all of the global variables from the static and dynamic symbol
+-- tables of a binary. Here, \"global variable\" refers to an ELF object symbol
+-- ('DE.STT_OBJECT') with a non-zero address.
+elfGlobalVars ::
+  (DE.ElfWidthConstraints w, DMM.MemWidth w) =>
+  DE.ElfHeaderInfo w ->
+  [VersionedSymtabEntry BS.ByteString (DE.ElfWordType w)]
+elfGlobalVars = elfSymbols (\ste -> DE.steType ste == DE.STT_OBJECT)
+
+-- | Return all of the non-zero-values symbol entry entries from the static and
+-- dynamic symbol tables of a binary that satisfy some predicate.
+elfSymbols ::
+  (DE.ElfWidthConstraints w, DMM.MemWidth w) =>
+  (DE.SymtabEntry BS.ByteString (DE.ElfWordType w) -> Bool) ->
+  -- ^ Filter function over SymtabEntries.  Only symbols for which this
+  -- function returns True will be included in the returned list.
+  DE.ElfHeaderInfo w ->
+  [VersionedSymtabEntry BS.ByteString (DE.ElfWordType w)]
+elfSymbols filterFn elfHeaderInfo =
   filter (\versym -> let ste = ALV.versymSymbol versym
-                  in DE.steType ste == DE.STT_FUNC
+                  in filterFn ste
                   -- Somewhat surprisingly, there can be STT_FUNC entries whose
                   -- values are zero. See, for instance, the static symbol table in
                   -- tests/binaries/aarch32/main-args.exe. These won't resolve

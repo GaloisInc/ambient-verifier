@@ -5,6 +5,8 @@ module Ambient.Exception (
     AmbientException(..)
   , ConcretizationTarget(..)
   , NetworkFunctionArgument(..)
+  , GetGlobalPointerFunction(..)
+  , GetGlobalPointerArgument(..)
   ) where
 
 import qualified Control.Exception as X
@@ -132,6 +134,21 @@ data AmbientException where
   -- This is about as vague as error messages get, so if possible, use one of
   -- the @FunctionTypeBv-@ error messages above instead.
   FunctionTypeMismatch :: AmbientException
+  -- | The binary name passed to @get-global-pointer-{addr,named}@ could not be
+  -- found.
+  GetGlobalPointerBinaryNameNotFound ::
+    GetGlobalPointerFunction -> FilePath -> AmbientException
+  -- | The address passed to @get-global-pointer-{addr,named}@ could not be
+  -- resolved.
+  GetGlobalPointerGlobalAddrNotFound ::
+    DMM.MemWidth w => GetGlobalPointerFunction -> DMM.MemWord w -> AmbientException
+  -- | The global variable name passed to @get-global-pointer-{addr,named}@
+  -- could not be found.
+  GetGlobalPointerGlobalNameNotFound ::
+    GetGlobalPointerFunction -> BSC.ByteString -> AmbientException
+  -- | The @get-global-pointer-{addr,named}@ override was used in the context
+  -- of the @test-overrides@ command, which is not supported.
+  GetGlobalPointerTestOverrides :: GetGlobalPointerFunction -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -144,6 +161,10 @@ data ConcretizationTarget
       T.Text -- The function being invoked
       NetworkFunctionArgument -- The argument to the function for which
                               -- concretization was attempted
+  | GetGlobalPointerFunction
+      GetGlobalPointerFunction -- One of @get-global-pointer-{addr,named}@
+      GetGlobalPointerArgument -- The argument to the function for which
+                               -- concretization was attempted
   deriving Show
 
 -- | Which argument to a networking-related override did a solver try to
@@ -155,23 +176,52 @@ data NetworkFunctionArgument
   | PortArgument
   deriving Show
 
+-- | Did we invoke @get-global-pointer-addr@ or @get-global-pointer-named@?
+data GetGlobalPointerFunction
+  = GetGlobalPointerAddr
+  | GetGlobalPointerNamed
+  deriving Show
+
+instance PP.Pretty GetGlobalPointerFunction where
+  pretty GetGlobalPointerAddr  = PP.pretty "get-global-pointer-addr"
+  pretty GetGlobalPointerNamed = PP.pretty "get-global-pointer-named"
+
+-- | Which argument to a @get-global-pointer-{addr,named}@ did we attempt to
+-- resolve as concrete?
+data GetGlobalPointerArgument
+  = BinaryNameArgument
+  | GlobalAddrArgument
+  | GlobalNameArgument
+  deriving Show
+
 concretizationTargetDescription :: ConcretizationTarget -> PP.Doc a
 concretizationTargetDescription FunctionAddress = PP.pretty "function address"
 concretizationTargetDescription SyscallNumber   = PP.pretty "syscall number"
 concretizationTargetDescription (NetworkFunction _ arg) =
   networkFunctionArgumentDescription arg
+concretizationTargetDescription (GetGlobalPointerFunction _ arg) =
+  getGlobalPointerFunctionArgumentDescription arg
 
 concretizationTargetCall :: ConcretizationTarget -> PP.Doc a
 concretizationTargetCall FunctionAddress = PP.pretty "function call"
 concretizationTargetCall SyscallNumber   = PP.pretty "system call"
-concretizationTargetCall (NetworkFunction nm _) =
-  PP.pretty "a call to the " PP.<+> PP.squotes (PP.pretty nm) PP.<+> PP.pretty "function"
+concretizationTargetCall (NetworkFunction nm _)           = functionTargetCall (PP.pretty nm)
+concretizationTargetCall (GetGlobalPointerFunction fun _) = functionTargetCall (PP.pretty fun)
+
+functionTargetCall :: PP.Doc a -> PP.Doc a
+functionTargetCall nm =
+  PP.pretty "a call to the " PP.<+> PP.squotes nm PP.<+> PP.pretty "function"
 
 networkFunctionArgumentDescription :: NetworkFunctionArgument -> PP.Doc a
 networkFunctionArgumentDescription FDArgument     = PP.pretty "file descriptor argument"
 networkFunctionArgumentDescription DomainArgument = PP.pretty "domain argument"
 networkFunctionArgumentDescription TypeArgument   = PP.pretty "type argument"
 networkFunctionArgumentDescription PortArgument   = PP.pretty "port argument"
+
+getGlobalPointerFunctionArgumentDescription :: GetGlobalPointerArgument -> PP.Doc a
+getGlobalPointerFunctionArgumentDescription BinaryNameArgument = PP.pretty "binary name"
+getGlobalPointerFunctionArgumentDescription GlobalAddrArgument = PP.pretty "global variable address"
+getGlobalPointerFunctionArgumentDescription GlobalNameArgument = PP.pretty "global variable name"
 
 instance PP.Pretty AmbientException where
   pretty e =
@@ -309,3 +359,17 @@ instance PP.Pretty AmbientException where
                 ]
       FunctionTypeMismatch ->
         PP.pretty "Type mismatch when invoking a function"
+      GetGlobalPointerBinaryNameNotFound ggpFun binPath ->
+        PP.pretty "When invoking" PP.<+> PP.squotes (PP.pretty ggpFun) <>
+        PP.pretty ", could not find a binary named" PP.<+> PP.squotes (PP.pretty binPath)
+      GetGlobalPointerGlobalAddrNotFound ggpFun addr ->
+        PP.pretty "When invoking" PP.<+> PP.squotes (PP.pretty ggpFun) <>
+        PP.pretty ", could not resolve the address" PP.<+> PP.pretty addr
+      GetGlobalPointerGlobalNameNotFound ggpFun globName ->
+        PP.pretty "When invoking" PP.<+> PP.squotes (PP.pretty ggpFun) <>
+        PP.pretty ", could not find a global variable named" PP.<+>
+        PP.squotes (PP.pretty (BSC.unpack globName))
+      GetGlobalPointerTestOverrides ggpFun ->
+        PP.pretty "The" PP.<+> PP.squotes (PP.pretty ggpFun) PP.<+>
+        PP.pretty "function is not supported when using" PP.<+>
+        PP.squotes (PP.pretty "test-overrides")

@@ -144,9 +144,9 @@ aarch32LinuxFunctionABI ::
   => LCCC.GlobalVar (LCLM.LLVMPointerType 32)
      -- ^ Global variable for TLS
   -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
-aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
+aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
   let ?ptrWidth = PN.knownNat @32 in
-  let customNamedOvs = AFO.allOverrides fs initialMem unsupportedRelocs in
+  let customNamedOvs = AFO.allOverrides fovCtx fs initialMem unsupportedRelocs in
   let customKernelOvs =
         -- The addresses are taken from
         -- https://github.com/torvalds/linux/blob/5bfc75d92efd494db37f5c4c173d3639d4772966/Documentation/arm/kernel_user_helpers.rst

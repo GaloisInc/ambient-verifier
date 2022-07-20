@@ -207,12 +207,12 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
       NEV.NonEmptyVector (DMB.LoadedBinary arch binFmt, FilePath) ->
       -- ^ All loaded binaries (including shared libraries) and their file paths
       Map.Map ALV.VersionedGlobalVarName (DMM.MemWord (DMC.ArchAddrWidth arch)) ->
-      -- ^ Mapping from exported global variable names to addresses
+      -- ^ Mapping from exported, dynamic, global variable names to addresses
       Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) String ->
       -- ^ Unsupported relocations.  Mapping from addresses to names of
       -- unsupported relocation types.
       m (ALB.BinaryConfig arch binFmt)
-    mkElfBinConf abi proxyReloc binsAndPaths globals unsupportedRels = do
+    mkElfBinConf abi proxyReloc binsAndPaths dynGlobals unsupportedRels = do
       let loadedBinaryPaths =
             NEV.map
               (\(bin, path) ->
@@ -220,6 +220,7 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
                   { ALB.lbpBinary = bin
                   , ALB.lbpPath = path
                   , ALB.lbpEntryPoints = ALES.elfEntryPointAddrMap bin
+                  , ALB.lbpGlobalVars = ALES.elfGlobalSymbolMap bin
                   , ALB.lbpPltStubs = ALEP.pltStubSymbols abi proxyReloc bin
                   })
               binsAndPaths
@@ -229,8 +230,8 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
         { ALB.bcBinaries = loadedBinaryPaths
         , ALB.bcMainBinarySymbolMap = ALES.elfEntryPointSymbolMap $ NEV.head bins
         , ALB.bcDynamicFuncSymbolMap = dynFuncSymMap
+        , ALB.bcDynamicGlobalVarAddrs = dynGlobals
         , ALB.bcPltStubs = Map.unions $ fmap ALB.lbpPltStubs loadedBinaryPaths
-        , ALB.bcGlobalVarAddrs = globals
         , ALB.bcUnsuportedRelocations = unsupportedRels
         }
 

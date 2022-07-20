@@ -1168,7 +1168,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
   let syscallABI = buildSyscallABI fs initialMem (ALB.bcUnsuportedRelocations binConf)
   let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
-  let functionABI = buildFunctionABI fs initialMem archVals
+  let functionABI = buildFunctionABI (AF.VerifyContext binConf) fs initialMem archVals
                                      (ALB.bcUnsuportedRelocations binConf)
                                      (AFET.csoAddressOverrides csOverrides)
                                      (AFET.csoNamedOverrides csOverrides)
@@ -1269,7 +1269,7 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures e
                                  mems
                                  initGlobals
                                  (AFET.csoNamedOverrides (fcCrucibleSyntaxOverrides fnConf))
-                                 (ALB.bcGlobalVarAddrs binConf)
+                                 (ALB.bcDynamicGlobalVarAddrs binConf)
   (memVar, crucibleExecResult, wmConfig) <- simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs
   return $ SymbolicExecutionResult { serMemVar = memVar
                                    , serCrucibleExecResult = crucibleExecResult

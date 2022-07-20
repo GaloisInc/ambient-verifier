@@ -15,6 +15,7 @@ module Ambient.FunctionOverride (
   , FunctionAddrLoc(..)
   , FunctionABI(..)
   , BuildFunctionABI(..)
+  , FunctionOverrideContext(..)
   ) where
 
 import qualified Data.Map.Strict as Map
@@ -35,6 +36,7 @@ import qualified What4.Expr as WE
 import qualified What4.FunctionName as WF
 import qualified What4.Protocol.Online as WPO
 
+import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Memory as AM
 import qualified Ambient.Syscall as AS
 
@@ -291,7 +293,9 @@ data FunctionABI arch sym p =
 -- A function to construct a FunctionABI with memory access
 newtype BuildFunctionABI arch sym p = BuildFunctionABI (
        forall mem
-     . LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
+     . FunctionOverrideContext arch
+    -- In what context are the function overrides are being run?
+    -> LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
     -- File system to use in overrides
     -> AM.InitialMemory sym (DMC.ArchAddrWidth arch)
     -> DMS.GenArchVals mem arch
@@ -306,6 +310,17 @@ newtype BuildFunctionABI arch sym p = BuildFunctionABI (
     -- Overrides for functions with particular names
     -> FunctionABI arch sym p
   )
+
+-- | In what context are we running a function override? This tracked because
+-- some function overrides (e.g., @get-global-pointer-named@) can only be run in
+-- a 'VerifyContext', which has access to information about binaries.
+data FunctionOverrideContext arch where
+  -- | A function override is being ran from the @verify@ command, which has
+  -- access to one or more binaries.
+  VerifyContext :: ALB.BinaryConfig arch binFmt -> FunctionOverrideContext arch
+  -- | A function override is being ran from the @list-overrides@ command, which
+  -- runs independently of any binary.
+  TestContext :: FunctionOverrideContext arch
 
 {-
 Note [Passing arguments to functions]

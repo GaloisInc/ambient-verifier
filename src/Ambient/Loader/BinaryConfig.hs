@@ -6,6 +6,7 @@ module Ambient.Loader.BinaryConfig
   , lbpTrustedPltEntryPoints
   ) where
 
+import qualified Data.ByteString as BS
 import qualified Data.List.NonEmpty as NEL
 import qualified Data.Text.Encoding as DTE
 import qualified Data.Vector.NonEmpty as NEV
@@ -44,6 +45,11 @@ data BinaryConfig arch binFmt = BinaryConfig {
   -- This is used to determine the address that a PLT stub should jump to.
   -- See @Note [Incremental code discovery]@ in "Ambient.Extensions".
 
+  , bcDynamicGlobalVarAddrs :: Map.Map ALV.VersionedGlobalVarName (DMM.MemWord (DMC.ArchAddrWidth arch))
+  -- ^ Maps the names of exported global variables in each binary to their
+  -- addresses.  This is used to compute relocations in dynamically linked
+  -- programs.
+
   , bcPltStubs :: Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) ALV.VersionedFunctionName
   -- ^ Maps the addresses of PLT stub in each binary and shared library to
   -- their corresponding function names. See @Note [PLT Stub Names]@ in
@@ -62,11 +68,6 @@ data BinaryConfig arch binFmt = BinaryConfig {
   -- those sorts of layouts, we would run the risk of PLT stub addresses from
   -- different address spaces being mapped to the same 'DMM.MemWord',
   -- which will make a 'Map.Map' insufficient means of storage. See #86.
-
-  , bcGlobalVarAddrs :: Map.Map ALV.VersionedGlobalVarName (DMM.MemWord (DMC.ArchAddrWidth arch))
-  -- ^ Maps the names of exported global variables in each binary to their
-  -- addresses.  This is used to compute relocations in dynamically linked
-  -- programs.
 
   , bcUnsuportedRelocations :: Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) String
   -- ^ A mapping of unsupported relocations.  Maps addresses to the names of
@@ -106,6 +107,11 @@ data LoadedBinaryPath arch binFmt = LoadedBinaryPath {
   -- entry points from static symbol tables at present (see
   -- https://github.com/GaloisInc/macaw-loader/issues/12), so we would have to
   -- fix this issue upstream first.
+
+  , lbpGlobalVars :: Map.Map BS.ByteString (DMM.MemWord (DMC.ArchAddrWidth arch))
+  -- ^ This maps the names of global variables in the 'lbpBinary' to their
+  -- corresponding addresses. This is used to power the
+  -- @get-global-pointer-named@ override.
 
   , lbpPltStubs :: Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) ALV.VersionedFunctionName
   -- ^ Maps the addresses of PLT stubs in the binary to their corresponding

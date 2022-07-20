@@ -315,6 +315,32 @@ The following overrides can only be invoked from syntax overrides:
   UTF-8–encoded, concrete string to a ``Pointer``, including a null
   terminator.
 
+The following overrides can only be invoked from syntax overrides when using
+the ``verify`` command, as they require interfacing with a binary. Attempting
+to use any of these overrides from the ``test-overrides`` command (which
+operates independently of any binary) will result in an error:
+
+* ``get-global-pointer-addr :: String Unicode -> SizeT -> Pointer`` will return
+  a pointer to a global variable, where:
+
+  * The first argument must be a concrete string that indicates the binary in
+    which the global variable is defined.
+  * The second argument must be a concrete address for the global variable.
+
+  Note that only the file names of the binary needs to be specified,
+  not the full path. For example, if a global variable is located in
+  ``/foo/bar/main.exe``, then the first argument should simply be ``main.exe``.
+* ``get-global-pointer-named :: String Unicode -> String Unicode -> Pointer``
+  will return a pointer to a global variable, where
+
+  * The first argument must be a concrete string that indicates the binary in
+    which the global variable is defined.
+  * The second argument must be a concrete string that indicates the name of
+    for the global variable. At present, only unversioned names are supported.
+
+  The same caveats about full paths mentioned in ``get-global-pointer-addr``
+  also apply to ``get-global-pointer-named``.
+
 Global Variables
 ----------------
 

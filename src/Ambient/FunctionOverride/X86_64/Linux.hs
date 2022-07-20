@@ -140,9 +140,9 @@ x86_64LinuxIntegerReturnRegisters bak ovTyp ovSim initRegs =
 x86_64LinuxFunctionABI :: ( LCLM.HasLLVMAnn sym
                           , ?memOpts :: LCLM.MemOptions )
                        => AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
-x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
+x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
   let ?ptrWidth = PN.knownNat @64 in
-  let customNamedOvs = AFO.allOverrides fs initialMem unsupportedRelocs
+  let customNamedOvs = AFO.allOverrides fovCtx fs initialMem unsupportedRelocs
   in AF.FunctionABI { AF.functionIntegerArguments = \bak ->
                         x86_64LinuxIntegerArguments bak archVals
                     , AF.functionMainArgumentRegisters = (DMXR.RDI, DMXR.RSI)
