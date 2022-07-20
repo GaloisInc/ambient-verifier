@@ -82,6 +82,10 @@ data CrucibleSyntaxOverrides w p sym ext = CrucibleSyntaxOverrides
     -- ^ A map of @function address overrides@. These have been checked to
     --   ensure that every override that appears in the domain of the map
     --   corresponds to a @.cbl@ file.
+  , csoStartupOverrides :: [AF.FunctionOverride p sym Ctx.EmptyCtx ext LCT.UnitType]
+    -- ^ A list of @startup overrides@ in the order in which they should be
+    --   executed at the start of simulation. These have been validated such
+    --   that we know each override has no arguments and returns @Unit@.
   , csoNamedOverrides :: [AF.SomeFunctionOverride p sym ext]
     -- ^ An override for each @<name>.cbl@'s function of the corresponding
     --   @<name>@. These have been checked to ensure that the @.cbl@ file
@@ -92,12 +96,14 @@ data CrucibleSyntaxOverrides w p sym ext = CrucibleSyntaxOverrides
 emptyCrucibleSyntaxOverrides :: CrucibleSyntaxOverrides w p sym ext
 emptyCrucibleSyntaxOverrides = CrucibleSyntaxOverrides
   { csoAddressOverrides = Map.empty
+  , csoStartupOverrides = []
   , csoNamedOverrides = []
   }
 
 -- | Errors that can occur when parsing an @overrides.yaml@ file.
 data OverrideMapParseError
-  = ExpectedObject DA.Value
+  = ExpectedArray  DA.Value
+  | ExpectedObject DA.Value
   | ExpectedString DA.Value
   | ExpectedAddress DAK.Key
   deriving (Show)

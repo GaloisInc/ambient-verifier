@@ -1187,13 +1187,30 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
   Some discoveredEntry <- ADi.discoverFunction logAction archInfo mainBinaryPath entryPointAddr
   LCCC.SomeCFG cfg <- ALi.liftDiscoveredFunction halloc (ALB.lbpPath mainBinaryPath)
                                                  (DMS.archFunctions archVals) discoveredEntry
-  let simAction = LCS.runOverrideSim regsRepr (initFSOverride >> (LCS.regValue <$> LCS.callCFG cfg arguments))
+  let simAction = LCS.runOverrideSim regsRepr $ do
+                    -- First, initialize the symbolic file system...
+                    initFSOverride
+                    -- ...then simulate any startup overrides...
+                    F.traverse_ (\ov -> AF.functionOverride ov bak Ctx.Empty dummyGetVarArg)
+                                (AFET.csoStartupOverrides csOverrides)
+                    -- ...and finally, run the entrypoint function.
+                    LCS.regValue <$> LCS.callCFG cfg arguments
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
     let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak initialMem archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig)) (ALB.bcUnsuportedRelocations binConf)
+    -- Register any auxiliary functions or forward declarations used in the
+    -- startup overrides.
+    startupBindings <-
+      F.foldlM (\bindings functionOv ->
+                 liftIO $ insertFunctionOverrideHandles
+                            bak functionABI functionOv bindings)
+               LCF.emptyHandleMap
+               (AFET.csoStartupOverrides csOverrides)
+    -- Also register the entry point function, as we will not be able to start
+    -- simulation witout it.
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
-                                       LCF.emptyHandleMap
+                                       startupBindings
     let ambientSimState = set AExt.discoveredFunctionHandles
                           (Map.singleton entryPointAddr (LCCC.cfgHandle cfg))
                           AExt.emptyAmbientSimulatorState
@@ -1211,6 +1228,13 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
 
     res <- liftIO $ LCS.executeCrucible executionFeatures s0
     return (AM.imMemVar initialMem, res, wmConfig)
+  where
+    -- Syntax overrides cannot make use of variadic arguments, so if this
+    -- callback is ever used, something has gone awry.
+    dummyGetVarArg :: AF.GetVarArg sym
+    dummyGetVarArg = AF.GetVarArg $ \_ ->
+      AP.panic AP.SymbolicExecution "simulateFunction"
+        ["A startup override cannot use variadic arguments"]
 
 -- | Symbolically execute a function
 --

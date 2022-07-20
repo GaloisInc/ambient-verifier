@@ -140,17 +140,37 @@ like this: ::
       0x456: "quux"
       ...
 
-Here, ``function address overrides`` specifies an optional mapping from function
-addresses to override names. This can be useful for situations where a function
-in a binary has no corresponding symbol name (for instance, as in stripped
-binaries). A separate mapping is specified for each binary or shared library.
-The name that each address maps to must correspond the name of a ``.cbl`` file
-in the ``function`` subdirectory.
+  startup overrides:
+  - "start1"
+  - "start2"
+  - ...
 
-Note that the mapping only cares about the file names of each binary and does
-not care about the parent directories. For example, if the verifer is invoked
-on ``/foo/bar/main.exe``, then the ``overrides.yaml`` only needs to specify
-``main.exe``, not its full path.
+Here:
+
+* ``function address overrides`` specifies an optional mapping from function
+  addresses to override names. This can be useful for situations where a
+  function in a binary has no corresponding symbol name (for instance, as in
+  stripped binaries). A separate mapping is specified for each binary or shared
+  library. The name that each address maps to must correspond the name of a
+  ``.cbl`` file in the ``function`` subdirectory.
+
+  Note that the mapping only cares about the file names of each binary and does
+  not care about the parent directories. For example, if the verifer is invoked
+  on ``/foo/bar/main.exe``, then the ``overrides.yaml`` only needs to specify
+  ``main.exe``, not its full path.
+
+* ``startup overrides`` specifies a list of overrides to run at the very start
+  of simulating a binary, before the entry point (e.g., ``main``) is run. Each
+  override will be run in the order it appears in the list. Each startup
+  override is expected to have no arguments and return ``Unit``. Attempting to
+  specify a startup override with a different type will result in an error
+  before simulation begins.
+
+  A key use case for startup overrides is for initializing the values of global
+  variables, especially in conjunction with the ``get-global-pointer-addr``,
+  ``get-global-pointer-named``, and ``malloc-global`` functions. This can serve
+  as a more straightforward way to initialize global state than, say,
+  simulating everything in ``glibc``'s ``_start`` function.
 
 Override Precedence
 -------------------

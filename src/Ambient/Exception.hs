@@ -116,6 +116,10 @@ data AmbientException where
   -- contained a function name without a corresponding @.cbl@ file.
   FunctionAddressOverridesNameNotFound ::
     DMM.MemWidth w => FilePath -> DMM.MemWord w -> WF.FunctionName -> AmbientException
+  StartupOverrideNameNotFound :: WF.FunctionName -> AmbientException
+  -- | A startup override either had a non-empty argument list or a non-@Unit@
+  -- return type.
+  StartupOverrideUnexpectedType :: WF.FunctionName -> AmbientException
   -- | When resolving a forward declaration, a function with the same name
   -- could not be found.
   ForwardDeclarationNameNotFound :: WF.FunctionName -> AmbientException
@@ -126,6 +130,8 @@ data AmbientException where
   -- | A forward declaration to a function attempted to load a variadic
   -- argument, which is not supported.
   ForwardDeclarationVarArgError :: WF.FunctionName -> AmbientException
+  -- | The @startup overrides@ section of an @overrides.yaml@ file contained
+  -- a function name without a corresponding @.cbl@ file.
   -- | Unable to narrow a type down from a specific bitvector length when invoking a function.
   FunctionTypeBvNarrowingError :: LCT.NatRepr w -> AmbientException
   -- | Unable to zero-extend a type to a specific bitvector length when invoking a function.
@@ -329,6 +335,18 @@ instance PP.Pretty AmbientException where
                 , PP.pretty "- Binary:" PP.<+> PP.pretty binPath
                 , PP.pretty "- Address:" PP.<+> PP.pretty addr
                 , PP.pretty "- Name:" PP.<+> PP.pretty name
+                ]
+      StartupOverrideNameNotFound name ->
+        PP.vcat [ PP.pretty "An 'overrides.yaml' file contains a 'startup overrides'" PP.<+>
+                  PP.pretty "section with the name" PP.<+> PP.squotes (PP.pretty name) <>
+                  PP.pretty ","
+                , PP.pretty "but that does not correspond to a '.cbl' file."
+                ]
+      StartupOverrideUnexpectedType name ->
+        PP.vcat [ PP.pretty "The" PP.<+> PP.squotes (PP.pretty name) PP.<+>
+                  PP.pretty "startup override has an unexpected type."
+                , PP.pretty "A startup override should have no arguments and" PP.<+>
+                  PP.pretty "have return type 'Unit'."
                 ]
       ForwardDeclarationNameNotFound fwdDecName ->
         PP.pretty "Could not find a function to resolve the forward declaration named" PP.<+>

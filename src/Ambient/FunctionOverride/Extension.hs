@@ -43,6 +43,7 @@ import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.String as DS
 import qualified Data.Text as DT
 import qualified Data.Text.IO as DTI
+import qualified Data.Vector as DV
 import qualified Data.Vector.NonEmpty as NEV
 import qualified Data.Yaml as DY
 import           Data.Word ( Word64 )
@@ -108,6 +109,10 @@ data RawSyntaxOverrides = RawSyntaxOverrides
     -- ^ The @function address overrides@ map in the @overrides.yaml@ file.
     --   If there is no @overrides.yaml@ file or if the map is not present,
     --   this list is empty.
+  , startupOverrides :: [WF.FunctionName]
+    -- ^ The @startup overrides@ list in the @overrides.yaml@ file. If there is
+    --   no @overrides.yaml@ file or if the list is not present, then this list
+    --   will be empty.
   }
 
 -- | Parse the @function address overrides@ map in an @overrides.yaml@ file. If
@@ -141,6 +146,30 @@ parseOverrideMap val = do
                  pure (bin, addr, WF.functionNameFromText funName))
                (DAKM.toList binObj)
 
+-- | Parse the @startup overrides@ list in an @overrides.yaml@ file. If no such
+-- list is present, return an empty list.
+parseStartupOverrides ::
+  CMC.MonadThrow m =>
+  DA.Value ->
+  m [WF.FunctionName]
+parseStartupOverrides val = do
+  obj <- asObject val
+  case DAKM.lookup "startup overrides" obj of
+    Nothing -> pure []
+    Just ovsVal -> do
+      ovsArr <- asArray ovsVal
+      ovsArr' <- traverse (\fun -> do
+                            funName <- asString fun
+                            pure $ WF.functionNameFromText funName)
+                          ovsArr
+      pure $ DV.toList ovsArr'
+
+-- | Assert that a JSON 'DA.Value' is an 'DA.Array'. If this is the case,
+-- return the underlying array. Otherwise, throw an exception.
+asArray :: CMC.MonadThrow m => DA.Value -> m DA.Array
+asArray (DA.Array a) = pure a
+asArray val          = CMC.throwM $ ExpectedArray val
+
 -- | Assert that a JSON 'DA.Value' is a 'DA.String'. If this is the case,
 -- return the underlying text. Otherwise, throw an exception.
 asString :: CMC.MonadThrow m => DA.Value -> m DT.Text
@@ -165,15 +194,18 @@ findRawSyntaxOverrides dirPath = do
   cbls <- SFG.glob (dirPath SF.</> "function" SF.</> "*.cbl")
   let overridesYamlPath = dirPath SF.</> "overrides.yaml"
   overridesYamlExists <- SD.doesFileExist overridesYamlPath
-  funAddrOvs <-
+  mbOverridesYaml <-
     if overridesYamlExists
       then do bytes <- BS.readFile overridesYamlPath
               val <- DY.decodeThrow bytes
-              parseOverrideMap val
-      else pure []
+              pure $ Just val
+      else pure Nothing
+  funAddrOvs <- maybe (pure []) parseOverrideMap mbOverridesYaml
+  startupOvs <- maybe (pure []) parseStartupOverrides mbOverridesYaml
   pure $ RawSyntaxOverrides
            { cblFiles = cbls
            , functionAddressOverrides = funAddrOvs
+           , startupOverrides = startupOvs
            }
 
 
@@ -374,12 +406,17 @@ loadCrucibleSyntaxOverrides :: forall ext w s p sym
                             -> IO (CrucibleSyntaxOverrides w p sym ext)
                             -- ^ The loaded overrides
 loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
-  RawSyntaxOverrides{cblFiles, functionAddressOverrides}
+  RawSyntaxOverrides{cblFiles, functionAddressOverrides, startupOverrides}
     <- findRawSyntaxOverrides dirPath
   namedOvs <- traverse go cblFiles
   let namedOvsMap = Map.fromList $
         map (\sov@(AF.SomeFunctionOverride ov) -> (AF.functionName ov, sov))
             namedOvs
+  startupOvs <- traverse (\funName ->
+                           case Map.lookup funName namedOvsMap of
+                             Just ov -> validateStartupOverride ov
+                             Nothing -> CMC.throwM $ AE.StartupOverrideNameNotFound funName)
+                         startupOverrides
   funAddrOvs <- traverse (\(bin, addr, funName) ->
                            let addrMemWord = fromIntegral addr in
                            case Map.lookup funName namedOvsMap of
@@ -389,6 +426,7 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
                          functionAddressOverrides
   pure $ CrucibleSyntaxOverrides
     { csoAddressOverrides = Map.fromList funAddrOvs
+    , csoStartupOverrides = startupOvs
     , csoNamedOverrides = namedOvs
     }
   where
@@ -397,6 +435,18 @@ loadCrucibleSyntaxOverrides dirPath ng halloc hooks = do
     go path = do
       parsedProg <- loadCrucibleSyntaxOverride path ng halloc hooks
       parsedProgToFunctionOverride path parsedProg
+
+    -- Validate that a startup override has no arguments and returns @Unit@.
+    validateStartupOverride ::
+      AF.SomeFunctionOverride p sym ext ->
+      IO (AF.FunctionOverride p sym Ctx.EmptyCtx ext LCT.UnitType)
+    validateStartupOverride (AF.SomeFunctionOverride ov)
+      | Just WI.Refl <- WI.testEquality (AF.functionArgTypes ov) Ctx.Empty
+      , Just WI.Refl <- WI.testEquality (AF.functionReturnType ov) LCT.UnitRepr
+      = pure ov
+
+      | otherwise
+      = CMC.throwM $ AE.StartupOverrideUnexpectedType $ AF.functionName ov
 
 -- | Convert a 'LCSC.ParsedProgram' at a the given 'FilePath' to a function
 -- override.
