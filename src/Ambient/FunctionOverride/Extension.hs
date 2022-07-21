@@ -668,7 +668,7 @@ extensionParser wrappers hooks =
         -- Bitvector literals with a type argument are a special case.  We must
         -- parse the type argument separately before parsing the remaining
         -- argument as an Atom.
-        LCSE.depCons (LCSC.extensionTypeParser hooks) $ \(Some tp) ->
+        LCSE.depCons LCSC.isType $ \(Some tp) ->
           case tp of
             LCT.BVRepr{} ->
               go (SomeExtensionWrapper (buildBvTypedLitWrapper tp))
