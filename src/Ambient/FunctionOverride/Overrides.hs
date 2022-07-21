@@ -69,6 +69,7 @@ import           Ambient.FunctionOverride
 import           Ambient.FunctionOverride.Overrides.CrucibleStrings
 import           Ambient.FunctionOverride.Overrides.Printf
 import qualified Ambient.Loader.BinaryConfig as ALB
+import qualified Ambient.Loader.LoadOptions as ALL
 import qualified Ambient.Memory as AM
 import qualified Ambient.MonadState as AMS
 import           Ambient.Override
@@ -402,8 +403,8 @@ callGetGlobalPointerAddr bak fovCtx initialMem
                                    AE.GlobalAddrArgument
   let addr = fromInteger $ BVS.asUnsigned globAddrBV
 
-  Some lbp <- findLoadedBinaryNamed sym fovCtx AE.GetGlobalPointerAddr binName
-  resolveGlobalPointer initialMem AE.GetGlobalPointerAddr lbp addr
+  (Some lbp, lbpIdx) <- findLoadedBinaryNamed sym fovCtx AE.GetGlobalPointerAddr binName
+  resolveGlobalPointer initialMem AE.GetGlobalPointerAddr lbp lbpIdx addr
 
 buildGetGlobalPointerNamedOverride ::
   ( w ~ DMC.ArchAddrWidth arch
@@ -462,7 +463,7 @@ callGetGlobalPointerNamed bak fovCtx initialMem
                                    AE.GetGlobalPointerNamed
                                    AE.GlobalNameArgument
 
-  Some lbp <- findLoadedBinaryNamed sym fovCtx AE.GetGlobalPointerNamed binName
+  (Some lbp, lbpIdx) <- findLoadedBinaryNamed sym fovCtx AE.GetGlobalPointerNamed binName
 
   -- Ensure that we can find an address corresponding to the global variable.
   addr <-
@@ -471,7 +472,7 @@ callGetGlobalPointerNamed bak fovCtx initialMem
       Nothing -> CMC.throwM $ AE.GetGlobalPointerGlobalNameNotFound
                                 AE.GetGlobalPointerNamed globNameBS
 
-  resolveGlobalPointer initialMem AE.GetGlobalPointerNamed lbp addr
+  resolveGlobalPointer initialMem AE.GetGlobalPointerNamed lbp lbpIdx addr
 
 -- | Concretize the argument representing the binary name and look up the
 -- corresponding 'ALB.LoadedBinaryPath', throwing an exception if one of these
@@ -488,7 +489,9 @@ findLoadedBinaryNamed ::
   -- ^ Is this @get-global-pointer-addr@ or @get-global-pointer-named@?
   WI.SymString sym WI.Unicode ->
   -- ^ The binary in which the global variable is located
-  m (Some (ALB.LoadedBinaryPath arch))
+  m (Some (ALB.LoadedBinaryPath arch), Int)
+  -- ^ The corresponding 'ALB.LoadedBinaryPath' and its index in the
+  -- 'ALB.bcBinaries' field of the 'ALB.BinaryConfig'.
 findLoadedBinaryNamed sym fovCtx ggpFun binName = do
   -- Concretize the binary name.
   binPath <- case WI.asString binName of
@@ -508,9 +511,9 @@ findLoadedBinaryNamed sym fovCtx ggpFun binName = do
       -- takes time linear to the number of binaries. We might want to cache
       -- which binary names map to which LoadedBinaryPaths somewhere in the
       -- BinaryConfig.
-      case NEV.find (\lbp -> SF.takeFileName (ALB.lbpPath lbp) == binPath)
-                    (ALB.bcBinaries binConf) of
-        Just lbp -> pure $ Some lbp
+      case NEV.findIndex (\lbp -> SF.takeFileName (ALB.lbpPath lbp) == binPath)
+                         (ALB.bcBinaries binConf) of
+        Just idx -> pure (Some (ALB.bcBinaries binConf NEV.! idx), idx)
         Nothing -> CMC.throwM $ AE.GetGlobalPointerBinaryNameNotFound ggpFun binPath
     TestContext -> CMC.throwM $ AE.GetGlobalPointerTestOverrides ggpFun
 
@@ -526,14 +529,19 @@ resolveGlobalPointer ::
   -- ^ Is this @get-global-pointer-addr@ or @get-global-pointer-named@?
   ALB.LoadedBinaryPath arch binPath ->
   -- ^ The binary in which the global variable is located
+  Int ->
+  -- ^ The index of the binary, which is used for load offset calculations.
+  -- See @Note [Address offsets for shared libraries]@ in
+  -- "Ambient.Loader.LoadOffset".
   DMM.MemWord w ->
-  -- ^ The address of the global variable within that binary
+  -- ^ The address of the global variable within that binary.
   LCS.OverrideSim p sym ext r args ret (LCLM.LLVMPtr sym w)
-resolveGlobalPointer initialMem ggpFun lbp addr = do
+resolveGlobalPointer initialMem ggpFun lbp lbpIdx addr = do
   -- Ensure that the supplied address actually exists within the binary.
   let mem = DMB.memoryImage $ ALB.lbpBinary lbp
   addrSegOff <-
-    case DMBE.resolveAbsoluteAddress mem addr of
+    case DMBE.resolveAbsoluteAddress
+           mem (ALL.offsetAddressWithIndex addr lbpIdx) of
       Just segOff -> pure segOff
       Nothing -> CMC.throwM $ AE.GetGlobalPointerGlobalAddrNotFound ggpFun addr
 

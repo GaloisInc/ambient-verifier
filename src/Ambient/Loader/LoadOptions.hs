@@ -1,6 +1,7 @@
 module Ambient.Loader.LoadOptions
   ( indexToLoadOptions
   , addressToIndex
+  , offsetAddressWithIndex
   ) where
 
 import qualified Data.Bits as Bits
@@ -14,7 +15,7 @@ import qualified Data.Macaw.Memory.LoadCommon as MML
 -- See @Note [Address offsets for shared libraries]@.
 indexToLoadOptions :: Word64 -> MML.LoadOptions
 indexToLoadOptions index =
-  MML.LoadOptions { MML.loadOffset = Just $ 0x10000000 * index }
+  MML.LoadOptions { MML.loadOffset = Just $ loadOffset * index }
 
 -- | Given an address offset, determine the index of the binary that defines
 -- the address. Examples:
@@ -31,6 +32,15 @@ addressToIndex :: DMM.MemWord w -> Integer
 addressToIndex addr = DMM.memWordToUnsigned addr `Bits.shiftR` 28
   -- NB: 28 is equal to log_2(0x10000000), i.e., the number of binary
   -- digits we must shift past to uncover the high bits.
+
+-- | Given an address, return an address that has been offset by the
+-- appropriate amount. See @Note [Address offsets for shared libraries]@.
+offsetAddressWithIndex :: DMM.MemWidth w => DMM.MemWord w -> Int -> DMM.MemWord w
+offsetAddressWithIndex addr index = fromIntegral (loadOffset * index) + addr
+
+-- | The address offset to use.
+loadOffset :: Num a => a
+loadOffset = 0x10000000
 
 {-
 Note [Address offsets for shared libraries]
