@@ -342,6 +342,9 @@ instance PP.Pretty AmbientException where
                   PP.pretty ","
                 , PP.pretty "but that does not correspond to a '.cbl' file."
                 ]
+      -- This error message would be improved if we could pretty-print the
+      -- relevant TypeReprs in a human-readable way. See
+      -- https://github.com/GaloisInc/crucible/issues/1016.
       StartupOverrideUnexpectedType name ->
         PP.vcat [ PP.pretty "The" PP.<+> PP.squotes (PP.pretty name) PP.<+>
                   PP.pretty "startup override has an unexpected type."
@@ -363,8 +366,9 @@ instance PP.Pretty AmbientException where
                   PP.pretty "attempted to retrieve a variadic argument,"
                 , PP.pretty "which is not supported for syntax overrides."
                 ]
-      -- These error messages would be improved if the Pretty instance for
-      -- TypeRepr were more human-readable.
+      -- These error messages would be improved if we could pretty-print the
+      -- relevant TypeReprs in a human-readable way. See
+      -- https://github.com/GaloisInc/crucible/issues/1016.
       FunctionTypeBvNarrowingError bvLen ->
         PP.vcat [ PP.pretty "Could not narrow a type from a length-" <> PP.viaShow bvLen PP.<+>
                   PP.pretty "bitvector"

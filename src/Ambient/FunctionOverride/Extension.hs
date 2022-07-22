@@ -43,6 +43,7 @@ import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.String as DS
 import qualified Data.Text as DT
 import qualified Data.Text.IO as DTI
+import qualified Data.Traversable as Trav
 import qualified Data.Vector as DV
 import qualified Data.Vector.NonEmpty as NEV
 import qualified Data.Yaml as DY
@@ -128,10 +129,8 @@ parseOverrideMap val = do
     Nothing -> pure []
     Just ovsVal -> do
       ovsObj <- asObject ovsVal
-      ovs <-
-        traverse (\(bin, binVal) ->
-                   parseFunctionAddressOverrides (DAK.toString bin) binVal)
-                 (DAKM.toList ovsObj)
+      ovs <- Trav.for (DAKM.toList ovsObj) $ \(bin, binVal) ->
+               parseFunctionAddressOverrides (DAK.toString bin) binVal
       pure $ concat ovs
   where
     parseFunctionAddressOverrides ::
