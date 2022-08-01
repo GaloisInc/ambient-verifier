@@ -126,10 +126,10 @@ showVerifyException (CaughtAbortExecReason aer) = show aer
 showVerifyException (CaughtAmbientException ae) = show ae
 
 -- | The result of running verify
--- 
+--
 -- Either the output metrics, or a caught exception (which might
 -- be acceptable if the test expects it).
-data VerifyResult = 
+data VerifyResult =
     CaughtVerifyException CaughtVerifyException
   | VerifyOK AV.Metrics
 
@@ -179,6 +179,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piSolverInteractionFile = Nothing
                                  , AV.piSharedObjectDir = sharedObjectsDir expectedResult
                                  , AV.piLogSymbolicBranches = Nothing
+                                 , AV.piCCompiler = "gcc"
                                  }
 
   chan <- CC.newChan
@@ -293,6 +294,7 @@ overrideTests abi = TTH.testCase ((show abi) ++ " override tests") $ do
                               , AO.tiFloatMode = AS.Real
                               , AO.tiOverrideDir = "tests/overrides"
                               , AO.tiAbi = abi
+                              , AO.tiCCompiler = "gcc"
                               }
 
   chan <- CC.newChan

@@ -131,6 +131,8 @@ library
                       crucible-syntax,
                       what4,
                       binary-symbols,
+                      overrides-dsl,
+                      language-c,
                       indexed-traversable,
                       utf8-string,
                       nonempty-vector,

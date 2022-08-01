@@ -41,6 +41,8 @@ data TestInstance =
                -- ^ Path to the crucible syntax overrides directory
                , tiAbi :: AA.ABI
                -- ^ ABI to use when loading crucible syntax functions
+               , tiCCompiler :: FilePath
+               -- ^ The C compiler to use to preprocess C overrides
                }
 
 
@@ -74,6 +76,7 @@ testOverrides logAction tinst timeoutDuration = do
                                  AFXL.x86_64LinuxFunctionABI
                                  (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
                                  (tiOverrideDir tinst)
+                                 (tiCCompiler tinst)
                                  ng
                                  hdlAlloc
                                  parserHooks
@@ -91,6 +94,7 @@ testOverrides logAction tinst timeoutDuration = do
                                  (AFAL.aarch32LinuxFunctionABI tlsGlob)
                                  (AMAL.aarch32LinuxInitGlobals tlsGlob)
                                  (tiOverrideDir tinst)
+                                 (tiCCompiler tinst)
                                  ng
                                  hdlAlloc
                                  parserHooks

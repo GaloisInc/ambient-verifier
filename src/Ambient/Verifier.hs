@@ -133,6 +133,8 @@ data ProgramInstance =
                   -- ^ Optional directory containing shared objects to verify
                   , piLogSymbolicBranches :: Maybe FilePath
                   -- ^ Log symbolic branches to a given file
+                  , piCCompiler :: FilePath
+                  -- ^ The C compiler to use to preprocess C overrides
                   }
 
 -- | A set of metrics from a verification run
@@ -372,7 +374,7 @@ verify logAction pinst timeoutDuration = do
       csOverrides <-
         case piOverrideDir pinst of
           Just dir -> do
-            liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
+            liftIO $ AFE.loadCrucibleSyntaxOverrides dir (piCCompiler pinst) ng hdlAlloc parserHooks
           Nothing -> return AFE.emptyCrucibleSyntaxOverrides
       let fnConf = AVS.FunctionConfig {
           AVS.fcBuildSyscallABI = syscallABI

@@ -63,7 +63,9 @@ listOverrides logAction pinst = do
       AFE.CrucibleSyntaxOverrides{AFE.csoAddressOverrides, AFE.csoNamedOverrides} <-
         case AV.piOverrideDir pinst of
           Just dir -> do
-            liftIO $ AFE.loadCrucibleSyntaxOverrides dir ng hdlAlloc parserHooks
+            liftIO $ AFE.loadCrucibleSyntaxOverrides
+                       dir (AV.piCCompiler pinst)
+                       ng hdlAlloc parserHooks
           Nothing -> return AFE.emptyCrucibleSyntaxOverrides
       let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
       let ?memOpts = LCLM.defaultMemOptions

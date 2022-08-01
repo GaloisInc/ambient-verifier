@@ -195,6 +195,9 @@ nested-pointers/nested-pointers.exe: nested-pointers/nested-pointers.c ambient_a
 startup-override/startup-override.exe: startup-override/startup-override.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
 
+c-override/c-override.exe: c-override/c-override.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

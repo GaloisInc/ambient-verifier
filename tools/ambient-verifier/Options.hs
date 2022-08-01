@@ -74,6 +74,8 @@ data VerifyOptions =
                 -- ^ File to write metrics to
                 , logSymbolicBranches :: Maybe FilePath
                 -- ^ Optional file to record symbolic branches to
+                , cCompiler :: FilePath
+                -- ^ The C compiler to use to preprocess C overrides
                 }
   deriving ( Show )
 
@@ -93,6 +95,8 @@ data TestOverridesOptions =
                        -- discharging verification conditions
                        , testTimeoutDuration :: AT.Timeout
                        -- ^ The solver timeout for each goal
+                       , testCCompiler :: FilePath
+                       -- ^ The C compiler to use to preprocess C overrides
                        }
 
 -- | The options structure for the command line interface to the verifier
@@ -164,6 +168,15 @@ overridesParser = OA.strOption (  OA.long "overrides"
                                <> OA.metavar "DIRECTORY"
                                <> OA.help "A path to a directory of overides in crucible syntax to test"
                                )
+
+-- | A paser for the @--with-gcc@ option
+withCCParser :: OA.Parser FilePath
+withCCParser =
+  OA.strOption ( OA.long "with-cc"
+              <> OA.metavar "PATH"
+              <> OA.value "gcc"
+              <> OA.help "The C compiler to use to preprocess C overrides (default: gcc)"
+               )
 
 -- | A parser for the \"verify\" subcommand
 verifyParser :: OA.Parser Command
@@ -250,6 +263,7 @@ verifyOptions = VerifyOptions
                                         <> OA.metavar "FILE"
                                         <> OA.help "Log all symbolic branches that occur to FILE"
                                        ))
+           <*> withCCParser
 
 -- | A parser for the \"list-overrides\" subcommand
 listOverridesParser :: OA.Parser Command
@@ -266,6 +280,7 @@ testOverridesParser = TestOverrides <$> (TestOverridesOptions
            <*> solverParser
            <*> floatModeParser
            <*> timeoutParser
+           <*> withCCParser
            )
 
 

@@ -147,6 +147,7 @@ buildPinstFromVerifyOptions o = do
            , AV.piSolverInteractionFile = O.solverInteractionFile o
            , AV.piSharedObjectDir = O.sharedObjectDir o
            , AV.piLogSymbolicBranches = O.logSymbolicBranches o
+           , AV.piCCompiler = O.cCompiler o
            }
 
 -- | This is the real verification driver that takes the parsed out command line
@@ -175,6 +176,7 @@ testOverrides o = do
                                , AO.tiFloatMode = O.testFloatMode o
                                , AO.tiOverrideDir = O.testOverrideDir o
                                , AO.tiAbi = O.testAbi o
+                               , AO.tiCCompiler = O.testCCompiler o
                                }
   chan <- CC.newChan
   logger <- CCA.async (printLogs testLogHandles chan)

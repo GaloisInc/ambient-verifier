@@ -46,3 +46,6 @@
 [submodule "submodules/sympro-ui"]
 	path = submodules/sympro-ui
 	url = git@github.com:GaloisInc/sympro-ui
+[submodule "submodules/overrides-dsl"]
+	path = submodules/overrides-dsl
+	url = git@gitlab-ext.galois.com:ambient/overrides-dsl.git

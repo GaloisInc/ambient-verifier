@@ -7,6 +7,7 @@ module Ambient.Exception (
   , NetworkFunctionArgument(..)
   , GetGlobalPointerFunction(..)
   , GetGlobalPointerArgument(..)
+  , OverrideLang(..)
   ) where
 
 import qualified Control.Exception as X
@@ -14,6 +15,7 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ElfEdit as DE
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Text as T
+import qualified Language.C as LangC
 import qualified Prettyprinter as PP
 import qualified Text.Megaparsec as MP
 
@@ -21,6 +23,7 @@ import qualified Data.Macaw.Memory as DMM
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.Syntax.ExprParse as LCSE
 import qualified Lang.Crucible.Types as LCT
+import qualified ODSL.Translate as ODSL
 import qualified What4.FunctionName as WF
 import qualified What4.ProgramLoc as WP
 
@@ -55,9 +58,20 @@ data AmbientException where
   -- | The event trace for the named property is malformed
   MalformedEventTrace :: T.Text -> AmbientException
   -- | A failure from Megaparsec in a crucible syntax override
-  CrucibleSyntaxMegaparsecFailure :: (MP.VisualStream s, MP.TraversableStream s, MP.ShowErrorComponent e, Show s, Show (MP.Token s), Show e) => MP.ParseErrorBundle s e -> AmbientException
+  CrucibleSyntaxMegaparsecFailure ::
+    (MP.VisualStream s, MP.TraversableStream s, MP.ShowErrorComponent e, Show s, Show (MP.Token s), Show e) =>
+    OverrideLang {- ^ The language the original override was written in. -} ->
+    T.Text {- ^ The @crucible-syntax@ code. If this the original override is
+                written in C, this will be compiled code. -} ->
+    MP.ParseErrorBundle s e {- ^ The parse error. -} ->
+    AmbientException
   -- | A failure during expression parsing in a crucible syntax override
-  CrucibleSyntaxExprParseFailure :: LCSC.ExprErr s -> AmbientException
+  CrucibleSyntaxExprParseFailure ::
+    OverrideLang {- ^ The language the original override was written in. -} ->
+    T.Text {- ^ The @crucible-syntax@ code. If this the original override is
+                written in C, this will be compiled code. -} ->
+    LCSC.ExprErr s {- ^ The parse error. -} ->
+    AmbientException
   -- | Could not find a function in a crucible syntax file
   CrucibleSyntaxFunctionNotFound :: WF.FunctionName -> FilePath -> AmbientException
   -- | The provided crucible syntax directory doesn't exist
@@ -155,6 +169,11 @@ data AmbientException where
   -- | The @get-global-pointer-{addr,named}@ override was used in the context
   -- of the @test-overrides@ command, which is not supported.
   GetGlobalPointerTestOverrides :: GetGlobalPointerFunction -> AmbientException
+  -- | Could not parse a @.c@ file meant for use as an override.
+  COverrideParseError :: FilePath -> LangC.ParseError -> AmbientException
+  -- | Could not translate a @.c@ file meant for use as an override to a @.cbl@
+  -- file.
+  COverrideTransError :: FilePath -> ODSL.TransError -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -200,6 +219,15 @@ data GetGlobalPointerArgument
   | GlobalNameArgument
   deriving Show
 
+-- | What language is a user-supplied override written in?
+data OverrideLang
+  = CblOverride
+    -- ^ An override written in @crucible-syntax@.
+  | COverride
+    -- ^ An override written in C, which is in turn compiled to
+    -- @crucible-syntax@.
+  deriving Show
+
 concretizationTargetDescription :: ConcretizationTarget -> PP.Doc a
 concretizationTargetDescription FunctionAddress = PP.pretty "function address"
 concretizationTargetDescription SyscallNumber   = PP.pretty "syscall number"
@@ -228,6 +256,21 @@ getGlobalPointerFunctionArgumentDescription :: GetGlobalPointerArgument -> PP.Do
 getGlobalPointerFunctionArgumentDescription BinaryNameArgument = PP.pretty "binary name"
 getGlobalPointerFunctionArgumentDescription GlobalAddrArgument = PP.pretty "global variable address"
 getGlobalPointerFunctionArgumentDescription GlobalNameArgument = PP.pretty "global variable name"
+
+-- | If a user-supplied override is written in C, print the contents of the
+-- compiled @crucible-syntax@ for use in error messages. Otherwise, don't
+-- bother printing the @crucible-syntax@ code at all.
+cOverrideContext :: OverrideLang -> T.Text -> PP.Doc a
+cOverrideContext ovLang ovContents =
+  case ovLang of
+    COverride ->
+      PP.vcat
+        [ mempty
+        , PP.pretty "In the following crucible-syntax code compiled from C:"
+        , PP.pretty ovContents
+        ]
+    CblOverride ->
+      mempty
 
 instance PP.Pretty AmbientException where
   pretty e =
@@ -264,13 +307,19 @@ instance PP.Pretty AmbientException where
         PP.pretty "Symbolic execution timed out"
       MalformedEventTrace name ->
         PP.pretty "The event trace for property'" <> PP.pretty name <> PP.pretty "' is malformed"
-      CrucibleSyntaxMegaparsecFailure err ->
-        PP.pretty "Parse failure in crucible syntax override: " <> PP.pretty (MP.errorBundlePretty err)
-      CrucibleSyntaxExprParseFailure err ->
-        PP.pretty "Parse failure in crucible syntax override: " <>
-          case err of
-            LCSC.SyntaxParseError se -> PP.pretty (LCSE.printSyntaxError se)
-            _ -> PP.pretty (show err)
+      CrucibleSyntaxMegaparsecFailure ovLang ovContents err ->
+        PP.vcat
+          [ PP.pretty "Parse failure in crucible syntax override: " <> PP.pretty (MP.errorBundlePretty err)
+          , cOverrideContext ovLang ovContents
+          ]
+      CrucibleSyntaxExprParseFailure ovLang ovContents err ->
+        PP.vcat
+          [ PP.pretty "Parse failure in crucible syntax override: " <>
+              case err of
+                LCSC.SyntaxParseError se -> PP.pretty (LCSE.printSyntaxError se)
+                _ -> PP.pretty (show err)
+          , cOverrideContext ovLang ovContents
+          ]
       CrucibleSyntaxFunctionNotFound name path ->
         PP.pretty "Expected to find a function named '" <> PP.pretty name <> PP.pretty "' in '" <> PP.pretty path <> PP.pretty "'"
       DuplicateNamesInCrucibleOverride path fnName ->
@@ -395,3 +444,12 @@ instance PP.Pretty AmbientException where
         PP.pretty "The" PP.<+> PP.squotes (PP.pretty ggpFun) PP.<+>
         PP.pretty "function is not supported when using" PP.<+>
         PP.squotes (PP.pretty "test-overrides")
+      COverrideParseError path err ->
+        PP.vcat [ PP.pretty "Could not parse" PP.<+> PP.pretty path PP.<> PP.colon
+                , PP.viaShow err
+                ]
+      COverrideTransError path err ->
+        PP.vcat [ PP.pretty "Could not translate" PP.<+> PP.pretty path PP.<+>
+                  PP.pretty "to a .cbl file:"
+                , PP.pretty err
+                ]

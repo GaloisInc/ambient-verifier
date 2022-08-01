@@ -23,6 +23,10 @@ To build the verifier, first clone this repository and then::
   cabal configure -w ghc-8.10.7 pkg:ambient-verifier
   cabal build pkg:ambient-verifier
 
+Note that there is an optional dependency on a C compiler (``gcc`` by default)
+that is used when running C overrides. (See the "User-specified Function
+Overrides" section for more details.)
+
 Running
 =======
 
@@ -97,16 +101,35 @@ User-specified Function Overrides
 
 When verifying programs, it is almost always useful to be able to stub out program functionality that is not important for the verification.  For example, one may want to turn calls to ``printf`` into no-ops to significantly speed up verification.  Normally, these function overrides are written in Haskell; this is expressive, but not user friendly (end users are unlikely to know Haskell or to have a Haskell build environment available).
 
-To better support end users, and enable faster experimentation, ``ambient-verifier`` supports a concrete syntax for overrides that is based on a simple s-expression grammar.  The concrete syntax is documented in the `crucible-syntax <https://github.com/GaloisInc/crucible/blob/master/crucible-syntax/README.txt>`_ repository.  In addition to the base constructs provided by the core concrete syntax, ``ambient-verifier`` supports additional primitives.  A directory containing overrides can be specified to the verifier using the ``--overrides`` command line option.
+To better support end users, and enable faster experimentation, ``ambient-verifier`` supports defining custom overrides in the following languages:
 
-Example::
+* The crucible syntax language, which is based on a simple s-expression grammar.  The concrete syntax is documented in the `crucible-syntax <https://github.com/GaloisInc/crucible/blob/master/crucible-syntax/README.txt>`_ repository. In addition to the base constructs provided by the core concrete syntax, ``ambient-verifier`` supports additional primitives.
 
-  (defun @padd ((p1 Pointer) (p2 (Bitvector 64))) Pointer
-    (start start:
-      (let res (pointer-add p1 p2))
-      (return res)))
+  Example::
 
-The ``overrides`` directory contains various overrides that we have curated for particular applications.
+    (defun @padd ((p1 Pointer) (p2 (Bitvector 64))) Pointer
+      (start start:
+        (let res (pointer-add p1 p2))
+        (return res)))
+
+* A limited subset of the C language, which we compile into crucible syntax. See the `overrides-dsl <https://gitlab-ext.galois.com/ambient/overrides-dsl>`_ repository for more information. Note that this is not currently at feature parity with crucible syntax overrides, so if you encounter a missing feature, please open an issue at `this issue tracker <https://gitlab-ext.galois.com/ambient/overrides-dsl/-/issues>`_.
+
+  Example::
+
+    int abs(int x) {
+        int ret = x;
+        if(x < 0) {
+            ret = -x;
+        }
+        return ret;
+    }
+
+  Note that the verifier uses a C compiler to preprocess the C file, so a C
+  compiler must be available on your ``PATH``. By default, the verifier looks
+  for ``gcc``, but this can be overridden using the ``--with-cc`` option.
+
+A directory containing overrides can be specified to the verifier using the ``--overrides`` command line option.
+The ``overrides`` directory in this repo contains various overrides that we have curated for particular applications.
 
 Directory Conventions
 ---------------------
@@ -118,12 +141,15 @@ contents look like: ::
   ├── function/
   │   ├── fun1.cbl
   │   ├── fun2.cbl
+  │   ├── fun3.c
+  │   ├── fun4.c
   │   └── ...
   └── overrides.yaml (optional)
 
-The ``function`` subdirectory contains ``.cbl`` files, where each ``.cbl`` file
-is named after the function that should be overridden. For instance,
-``printf.cbl`` would correspond to an override for the ``printf`` function.
+The ``function`` subdirectory contains ``.cbl`` and ``.c`` files for crucible
+syntax and C overrides, respectively. Each of these file should be named after
+the function that should be overridden. For instance, ``printf.cbl`` would
+correspond to an override for the ``printf`` function.
 
 The ``overrides.yaml`` is an optional file that can be present if one desires
 more fine-grained control over which functions in a binary should receive
@@ -151,8 +177,9 @@ Here:
   addresses to override names. This can be useful for situations where a
   function in a binary has no corresponding symbol name (for instance, as in
   stripped binaries). A separate mapping is specified for each binary or shared
-  library. The name that each address maps to must correspond the name of a
-  ``.cbl`` file in the ``function`` subdirectory.
+  library. The name that each address maps to must correspond the name of an
+  override file in the ``function`` subdirectory (not including the file
+  extension).
 
   Note that the mapping only cares about the file names of each binary and does
   not care about the parent directories. For example, if the verifer is invoked
@@ -200,7 +227,7 @@ precedence, so the verifier will use the ``bar`` override.
 Functions
 ---------
 
-Each ``<name>.cbl`` file is expected to define a function named ``@<name>``.
+Each ``<name>.{cbl,c}`` file is expected to define a function named ``@<name>``.
 For instance, an ``add_bvs.cbl`` file should define an ``@add_bvs`` function,
 e.g.: ::
 
@@ -209,9 +236,10 @@ e.g.: ::
       (let sum (+ x y))
       (return sum)))
 
-A ``.cbl`` file is also permitted to define other functions. These functions
-are considered local to the ``.cbl`` file and are not visible to other files.
-For instance, an alternative way to implement ``add_bvs.cbl`` would be: ::
+An override file is also permitted to define other functions. These functions
+are considered local to the file defining it and are not visible to other
+files. For instance, an alternative way to implement ``add_bvs.cbl`` would
+be: ::
 
   (defun @add_bvs ((x (Bitvector 32)) (y (Bitvector 32))) (Bitvector 32)
     (start start:
@@ -224,7 +252,7 @@ For instance, an alternative way to implement ``add_bvs.cbl`` would be: ::
       (let sum (+ x y))
       (return sum)))
 
-A ``.cbl`` file is allowed to invoke functions defined in other ``.cbl`` files
+An override file is allowed to invoke functions defined in other override files
 by way of *forward declarations*. A forward declaration states the type of a
 function that is not defined in the file itself, but will be provided later by
 some other means. For instance, suppose that ``@add_bvs_2`` were defined in its
@@ -245,9 +273,9 @@ error if it cannot find a function of the same name, or if it finds a function
 with a different type than what is stated in the forward declaration.
 
 Currently, forward declarations can be resolved to overrides defined in other
-``.cbl`` files as well as overrides that are built into the verifier (e.g.,
+override files as well as overrides that are built into the verifier (e.g.,
 the override for ``memcpy``). Note that forward declarations cannot be used to
-resolve functions that are local to a particular ``.cbl`` file. Resolving
+resolve functions that are local to a particular override file. Resolving
 forward declarations to functions defined in binaries is not currently
 supported.
 

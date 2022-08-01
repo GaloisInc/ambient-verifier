@@ -28,7 +28,7 @@ ambient-verifier:
   before_script:
     - apt update
     - DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends tzdata
-    - apt install -y software-properties-common wget unzip openssh-client git zlib1g-dev curl build-essential libtinfo5 libgmp10 libgmp-dev locales sudo
+    - apt install -y software-properties-common wget unzip openssh-client git zlib1g-dev curl build-essential libtinfo5 libgmp10 libgmp-dev locales sudo gcc
     - locale-gen en_US.UTF-8
     - update-locale LANG=en_US.UTF-8
     - export LANG=en_US.UTF-8
