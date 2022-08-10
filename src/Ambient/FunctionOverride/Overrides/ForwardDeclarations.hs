@@ -43,7 +43,15 @@ mkForwardDeclarationOverride ::
   -- ^ The name of the forward declaration
   LCF.FnHandle args ret ->
   -- ^ The forward declaration's handle
-  IO (LCS.Override p sym ext args ret)
+  IO ( LCS.Override p sym ext args ret
+     , AF.SomeFunctionOverride p sym ext
+     )
+  -- ^ Returns two things:
+  --
+  -- * A Crucible 'LCS.Override' to use when simulating a call to the forward
+  --   declaration.
+  --
+  -- * The 'AF.SomeFunctionOverride' for the resolved function.
 mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
   -- First, make sure that there is an override with the same name as the
   -- forward declaration.
@@ -52,7 +60,7 @@ mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
     -- arguments of the forward declaration to the arguments of the override.
     -- We will mark which steps of Note [Resolving forward declarations] each
     -- part corresponds to.
-    Just (AF.SomeFunctionOverride resolvedFnOv) ->
+    Just sfo@(AF.SomeFunctionOverride resolvedFnOv) ->
       let ovSim ::
             forall r.
             LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym ret)
@@ -73,9 +81,11 @@ mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
               AFA.convertBitvector bak (LCF.handleReturnType fwdDecHandle) resEntry1
             pure $ LCS.regValue resEntry2
 
-      in pure $ LCS.mkOverride' fwdDecName
+      in pure ( LCS.mkOverride' fwdDecName
                   (LCF.handleReturnType fwdDecHandle)
                   ovSim
+              , sfo
+              )
     -- If no such function can be found, bail out.
     Nothing -> CMC.throwM $ AE.ForwardDeclarationNameNotFound fwdDecName
   where

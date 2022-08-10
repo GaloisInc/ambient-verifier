@@ -457,8 +457,9 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
       IO [LCS.FnBinding p sym ext]
     resolveForwardDecs functionNameMapping fwdDecsMap =
       traverse (\(fwdDecName, LCF.SomeHandle fwdDecHandle) ->
-                 do ovSim <- AFOF.mkForwardDeclarationOverride
-                               bak functionNameMapping fwdDecName fwdDecHandle
+                 do (ovSim, _) <-
+                      AFOF.mkForwardDeclarationOverride
+                        bak functionNameMapping fwdDecName fwdDecHandle
                     pure $ LCS.FnBinding fwdDecHandle $ LCS.UseOverride ovSim)
                (Map.toAscList fwdDecsMap)
 

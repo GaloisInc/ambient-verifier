@@ -639,6 +639,7 @@ insertFunctionHandle state handle fnState =
 -- This function is monadic because constructing the overrides for forward
 -- declarations can fail if the declared function name cannot be found.
 insertFunctionOverrideHandles ::
+  forall sym bak arch scope solver st fs p ext args ret.
   ( LCB.IsSymBackend sym bak
   , LCLM.HasLLVMAnn sym
   , ext ~ DMS.MacawExt arch
@@ -651,24 +652,44 @@ insertFunctionOverrideHandles ::
   AF.FunctionOverride p sym args ext ret ->
   LCF.FnHandleMap (LCS.FnState p sym ext) ->
   IO (LCF.FnHandleMap (LCS.FnState p sym ext))
-insertFunctionOverrideHandles bak abi fnOverride handles0 = do
-  -- Register any auxiliary functions that are used in the override...
-  let handles1 =
-        F.foldl' (\hdls (LCS.FnBinding fnHdl fnSt) ->
-                   LCF.insertHandleMap fnHdl fnSt hdls)
-                 handles0
-                 (AF.functionAuxiliaryFnBindings fnOverride)
+insertFunctionOverrideHandles bak abi = go
+  where
+    go :: forall args' ret'.
+      AF.FunctionOverride p sym args' ext ret' ->
+      LCF.FnHandleMap (LCS.FnState p sym ext) ->
+      IO (LCF.FnHandleMap (LCS.FnState p sym ext))
+    go fnOverride handles0 = do
+      -- Register any auxiliary functions that are used in the override...
+      let handles1 =
+            F.foldl' (\hdls (LCS.FnBinding fnHdl fnSt) ->
+                       LCF.insertHandleMap fnHdl fnSt hdls)
+                     handles0
+                     (AF.functionAuxiliaryFnBindings fnOverride)
 
-  -- ...and register overrides for any forward declarations.
-  F.foldlM
-    (\hdls (fwdDecName, LCF.SomeHandle fwdDecHandle) ->
-      do ovSim <- AFOF.mkForwardDeclarationOverride
-                    bak (AF.functionNameMapping abi) fwdDecName fwdDecHandle
-         pure $ LCF.insertHandleMap fwdDecHandle
-                                    (LCS.UseOverride ovSim)
-                                    hdls)
-    handles1
-    (Map.toAscList $ AF.functionForwardDeclarations fnOverride)
+      -- ...and register overrides for any forward declarations. In addition
+      -- to registering the override for the forward declaration itself, we
+      -- must also recursively register any forward declarations contained
+      -- within the resolved function's override.
+      F.foldlM
+        (\hdls (fwdDecName, LCF.SomeHandle fwdDecHandle) ->
+          do case LCF.lookupHandleMap fwdDecHandle hdls of
+               Just _ ->
+                 -- If the handle is already in the HandleMap, don't bother
+                 -- reprocessing it. This isn't just an optimization—it's
+                 -- important to ensure that this function terminates if it
+                 -- invokes a function that uses mutually recursive forward
+                 -- declarations.
+                 pure hdls
+               Nothing -> do
+                 (ovSim, AF.SomeFunctionOverride resolvedFnOv) <-
+                   AFOF.mkForwardDeclarationOverride
+                     bak (AF.functionNameMapping abi) fwdDecName fwdDecHandle
+                 let hdls' = LCF.insertHandleMap fwdDecHandle
+                                                 (LCS.UseOverride ovSim)
+                                                 hdls
+                 go resolvedFnOv hdls')
+        handles1
+        (Map.toAscList $ AF.functionForwardDeclarations fnOverride)
 
 -- | This function is used to generate a function handle for an override once a
 -- syscall is encountered
