@@ -10,7 +10,7 @@
 
 -- | Defines function overrides that are shared across different architectures.
 module Ambient.FunctionOverride.Overrides
-  ( allOverrides
+  ( builtinGenericOverrides
     -- * Memory-related overrides
   , memOverrides
   , buildMallocOverride
@@ -81,7 +81,7 @@ import qualified Ambient.Syscall.Overrides as ASO
 -------------------------------------------------------------------------------
 
 -- | All of the overrides that work across all supported configurations.
-allOverrides ::
+builtinGenericOverrides ::
   ( LCLM.HasLLVMAnn sym
   , LCLM.HasPtrWidth w
   , DMC.MemWidth w
@@ -96,8 +96,8 @@ allOverrides ::
   Map.Map (DMC.MemWord w) String ->
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
-  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
-allOverrides fovCtx fs initialMem unsupportedRelocs = concat
+  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym arch]
+builtinGenericOverrides fovCtx fs initialMem unsupportedRelocs = concat
   [ -- Printf family
     printfFamilyOverrides initialMem unsupportedRelocs
     -- Crucible strings
@@ -127,7 +127,7 @@ memOverrides ::
   ) =>
   AM.InitialMemory sym w ->
   -- ^ Initial memory state for symbolic execution
-  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
+  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym arch]
 memOverrides initialMem =
   [ SomeFunctionOverride (buildCallocOverride memVar)
   , SomeFunctionOverride (buildMallocOverride memVar)
@@ -144,7 +144,7 @@ buildCallocOverride :: ( LCLM.HasLLVMAnn sym
                        )
                     => LCS.GlobalVar LCLM.Mem
                     -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                                            Ctx.::> LCLM.LLVMPointerType w) ext
+                                                            Ctx.::> LCLM.LLVMPointerType w) arch
                                               (LCLM.LLVMPointerType w)
 buildCallocOverride mvar =
   WI.withKnownNat ?ptrWidth $
@@ -174,7 +174,7 @@ buildMallocOverride :: ( ?memOpts :: LCLM.MemOptions
                        , LCLM.HasPtrWidth w
                        )
                     => LCS.GlobalVar LCLM.Mem
-                    -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext
+                    -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) arch
                                               (LCLM.LLVMPointerType w)
 buildMallocOverride mvar =
   WI.withKnownNat ?ptrWidth $
@@ -203,7 +203,7 @@ buildMallocGlobalOverride ::
   , LCLM.HasPtrWidth w
   ) =>
   LCS.GlobalVar LCLM.Mem ->
-  FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext
+  FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) arch
                          (LCLM.LLVMPointerType w)
 buildMallocGlobalOverride mvar =
   WI.withKnownNat ?ptrWidth $
@@ -241,7 +241,7 @@ buildMemcpyOverride :: ( LCLM.HasPtrWidth w
                     => AM.InitialMemory sym w
                     -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w
-                                                            Ctx.::> LCLM.LLVMPointerType w) ext
+                                                            Ctx.::> LCLM.LLVMPointerType w) arch
                                               LCT.UnitType
 buildMemcpyOverride initialMem =
   WI.withKnownNat ?ptrWidth $
@@ -287,7 +287,7 @@ buildMemsetOverride :: ( LCLM.HasPtrWidth w
                     -- ^ Initial memory state for symbolic execution
                     -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w
-                                                            Ctx.::> LCLM.LLVMPointerType w) ext
+                                                            Ctx.::> LCLM.LLVMPointerType w) arch
                                               LCT.UnitType
 buildMemsetOverride initialMem =
   WI.withKnownNat ?ptrWidth $
@@ -339,7 +339,7 @@ binOverrides ::
   -- ^ In what context are the overrides being run?
   AM.InitialMemory sym w ->
   -- ^ Initial memory state for symbolic execution
-  [SomeFunctionOverride p sym ext]
+  [SomeFunctionOverride p sym arch]
 binOverrides fovCtx initialMem =
   [ SomeFunctionOverride $ buildGetGlobalPointerAddrOverride fovCtx initialMem
   , SomeFunctionOverride $ buildGetGlobalPointerNamedOverride fovCtx initialMem
@@ -355,7 +355,7 @@ buildGetGlobalPointerAddrOverride ::
   AM.InitialMemory sym w ->
   -- ^ Initial memory state for symbolic execution
   FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCT.StringType WI.Unicode
-                                       Ctx.::> LCLM.LLVMPointerType w) ext
+                                       Ctx.::> LCLM.LLVMPointerType w) arch
                          (LCLM.LLVMPointerType w)
 buildGetGlobalPointerAddrOverride fovCtx initialMem =
   WI.withKnownNat ?ptrWidth $
@@ -414,7 +414,7 @@ buildGetGlobalPointerNamedOverride ::
   FunctionOverrideContext arch ->
   AM.InitialMemory sym w ->
   FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCT.StringType WI.Unicode
-                                       Ctx.::> LCT.StringType WI.Unicode) ext
+                                       Ctx.::> LCT.StringType WI.Unicode) arch
                          (LCLM.LLVMPointerType w)
 buildGetGlobalPointerNamedOverride fovCtx initialMem =
   WI.withKnownNat ?ptrWidth $

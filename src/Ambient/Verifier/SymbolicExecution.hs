@@ -29,6 +29,7 @@ import qualified Data.ByteString as BS
 import qualified Data.Foldable as F
 import qualified Data.IntMap as IM
 import qualified Data.List as List
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe )
 import qualified Data.Parameterized.Context as Ctx
@@ -278,7 +279,7 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
          --   This is used both in step (1), for checking if the key is
          --   present, and in step (2), for updating the state when
          --   registering the override.
-      -> Map.Map key (AF.SomeFunctionOverride p sym ext)
+      -> Map.Map key (NEL.NonEmpty (AF.SomeFunctionOverride p sym arch))
          -- ^ A Map (contained in the FunctionABI) that contains user-supplied
          --   overrides.
       -> IO ( LCF.FnHandle args ret
@@ -296,8 +297,8 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
         Nothing ->
           -- Step (2)
           case Map.lookup key fnAbiMap of
-            Just (AF.SomeFunctionOverride fnOverride) -> do
-              (handle, state') <- mkAndBindOverride state fnOverride
+            Just ((AF.SomeFunctionOverride fnOverride) NEL.:| parents) -> do
+              (handle, state') <- mkAndBindOverride state fnOverride parents
               let state'' = over (LCS.stateContext . LCS.cruciblePersonality . ovHandlesL)
                                  (Map.insert key handle)
                                  state'
@@ -470,11 +471,12 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
 
     mkAndBindOverride :: forall fnArgs fnRet rtp blocks r ctx
                        . LCS.CrucibleState p sym ext rtp blocks r ctx
-                      -> AF.FunctionOverride p sym fnArgs ext fnRet
+                      -> AF.FunctionOverride p sym fnArgs arch fnRet
+                      -> [ AF.SomeFunctionOverride p sym arch ]
                       -> IO ( LCF.FnHandle args ret
                             , LCS.CrucibleState p sym ext rtp blocks r ctx
                             )
-    mkAndBindOverride state0 fnOverride = do
+    mkAndBindOverride state0 fnOverride parents = do
       -- First, construct an override for the function.
       let retOV :: forall r'
                  . LCSO.OverrideSim p sym ext r' args ret
@@ -488,10 +490,12 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
               AF.functionIntegerArguments abi bak
                                           (AF.functionArgTypes fnOverride)
                                           argReg mem
-            AF.functionIntegerReturnRegisters abi bak
-                                              (AF.functionReturnType fnOverride)
-                                              (AF.functionOverride fnOverride bak args getVarArg)
-                                              argReg
+            retRegs <-
+              AF.functionIntegerReturnRegisters abi bak archVals
+                                                (AF.functionReturnType fnOverride)
+                                                (AF.functionOverride fnOverride bak args getVarArg parents)
+                                                argReg
+            pure retRegs
 
       let ov :: LCSO.Override p sym ext args ret
           ov = LCSO.mkOverride' (AF.functionName fnOverride) regsRepr retOV
@@ -649,13 +653,13 @@ insertFunctionOverrideHandles ::
   ) =>
   bak ->
   AF.FunctionABI arch sym p ->
-  AF.FunctionOverride p sym args ext ret ->
+  AF.FunctionOverride p sym args arch ret ->
   LCF.FnHandleMap (LCS.FnState p sym ext) ->
   IO (LCF.FnHandleMap (LCS.FnState p sym ext))
 insertFunctionOverrideHandles bak abi = go
   where
     go :: forall args' ret'.
-      AF.FunctionOverride p sym args' ext ret' ->
+      AF.FunctionOverride p sym args' arch ret' ->
       LCF.FnHandleMap (LCS.FnState p sym ext) ->
       IO (LCF.FnHandleMap (LCS.FnState p sym ext))
     go fnOverride handles0 = do
@@ -950,7 +954,7 @@ globalMemoryHooks globals = DMSM.GlobalMemoryHooks {
       WI.freshConstant sym symbol WI.knownRepr
 
 initializeMemory
-  :: forall sym bak arch w p ext m t st fs
+  :: forall sym bak arch w p m t st fs
    . ( ?memOpts :: LCLM.MemOptions
      , MonadIO m
      , LCB.IsSymBackend sym bak
@@ -967,7 +971,7 @@ initializeMemory
   -> NEV.NonEmptyVector (DMM.Memory w)
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
-  -> [ AF.SomeFunctionOverride p sym ext ]
+  -> [ AF.SomeFunctionOverride p sym arch ]
   -- ^ A list of additional function overrides to register.
   -> Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
   -- ^ Mapping from shared library global variables to their addresses
@@ -1110,12 +1114,12 @@ allocaCString bak mem0 str = do
   pure (strPtr, mem2)
 
 -- | Configuration parameters concerning functions and overrides
-data FunctionConfig arch sym p ext = FunctionConfig {
+data FunctionConfig arch sym p = FunctionConfig {
     fcBuildSyscallABI :: ASy.BuildSyscallABI arch sym p
   -- ^ Function to construct an ABI specification for system calls
   , fcBuildFunctionABI :: AF.BuildFunctionABI arch sym p
   -- ^ Function to construct an ABI specification for function calls
-  , fcCrucibleSyntaxOverrides :: AFET.CrucibleSyntaxOverrides (DMC.ArchAddrWidth arch) p sym ext
+  , fcCrucibleSyntaxOverrides :: AFET.CrucibleSyntaxOverrides (DMC.ArchAddrWidth arch) p sym arch
   -- ^ @crucible-syntax@ overrides to register
   }
 
@@ -1151,7 +1155,7 @@ simulateFunction
   -- will be empty
   -> ALB.BinaryConfig arch binFmt
   -- ^ Information about the loaded binaries
-  -> FunctionConfig arch sym p ext
+  -> FunctionConfig arch sym p
   -- ^ Configuration parameters concerning functions and overrides
   -> [BS.ByteString]
   -- ^ The user-supplied command-line arguments
@@ -1212,7 +1216,16 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
                     -- First, initialize the symbolic file system...
                     initFSOverride
                     -- ...then simulate any startup overrides...
-                    F.traverse_ (\ov -> AF.functionOverride ov bak Ctx.Empty dummyGetVarArg)
+                    F.traverse_ (\ov -> AF.functionOverride ov
+                                                            bak
+                                                            Ctx.Empty
+                                                            dummyGetVarArg
+                                                            -- NOTE: Startup
+                                                            -- overrides cannot
+                                                            -- currently call
+                                                            -- into parent
+                                                            -- overrides
+                                                            [])
                                 (AFET.csoStartupOverrides csOverrides)
                     -- ...and finally, run the entrypoint function.
                     LCS.regValue <$> LCS.callCFG cfg arguments
@@ -1301,7 +1314,7 @@ symbolicallyExecute
   -- will be empty
   -> ALB.BinaryConfig arch binFmt
   -- ^ Information about the loaded binaries
-  -> FunctionConfig arch sym p ext
+  -> FunctionConfig arch sym p
   -- ^ Configuration parameters concerning functions and overrides
   -> [BS.ByteString]
   -- ^ The user-supplied command-line arguments

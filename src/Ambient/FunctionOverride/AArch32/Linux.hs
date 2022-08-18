@@ -16,6 +16,8 @@ module Ambient.FunctionOverride.AArch32.Linux (
 
 import           Control.Lens ( use )
 import           Control.Monad.IO.Class ( liftIO )
+import           Data.Foldable ( foldl' )
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map as Map
 import qualified Data.Parameterized.Classes as PC
 import qualified Data.Parameterized.Context as Ctx
@@ -87,29 +89,39 @@ aarch32LinuxIntegerArguments bak archVals argTypes regFile mem = do
 aarch32LinuxIntegerReturnRegisters
   :: (LCB.IsSymBackend sym bak)
   => bak
+  -> DMS.GenArchVals mem DMA.ARM
   -> LCT.TypeRepr tp
-  -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym tp)
+  -> LCS.OverrideSim p sym ext r args rtp (AF.OverrideResult sym DMA.ARM tp)
   -> LCS.RegValue sym (DMS.ArchRegStruct DMA.ARM)
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMA.ARM))
-aarch32LinuxIntegerReturnRegisters bak ovTy ovSim initRegs =
+aarch32LinuxIntegerReturnRegisters bak _archVals ovTy ovSim initRegs =
   case ovTy of
-    LCT.UnitRepr -> ovSim >> return initRegs
+    LCT.UnitRepr -> do
+      result <- ovSim
+      return $ updateRegs initRegs result
     LCLM.LLVMPointerRepr w
       | Just PC.Refl <- PC.testEquality w (PN.knownNat @32) -> do
           result <- ovSim
           let r0 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
-          return $! DMAS.updateReg r0 (const (LCS.RV result)) initRegs
+          return $! updateRegs (DMAS.updateReg r0 (const (LCS.RV (AF.result result))) initRegs)
+                               result
     LCLM.LLVMPointerRepr w
       | Just PC.Refl <- PC.testEquality w (PN.knownNat @8) -> do
           -- Zero extend 8-bit return value to fit in 32-bit register
           result <- ovSim
-          asBv <- liftIO $ LCLM.projectLLVM_bv bak result
+          asBv <- liftIO $ LCLM.projectLLVM_bv bak (AF.result result)
           asPtr <- liftIO $ AO.bvToPtr sym asBv (PN.knownNat @32)
           let r0 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
-          return $! DMAS.updateReg r0 (const (LCS.RV asPtr)) initRegs
+          return $! updateRegs (DMAS.updateReg r0 (const (LCS.RV asPtr)) initRegs)
+                               result
     _ -> AP.panic AP.FunctionOverride "aarch32LinuxIntegerReturnRegisters" [ "Unsupported return type: " ++ show ovTy ]
   where
     sym = LCB.backendGetSym bak
+
+    updateRegs regs result =
+      foldl' (\r (reg, val) -> DMAS.updateReg reg (const (LCS.RV val)) r)
+             regs
+             (AF.regUpdates result)
 
 -- | Model @__kuser_get_tls@ by returning the value stored in the TLS global
 -- variable. See @Note [AArch32 and TLS]@.
@@ -117,7 +129,7 @@ buildKUserGetTLSOverride ::
      LCLM.HasPtrWidth w
   => LCCC.GlobalVar (LCLM.LLVMPointerType w)
      -- ^ Global variable for TLS
-  -> AF.FunctionOverride p sym Ctx.EmptyCtx ext (LCLM.LLVMPointerType w)
+  -> AF.FunctionOverride p sym Ctx.EmptyCtx arch (LCLM.LLVMPointerType w)
 buildKUserGetTLSOverride tlsGlob =
   PN.withKnownNat ?ptrWidth $
   AF.mkFunctionOverride "__kuser_get_tls" $ \bak args ->
@@ -146,12 +158,17 @@ aarch32LinuxFunctionABI ::
   -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
 aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
   let ?ptrWidth = PN.knownNat @32 in
-  let customNamedOvs = AFO.allOverrides fovCtx fs initialMem unsupportedRelocs in
+  -- NOTE: The order of elements in customNamedOvs is important.  See @Note
+  -- [Override Specialization Order]@ in
+  -- 'Ambient.FunctionOverride.X86_64.Linux' for more information.
+  let customNamedOvs = AFO.builtinGenericOverrides fovCtx fs initialMem unsupportedRelocs in
   let customKernelOvs =
         -- The addresses are taken from
         -- https://github.com/torvalds/linux/blob/5bfc75d92efd494db37f5c4c173d3639d4772966/Documentation/arm/kernel_user_helpers.rst
         [ -- __kuser_get_tls (See Note [AArch32 and TLS])
-          (AF.AddrFromKernel 0xffff0fe0, AF.SomeFunctionOverride (buildKUserGetTLSOverride tlsGlob))
+          ( AF.AddrFromKernel 0xffff0fe0
+          , AF.SomeFunctionOverride (buildKUserGetTLSOverride tlsGlob) NEL.:| []
+          )
         ] in
   AF.FunctionABI { AF.functionIntegerArguments = \bak ->
                      aarch32LinuxIntegerArguments bak archVals
@@ -161,10 +178,11 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem ar
                      )
                  , AF.functionIntegerReturnRegisters = aarch32LinuxIntegerReturnRegisters
                  , AF.functionNameMapping =
-                     Map.fromList [ (AF.functionName fo, sfo)
-                                  | sfo@(AF.SomeFunctionOverride fo) <-
-                                      customNamedOvs ++ namedOvs
-                                  ]
+                    Map.fromListWith (<>)
+                                     [ (AF.functionName fo, sfo NEL.:| [])
+                                     | sfo@(AF.SomeFunctionOverride fo) <-
+                                         customNamedOvs ++ namedOvs
+                                     ]
                  , AF.functionAddrMapping =
                      Map.union (Map.fromList customKernelOvs) addrOvs
                  }

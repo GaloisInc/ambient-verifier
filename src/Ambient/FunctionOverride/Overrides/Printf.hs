@@ -77,7 +77,7 @@ printfFamilyOverrides ::
   Map.Map (DMC.MemWord w) String ->
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
-  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
+  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym arch]
 printfFamilyOverrides initialMem unsupportedRelocs =
   [ SomeFunctionOverride (buildSprintfOverride initialMem unsupportedRelocs)
   , SomeFunctionOverride (buildSscanfOverride initialMem unsupportedRelocs)
@@ -156,7 +156,7 @@ buildSprintfOverride
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
   -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                          Ctx.::> LCLM.LLVMPointerType w) ext
+                                          Ctx.::> LCLM.LLVMPointerType w) arch
                             (LCLM.LLVMPointerType w)
 buildSprintfOverride initialMem unsupportedRelocs =
   WI.withKnownNat ?ptrWidth $
@@ -244,7 +244,7 @@ buildSscanfOverride
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
   -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                                          Ctx.::> LCLM.LLVMPointerType w) ext
+                                          Ctx.::> LCLM.LLVMPointerType w) arch
                             (LCLM.LLVMPointerType w)
 buildSscanfOverride initialMem unsupportedRelocs =
   WI.withKnownNat ?ptrWidth $

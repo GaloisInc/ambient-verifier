@@ -56,7 +56,7 @@ crucibleStringOverrides ::
   Map.Map (DMC.MemWord w) String ->
   -- ^ Mapping from unsupported relocation addresses to the names of the
   -- unsupported relocation types.
-  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym ext]
+  [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym arch]
 crucibleStringOverrides initialMem unsupportedRelocs =
   [ SomeFunctionOverride (buildReadCStringOverride initialMem unsupportedRelocs)
   , SomeFunctionOverride (buildWriteCStringOverride initialMem)
@@ -72,7 +72,7 @@ buildReadCStringOverride ::
   AM.InitialMemory sym w ->
   Map.Map (DMC.MemWord w) String ->
   FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
-    (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) ext
+    (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) arch
     (LCT.StringType WI.Unicode)
 buildReadCStringOverride initialMem unsupportedRelocs =
   WI.withKnownNat ?ptrWidth $
@@ -120,7 +120,7 @@ buildWriteCStringOverride ::
   AM.InitialMemory sym w ->
   FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
     (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
-                  Ctx.::> LCT.StringType WI.Unicode) ext
+                  Ctx.::> LCT.StringType WI.Unicode) arch
     LCT.UnitType
 buildWriteCStringOverride initialMem =
   WI.withKnownNat ?ptrWidth $

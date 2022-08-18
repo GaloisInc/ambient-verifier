@@ -63,6 +63,7 @@ library
                       Ambient.FunctionOverride.StackArguments,
                       Ambient.FunctionOverride.AArch32.Linux,
                       Ambient.FunctionOverride.X86_64.Linux,
+                      Ambient.FunctionOverride.X86_64.Linux.Specialized,
                       Ambient.Lift,
                       Ambient.Loader,
                       Ambient.Loader.BinaryConfig,
@@ -144,6 +145,8 @@ library
     hs-source-dirs:   src
     default-language: Haskell2010
     ghc-options: -Wall -Wcompat
+    if impl(ghc >= 9.2.4)
+      default-extensions: NoDeepSubsumption
 
 executable ambient-verifier
     import: shared
@@ -168,6 +171,8 @@ executable ambient-verifier
     hs-source-dirs:   tools/ambient-verifier
     default-language: Haskell2010
     ghc-options: -Wall -Wcompat -threaded -rtsopts "-with-rtsopts=-N"
+    if impl(ghc >= 9.2.4)
+      default-extensions: NoDeepSubsumption
 
 test-suite ambient-tests
   import: shared
@@ -184,3 +189,5 @@ test-suite ambient-tests
                  tasty-hunit,
                  yaml >= 0.11 && < 0.12
   ghc-options: -Wall -Wcompat
+  if impl(ghc >= 9.2.4)
+    default-extensions: NoDeepSubsumption

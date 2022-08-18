@@ -6,8 +6,10 @@
 
 module Ambient.FunctionOverride (
     FunctionOverride(..)
+  , OverrideResult(..)
   , mkFunctionOverride
   , mkVariadicFunctionOverride
+  , mkVariadicSpecializedFunctionOverride
   , syscallToFunctionOverride
   , GetVarArg(..)
   , SomeFunctionOverride(..)
@@ -18,6 +20,7 @@ module Ambient.FunctionOverride (
   , FunctionOverrideContext(..)
   ) where
 
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import           Data.Parameterized.Some ( Some(..) )
@@ -44,60 +47,75 @@ import qualified Ambient.Syscall as AS
 -- Function Call Overrides
 -------------------------------------------------------------------------------
 
+-- | OverrideResult holds the register updates and return value from an
+-- override
+data OverrideResult sym arch ret = OverrideResult
+  { regUpdates :: [( DMC.ArchReg arch (DMT.BVType (DMC.ArchAddrWidth arch))
+                   , LCLM.LLVMPtr sym (DMC.ArchAddrWidth arch) )]
+  -- ^ Registers to update.  An assoc list from registers to the values they
+  -- should be updated to contain.  If a key in the assoc list appears twice,
+  -- the later updates will clobber the earlier ones.
+  , result :: LCS.RegValue sym ret
+  -- ^ Return value from the override.
+  }
+
 -- | FunctionOverride captures an override and type information about how to
 -- call it
-data FunctionOverride p sym args ext ret =
-  FunctionOverride { functionName :: WF.FunctionName
-                   -- ^ Name of the function
-                   , functionGlobals :: [Some LCS.GlobalVar]
-                   -- ^ Global variables the function uses
-                   , functionArgTypes :: LCT.CtxRepr args
-                   -- ^ Types of the arguments to the function
-                   , functionReturnType :: LCT.TypeRepr ret
-                   -- ^ Return type of the function
-                   , functionAuxiliaryFnBindings :: [LCS.FnBinding p sym ext]
-                   -- ^ Bindings for every auxiliary function that is called
-                   --   from the 'functionOverride' but does not have a
-                   --   'FunctionOverride' of its own. This is primarily
-                   --   intended for local functions that are not meant to be
-                   --   invoked from other functions besides the one being
-                   --   overridden.
-                   --
-                   --   Currently, the sole use case for this feature is to
-                   --   support @<name>.cbl@ files that define functions
-                   --   besides ones named @<name>@. While these functions
-                   --   cannot be invoked directly from machine code
-                   --   simulation, they can be invoked by syntax overrides, so
-                   --   we must register them in the simulator.
-                   --
-                   --   Note that it is OK for multiple auxiliary functions
-                   --   across different 'FunctionOverrides' files to have the
-                   --   same name. This is because the simulator looks up
-                   --   functions by their handle, not by their name, and since
-                   --   handles are uniquely identified in Crucible, different
-                   --   auxiliary functions with the same name won't conflict
-                   --   with each other.
-                   , functionForwardDeclarations ::
-                       Map.Map WF.FunctionName LCF.SomeHandle
-                   -- ^ Forward declarations associated with a syntax override
-                   --   that must be registered before invoking the override.
-                   --   See @Note [Resolving forward declarations]@ in
-                   --   "Ambient.FunctionOverride.Overrides.ForwardDeclarations".
-                   , functionOverride
-                       :: forall bak solver scope st fs
-                        . ( LCB.IsSymBackend sym bak
-                          , sym ~ WE.ExprBuilder scope st fs
-                          , bak ~ LCBO.OnlineBackend solver scope st fs
-                          , WPO.OnlineSolver solver
-                          )
-                       => bak
-                       -> Ctx.Assignment (LCS.RegEntry sym) args
-                       -- Known arguments to function
-                       -> GetVarArg sym
-                       -- Variadic arguments to function
-                       -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))
-                   -- ^ Override capturing behavior of the function
-                   }
+data FunctionOverride p sym args arch ret =
+  FunctionOverride
+    { functionName :: WF.FunctionName
+    -- ^ Name of the function
+    , functionGlobals :: [Some LCS.GlobalVar]
+    -- ^ Global variables the function uses
+    , functionArgTypes :: LCT.CtxRepr args
+    -- ^ Types of the arguments to the function
+    , functionReturnType :: LCT.TypeRepr ret
+    -- ^ Return type of the function
+    , functionAuxiliaryFnBindings :: [LCS.FnBinding p sym (DMS.MacawExt arch)]
+    -- ^ Bindings for every auxiliary function that is called
+    --   from the 'functionOverride' but does not have a
+    --   'FunctionOverride' of its own. This is primarily
+    --   intended for local functions that are not meant to be
+    --   invoked from other functions besides the one being
+    --   overridden.
+    --
+    --   Currently, the sole use case for this feature is to
+    --   support @<name>.cbl@ files that define functions
+    --   besides ones named @<name>@. While these functions
+    --   cannot be invoked directly from machine code
+    --   simulation, they can be invoked by syntax overrides, so
+    --   we must register them in the simulator.
+    --
+    --   Note that it is OK for multiple auxiliary functions
+    --   across different 'FunctionOverrides' files to have the
+    --   same name. This is because the simulator looks up
+    --   functions by their handle, not by their name, and since
+    --   handles are uniquely identified in Crucible, different
+    --   auxiliary functions with the same name won't conflict
+    --   with each other.
+    , functionForwardDeclarations ::
+        Map.Map WF.FunctionName LCF.SomeHandle
+    -- ^ Forward declarations associated with a syntax override
+    --   that must be registered before invoking the override.
+    --   See @Note [Resolving forward declarations]@ in
+    --   "Ambient.FunctionOverride.Overrides.ForwardDeclarations".
+    , functionOverride
+        :: forall bak solver scope st fs
+         . ( LCB.IsSymBackend sym bak
+           , sym ~ WE.ExprBuilder scope st fs
+           , bak ~ LCBO.OnlineBackend solver scope st fs
+           , WPO.OnlineSolver solver
+           )
+        => bak
+        -> Ctx.Assignment (LCS.RegEntry sym) args
+        -- Known arguments to function
+        -> GetVarArg sym
+        -- Variadic arguments to function
+        -> [ SomeFunctionOverride p sym arch ]
+        -- ^ Parent overrides
+        -> (forall rtp args' ret'. LCS.OverrideSim p sym (DMS.MacawExt arch) rtp args' ret' (OverrideResult sym arch ret))
+    -- ^ Override capturing behavior of the function
+    }
 
 -- | A smart constructor for 'FunctionOverride' for the common case when:
 --
@@ -124,8 +142,8 @@ mkFunctionOverride ::
        )
     => bak
     -> Ctx.Assignment (LCS.RegEntry sym) args
-    -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))) ->
-  FunctionOverride p sym args ext ret
+    -> (forall rtp args' ret'. LCS.OverrideSim p sym (DMS.MacawExt arch) rtp args' ret' (LCS.RegValue sym ret))) ->
+  FunctionOverride p sym args arch ret
 mkFunctionOverride name ov =
   mkVariadicFunctionOverride name $ \bak args _getVarArg -> ov bak args
 
@@ -145,9 +163,38 @@ mkVariadicFunctionOverride ::
     => bak
     -> Ctx.Assignment (LCS.RegEntry sym) args
     -> GetVarArg sym
-    -> (forall rtp args' ret'. LCS.OverrideSim p sym ext rtp args' ret' (LCS.RegValue sym ret))) ->
-  FunctionOverride p sym args ext ret
+    -> (forall rtp args' ret'. LCS.OverrideSim p sym (DMS.MacawExt arch) rtp args' ret' (LCS.RegValue sym ret))) ->
+  FunctionOverride p sym args arch ret
 mkVariadicFunctionOverride name ov = FunctionOverride
+  { functionName = name
+  , functionGlobals = []
+  , functionArgTypes = LCT.knownRepr
+  , functionReturnType = LCT.knownRepr
+  , functionAuxiliaryFnBindings = []
+  , functionForwardDeclarations = Map.empty
+  , functionOverride = \bak args getVarArg _parents -> OverrideResult [] <$> ov bak args getVarArg
+  }
+
+-- | Like 'mkVariadicFunctionOverride', but where the function override can
+-- make use of parent override implementations.
+mkVariadicSpecializedFunctionOverride ::
+  ( LCT.KnownRepr LCT.CtxRepr args
+  , LCT.KnownRepr LCT.TypeRepr ret
+  ) =>
+  WF.FunctionName ->
+  (forall bak solver scope st fs
+     . ( LCB.IsSymBackend sym bak
+       , sym ~ WE.ExprBuilder scope st fs
+       , bak ~ LCBO.OnlineBackend solver scope st fs
+       , WPO.OnlineSolver solver
+       )
+    => bak
+    -> Ctx.Assignment (LCS.RegEntry sym) args
+    -> GetVarArg sym
+    -> [ SomeFunctionOverride p sym arch ]
+    -> (forall rtp args' ret'. LCS.OverrideSim p sym (DMS.MacawExt arch) rtp args' ret' (OverrideResult sym arch ret))) ->
+  FunctionOverride p sym args arch ret
+mkVariadicSpecializedFunctionOverride name ov = FunctionOverride
   { functionName = name
   , functionGlobals = []
   , functionArgTypes = LCT.knownRepr
@@ -161,8 +208,8 @@ mkVariadicFunctionOverride name ov = FunctionOverride
 -- semantics. Note that this override will not perform any error-checking on
 -- the value returned by the syscall. (See #144.)
 syscallToFunctionOverride ::
-  AS.Syscall p sym args ext ret ->
-  FunctionOverride p sym args ext ret
+  AS.Syscall p sym args (DMS.MacawExt arch) ret ->
+  FunctionOverride p sym args arch ret
 syscallToFunctionOverride syscallOv = FunctionOverride
   { functionName = AS.syscallName syscallOv
   , functionGlobals = []
@@ -170,8 +217,8 @@ syscallToFunctionOverride syscallOv = FunctionOverride
   , functionReturnType = AS.syscallReturnType syscallOv
   , functionAuxiliaryFnBindings = []
   , functionForwardDeclarations = Map.empty
-  , functionOverride = \bak args _getVarArg ->
-      AS.syscallOverride syscallOv bak args
+  , functionOverride = \bak args _getVarArg _parents ->
+      OverrideResult [] <$> AS.syscallOverride syscallOv bak args
   }
 
 -- | Given a type, retrieve the value of a variadic argument in a function
@@ -184,8 +231,8 @@ newtype GetVarArg sym = GetVarArg
     IO (LCS.RegEntry sym tp, GetVarArg sym)
   )
 
-data SomeFunctionOverride p sym ext =
-  forall args ret . SomeFunctionOverride (FunctionOverride p sym args ext ret)
+data SomeFunctionOverride p sym arch =
+  forall args ret . SomeFunctionOverride (FunctionOverride p sym args arch ret)
 
 -- | A 'LCF.FnHandle' for a function override.
 type FunctionOverrideHandle arch =
@@ -253,12 +300,14 @@ data FunctionABI arch sym p =
     -- Build an OverrideSim action with appropriate return register types from
     -- a given OverrideSim action
   , functionIntegerReturnRegisters
-     :: forall bak t r args rtp
+     :: forall bak t r args rtp mem
       . LCB.IsSymBackend sym bak
      => bak
+     -> DMS.GenArchVals mem arch
+     -- Architecture-specific information
      -> LCT.TypeRepr t
      -- Function return type
-     -> LCS.OverrideSim p sym (DMS.MacawExt arch) r args rtp (LCS.RegValue sym t)
+     -> LCS.OverrideSim p sym (DMS.MacawExt arch) r args rtp (OverrideResult sym arch t)
      -- OverrideSim action producing the functions's return value
      -> LCS.RegValue sym (DMS.ArchRegStruct arch)
      -- Argument register values from before function execution
@@ -279,15 +328,24 @@ data FunctionABI arch sym p =
     --
     -- Note that if a function's address has an override in this map, that will
     -- always take precedence over any overrides for functions of the same name
-    -- in 'functionNameMapping'.
+    -- in 'functionNameMapping'.  The values of the mapping are nonempty lists
+    -- to ensure that at least one override actually exists for each key in the
+    -- map.
+    --
+    -- See @Note [NonEmpty List Override Mapping Values]@ for information on
+    -- why the values for the mapping are nonempty lists.
   , functionAddrMapping
      :: Map.Map (FunctionAddrLoc (DMC.ArchAddrWidth arch))
-                (SomeFunctionOverride p sym (DMS.MacawExt arch))
+                (NEL.NonEmpty (SomeFunctionOverride p sym arch))
 
-    -- A mapping from function names to overrides
+    -- A mapping from function names to overrides.
+    --
+    -- See @Note [NonEmpty List Override Mapping Values]@ for information on
+    -- why the values for the mapping are nonempty lists.
   , functionNameMapping
      :: (LCB.IsSymInterface sym, LCLM.HasLLVMAnn sym)
-     => Map.Map WF.FunctionName (SomeFunctionOverride p sym (DMS.MacawExt arch))
+     => Map.Map WF.FunctionName
+                (NEL.NonEmpty (SomeFunctionOverride p sym arch))
   }
 
 -- A function to construct a FunctionABI with memory access
@@ -304,9 +362,9 @@ newtype BuildFunctionABI arch sym p = BuildFunctionABI (
     -- ^ Mapping from unsupported relocation addresses to the names of the
     -- unsupported relocation types.
     -> Map.Map (FunctionAddrLoc (DMC.ArchAddrWidth arch))
-               (SomeFunctionOverride p sym (DMS.MacawExt arch))
+               (NEL.NonEmpty (SomeFunctionOverride p sym arch))
     -- Overrides for functions at particular addresses
-    -> [ SomeFunctionOverride p sym (DMS.MacawExt arch) ]
+    -> [ SomeFunctionOverride p sym arch ]
     -- Overrides for functions with particular names
     -> FunctionABI arch sym p
   )
@@ -447,4 +505,19 @@ Some follow-up observations about the verifier's implementation of varargs:
   handle varargs at the syntax override level will take some thought and
   effort. We will wait for someone to complain about this before initiating
   that effort.
+
+Note [NonEmpty List Override Mapping Values]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+We use NonEmpty lists as values in the address-to-override and
+name-to-override mappings to provide a heirarchy of overrides.  The overrides
+towards the front of each list are refinements of those towards the back of
+each list.  When the verifier reaches a function to dispatch an override for,
+it executes the override at the head of the list and passes the tail of the
+list to the override.  This override may then optionally call into the next
+override in the list, and so on.  We use this functionality to implement
+specialized overrides which perform additional work before or after the
+execution of a more generic override.
+
+We require that each list is nonempty to ensure that at least one override
+exists for every key.
 -}

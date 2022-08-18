@@ -21,6 +21,7 @@ import           Control.Monad.State.Class ( MonadState )
 import           Control.Monad.Writer.Class ( MonadWriter )
 import qualified Data.Aeson as DA
 import qualified Data.Aeson.Key as DAK
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import           Data.Parameterized.Some ( Some(..) )
@@ -76,17 +77,17 @@ data SomeExtensionWrapper arch =
 
 -- | The overrides in a user-specified @--overrides@ directory that have gone
 -- through a light round of validation checks.
-data CrucibleSyntaxOverrides w p sym ext = CrucibleSyntaxOverrides
+data CrucibleSyntaxOverrides w p sym arch = CrucibleSyntaxOverrides
   { csoAddressOverrides :: Map.Map (AF.FunctionAddrLoc w)
-                                   (AF.SomeFunctionOverride p sym ext)
+                                   (NEL.NonEmpty (AF.SomeFunctionOverride p sym arch))
     -- ^ A map of @function address overrides@. These have been checked to
     --   ensure that every override that appears in the domain of the map
     --   corresponds to a @.cbl@ file.
-  , csoStartupOverrides :: [AF.FunctionOverride p sym Ctx.EmptyCtx ext LCT.UnitType]
+  , csoStartupOverrides :: [AF.FunctionOverride p sym Ctx.EmptyCtx arch LCT.UnitType]
     -- ^ A list of @startup overrides@ in the order in which they should be
     --   executed at the start of simulation. These have been validated such
     --   that we know each override has no arguments and returns @Unit@.
-  , csoNamedOverrides :: [AF.SomeFunctionOverride p sym ext]
+  , csoNamedOverrides :: [AF.SomeFunctionOverride p sym arch]
     -- ^ An override for each @<name>.cbl@'s function of the corresponding
     --   @<name>@. These have been checked to ensure that the @.cbl@ file
     --   contents are valid and that there are no duplicate names.

@@ -3,6 +3,7 @@ module Ambient.Override.List.Types
   , mkOverrideLists
   ) where
 
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map as Map
 
 import qualified Data.Macaw.CFG as DMC
@@ -38,11 +39,11 @@ mkOverrideLists syscallABI functionABI =
               name)
             (Map.toList (ASy.syscallOverrideMapping syscallABI))
     , functionAddrOverrides =
-        map (\(addrLoc, AF.SomeFunctionOverride (AF.FunctionOverride{AF.functionName = name})) ->
-              (name, addrLoc))
+        map (\(addrLoc, sfos) -> (functionOvName (NEL.head sfos), addrLoc))
             (Map.toList (AF.functionAddrMapping functionABI))
     , functionNameOverrides =
-        map (\(_, AF.SomeFunctionOverride (AF.FunctionOverride{AF.functionName = name})) ->
-              name)
-            (Map.toList (AF.functionNameMapping functionABI))
+        map fst (Map.toList (AF.functionNameMapping functionABI))
     }
+  where
+    functionOvName (AF.SomeFunctionOverride ov) = AF.functionName ov
+

@@ -198,6 +198,9 @@ sscanf.exe: sscanf.c ambient_assert.o
 sprintf-bof.exe: sprintf-bof.c
 	$(MUSL_CC) -fcf-protection=none -fno-stack-protector -static $^ -o $@
 
+specialized-sprintf-bof.exe: specialized-sprintf-bof.c
+	$(MUSL_CC) -fcf-protection=none -fno-stack-protector -static $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

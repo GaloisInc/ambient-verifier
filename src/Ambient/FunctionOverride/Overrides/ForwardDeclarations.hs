@@ -5,8 +5,10 @@ module Ambient.FunctionOverride.Overrides.ForwardDeclarations
   ( mkForwardDeclarationOverride
   ) where
 
+import           Control.Monad ( unless )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(liftIO) )
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.TraversableFC as PC
@@ -37,14 +39,15 @@ mkForwardDeclarationOverride ::
   , WPO.OnlineSolver solver
   ) =>
   bak ->
-  Map.Map WF.FunctionName (AF.SomeFunctionOverride p sym ext) ->
+  Map.Map WF.FunctionName
+          (NEL.NonEmpty (AF.SomeFunctionOverride p sym arch)) ->
   -- ^ Map of syntax overrides and built-in overrides
   WF.FunctionName ->
   -- ^ The name of the forward declaration
   LCF.FnHandle args ret ->
   -- ^ The forward declaration's handle
   IO ( LCS.Override p sym ext args ret
-     , AF.SomeFunctionOverride p sym ext
+     , AF.SomeFunctionOverride p sym arch
      )
   -- ^ Returns two things:
   --
@@ -60,7 +63,7 @@ mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
     -- arguments of the forward declaration to the arguments of the override.
     -- We will mark which steps of Note [Resolving forward declarations] each
     -- part corresponds to.
-    Just sfo@(AF.SomeFunctionOverride resolvedFnOv) ->
+    Just (sfo@(AF.SomeFunctionOverride resolvedFnOv) NEL.:| parents) ->
       let ovSim ::
             forall r.
             LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym ret)
@@ -71,7 +74,10 @@ mkForwardDeclarationOverride bak fnNameMapping fwdDecName fwdDecHandle = do
             -- Step (2)
             args2 <- liftIO $ extendToRegisterAssignment (AF.functionArgTypes resolvedFnOv) args1
             -- Step (3)
-            resValue <- AF.functionOverride resolvedFnOv bak args2 dummyGetVarArg
+            res <- AF.functionOverride resolvedFnOv bak args2 dummyGetVarArg parents
+            unless (null (AF.regUpdates res)) $
+              CMC.throwM $ AE.ForwardDeclarationRegUpdateError fwdDecName
+            let resValue = AF.result res
             let resEntry0 = LCS.RegEntry (AF.functionReturnType resolvedFnOv) resValue
             -- Step (4)
             resEntry1 <- liftIO $

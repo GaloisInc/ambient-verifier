@@ -34,6 +34,7 @@ import qualified Data.Aeson.Key as DAK
 import qualified Data.Aeson.KeyMap as DAKM
 import qualified Data.ByteString as BS
 import qualified Data.List as List
+import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
@@ -354,7 +355,7 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
 
     -- | Run all of the @test_@ functions in a @.cbl@ file.
     runTests ::
-      [AF.SomeFunctionOverride p sym ext] ->
+      [AF.SomeFunctionOverride p sym arch] ->
       -- ^ The @<name>@ function overrides defined in each @<name>.cbl@ file.
       FilePath ->
       -- ^ The @.cbl@ file path
@@ -373,7 +374,7 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
                -> [Some LCS.GlobalVar]
                -> [LCSC.ACFG ext]
                -> Map.Map WF.FunctionName LCF.SomeHandle
-               -> [AF.SomeFunctionOverride p sym ext]
+               -> [AF.SomeFunctionOverride p sym arch]
                -> LCSC.ACFG ext
                -> IO ()
     runOneTest path ovGlobals auxCFGs fwdDecsMap cblNameOvs acfg = do
@@ -452,7 +453,8 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
     -- Note [Resolving forward declarations] in
     -- Ambient.FunctionOverride.Overrides.ForwardDeclarations.
     resolveForwardDecs ::
-      Map.Map WF.FunctionName (AF.SomeFunctionOverride p sym ext) ->
+      Map.Map WF.FunctionName
+              (NEL.NonEmpty (AF.SomeFunctionOverride p sym arch)) ->
       Map.Map WF.FunctionName LCF.SomeHandle ->
       IO [LCS.FnBinding p sym ext]
     resolveForwardDecs functionNameMapping fwdDecsMap =
@@ -467,8 +469,11 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
 -- This function reads all files matching @<dirPath>/function/*.cbl@ and
 -- generates 'AF.FunctionOverride's for them. It will also parse and validate
 -- the @overrides.yaml@ file if one is present.
-loadCrucibleSyntaxOverrides :: forall ext w s p sym
-                             . (LCCE.IsSyntaxExtension ext, DMM.MemWidth w)
+loadCrucibleSyntaxOverrides :: forall ext w s p sym arch
+                             . ( LCCE.IsSyntaxExtension ext
+                               , DMM.MemWidth w
+                               , ext ~ DMS.MacawExt arch
+                               )
                             => FilePath
                             -- ^ Override directory
                             -> FilePath
@@ -477,7 +482,7 @@ loadCrucibleSyntaxOverrides :: forall ext w s p sym
                             -> LCF.HandleAllocator
                             -> LCSC.ParserHooks ext
                             -- ^ ParserHooks for the desired syntax extension
-                            -> IO (CrucibleSyntaxOverrides w p sym ext)
+                            -> IO (CrucibleSyntaxOverrides w p sym arch)
                             -- ^ The loaded overrides
 loadCrucibleSyntaxOverrides dirPath cc ng halloc hooks = do
   RawSyntaxOverrides{cblFiles, cFiles, functionAddressOverrides, startupOverrides}
@@ -504,7 +509,11 @@ loadCrucibleSyntaxOverrides dirPath cc ng halloc hooks = do
   funAddrOvs <- traverse (\(bin, addr, funName) ->
                            let addrMemWord = fromIntegral addr in
                            case Map.lookup funName namedOvsMap of
-                             Just ov -> pure (AF.AddrInBinary addrMemWord bin, ov)
+                             -- NOTE: We construct a singleton here because
+                             -- crucible syntax overrides cannot currently call
+                             -- into parent overrides.
+                             Just ov -> pure ( AF.AddrInBinary addrMemWord bin
+                                             , ov NEL.:| [] )
                              Nothing -> CMC.throwM $ AE.FunctionAddressOverridesNameNotFound
                                           bin addrMemWord funName)
                          functionAddressOverrides
@@ -516,8 +525,8 @@ loadCrucibleSyntaxOverrides dirPath cc ng halloc hooks = do
   where
     -- Validate that a startup override has no arguments and returns @Unit@.
     validateStartupOverride ::
-      AF.SomeFunctionOverride p sym ext ->
-      IO (AF.FunctionOverride p sym Ctx.EmptyCtx ext LCT.UnitType)
+      AF.SomeFunctionOverride p sym arch ->
+      IO (AF.FunctionOverride p sym Ctx.EmptyCtx arch LCT.UnitType)
     validateStartupOverride (AF.SomeFunctionOverride ov)
       | Just WI.Refl <- WI.testEquality (AF.functionArgTypes ov) Ctx.Empty
       , Just WI.Refl <- WI.testEquality (AF.functionReturnType ov) LCT.UnitRepr
@@ -529,9 +538,10 @@ loadCrucibleSyntaxOverrides dirPath cc ng halloc hooks = do
 -- | Convert a 'LCSC.ParsedProgram' at a the given 'FilePath' to a function
 -- override.
 parsedProgToFunctionOverride ::
+  ( ext ~ DMS.MacawExt arch ) =>
   FilePath ->
   LCSC.ParsedProgram ext ->
-  IO (AF.SomeFunctionOverride p sym ext)
+  IO (AF.SomeFunctionOverride p sym arch)
 parsedProgToFunctionOverride path parsedProg = do
   let fnName = DS.fromString $ SF.takeBaseName path
   let globals = parsedProgGlobalsList parsedProg
@@ -549,7 +559,8 @@ parsedProgToFunctionOverride path parsedProg = do
 
 -- Convert an ACFG to a FunctionOverride
 acfgToFunctionOverride
-  :: WF.FunctionName
+  :: ( ext ~ DMS.MacawExt arch )
+  => WF.FunctionName
   -> [ Some LCS.GlobalVar ]
   -- ^ GlobalVars used in function override
   -> Map.Map WF.FunctionName LCF.SomeHandle
@@ -557,7 +568,7 @@ acfgToFunctionOverride
   -> [LCSC.ACFG ext]
   -- ^ The ACFGs for auxiliary functions
   -> LCSC.ACFG ext
-  -> AF.SomeFunctionOverride p sym ext
+  -> AF.SomeFunctionOverride p sym arch
 acfgToFunctionOverride name globals fwdDecs auxCFGs (LCSC.ACFG argTypes retType cfg) =
   let argMap = AFA.bitvectorArgumentMapping argTypes
       (ptrTypes, ptrTypeMapping) = AFA.pointerArgumentMappping argMap
@@ -574,14 +585,14 @@ acfgToFunctionOverride name globals fwdDecs auxCFGs (LCSC.ACFG argTypes retType 
            -- Note that we do not use the GetVarArg callback below since syntax
            -- overrides do not have a mechanism for variadic arguments. See
            -- Note [Varargs] in Ambient.FunctionOverride.
-         , AF.functionOverride = \bak args _getVarArg -> do
+         , AF.functionOverride = \bak args _getVarArg _parents -> do
              -- Translate any arguments that are LLVMPointers but should be Bitvectors into Bitvectors
              --
              -- This generates side conditions asserting that the block ID is zero
              pointerArgs <- liftIO $ AFA.buildFunctionOverrideArgs bak argMap ptrTypeMapping args
              userRes <- LCS.callCFG ssaCfg (LCS.RegMap pointerArgs)
              -- Convert any BV returns from the user override to LLVMPointers
-             LCS.regValue <$> liftIO (AFA.convertBitvector bak retRepr userRes)
+             AF.OverrideResult [] <$> LCS.regValue <$> liftIO (AFA.convertBitvector bak retRepr userRes)
          }
 
 -- | Convert an 'LCSC.ACFG' to a 'LCS.FnBinding'.

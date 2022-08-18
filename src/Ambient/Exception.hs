@@ -144,6 +144,9 @@ data AmbientException where
   -- | A forward declaration to a function attempted to load a variadic
   -- argument, which is not supported.
   ForwardDeclarationVarArgError :: WF.FunctionName -> AmbientException
+  -- | A forward declaration to a function attempted to update a register,
+  -- which is not supported.
+  ForwardDeclarationRegUpdateError :: WF.FunctionName -> AmbientException
   -- | The @startup overrides@ section of an @overrides.yaml@ file contained
   -- a function name without a corresponding @.cbl@ file.
   -- | Unable to narrow a type down from a specific bitvector length when invoking a function.
@@ -413,6 +416,11 @@ instance PP.Pretty AmbientException where
       ForwardDeclarationVarArgError fwdDecName ->
         PP.vcat [ PP.pretty "The forward declaration for" PP.<+> PP.squotes (PP.pretty fwdDecName) PP.<+>
                   PP.pretty "attempted to retrieve a variadic argument,"
+                , PP.pretty "which is not supported for syntax overrides."
+                ]
+      ForwardDeclarationRegUpdateError fwdDecName ->
+        PP.vcat [ PP.pretty "The forward declaration for" PP.<+> PP.squotes (PP.pretty fwdDecName) PP.<+>
+                  PP.pretty "attempted to update a register,"
                 , PP.pretty "which is not supported for syntax overrides."
                 ]
       -- These error messages would be improved if we could pretty-print the
