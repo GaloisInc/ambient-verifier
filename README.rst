@@ -424,24 +424,47 @@ mandatory options:
   example, using the ``X86_64Linux`` will cause the verifier to execute
   function override tests using the X86_64 ``Bitvector`` type aliases.
 
-Limitations
-===========
+Entry Points
+============
 
-The verifier only supports statically linked programs and standalone position independent executables (PIEs) that do not make use of procedure linkage tables (PLTs) (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/6>`_). Moreover, the implementations of the ``_start()`` function in ``glibc`` (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/22>`_) and ``musl`` (`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/23>`_) gives the verifier trouble. To work around these issues, it is recommended that you:
+By default, the verifier begins simulating binaries at the ``main()`` function
+rather than ``_start()``. This is because the implementations of ``_start()``
+in ``glibc`` (`related issue
+<https://gitlab-ext.galois.com/ambient/verifier/-/issues/22>`_) and ``musl``
+(`related issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/23>`_)
+often give the verifier trouble. Beginning at ``main()`` is usually an effective
+workaround, but this comes at the expense of skipping initialization-related
+code in ``_start()``, which may be important for certain binaries. If you are
+brave start simulation at a different entry point, you can do so with the
+``--entry-point-name <function-name>`` option.
 
-1. Implement a custom ``_start()`` function in your binary like so::
+Note that the verifier is only able to discover a ``main()`` function is the
+binary contains the relevant function symbol. If a binary is stripped, however,
+then the verifier will not be able to discover the ``main`` symbol and will
+give up as a result. To work around this problem, one can manally specify the
+address of the entry point function (be in ``main()`` or otherwise) with the
+``--entry-point-addr <function-address>`` option.
 
-     void _start(void) {
-       main();
-     }
+Static and Dynamic Binaries
+===========================
 
-   While this is too simple of an implementation of ``_start()`` for actually running the binary, it avoids the complexities of ``_start()``'s actual implementation in ``glibc`` and ``musl``.
-2. Compile the binary with the following flags::
+The verifier fully supports statically linked libraries and has partial support
+for dynamically linked libraries. In order to simulate a dynamically linked
+library, it is required to put all of the shared libraries into a single
+directory and pass the ``--shared-objects <lib-dir>`` option to the verifier.
 
-   $ ${CC} -static -nostartfiles -no-pie foo.c -o foo.exe
+Be aware of the following limitations in the verifier's support for dynamically
+linked libraries:
 
-   While the ``-static`` and ``-no-pie`` flags are not strictly necessary (the
-   verifier supports PIEs without PLTs), compilers sometimes generate PLTs for
-   more complicated PIEs.  Therefore, we recommend ``-static`` and ``-no-pie``
-   when possible because they are more likely to produce a binary that the
-   verifier can reason about.
+1. The verifier makes certain assumptions about the layout of PLT stubs that do
+   not hold for binaries compiled with ``-fcf-protection``, which is now the
+   default for many versions of GCC (e.g., the one provided on recent versions of
+   Ubuntu). See `this issue
+   <https://gitlab-ext.galois.com/ambient/verifier/-/issues/62>`_. To avoid any
+   issues, it is recommended that you compile binaries with
+   ``-fcf-protection=none``.
+
+2. The verifier currently only supports a small number of dynamic relocations
+   and will abort if it encounters a relocation that it doesn't support. See `this
+   issue <https://gitlab-ext.galois.com/ambient/verifier/-/issues/93`_. If you
+   encounter an unsupported relocation, please file an issue.
