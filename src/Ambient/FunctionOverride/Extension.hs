@@ -395,6 +395,7 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
                        Map.empty -- Because we are testing outside of a binary,
                                  -- there are no binary-specific global
                                  -- variables to add.
+                       Map.empty -- Similarly, there are no relocations.
           let ?ptrWidth = WI.knownNat @(DMC.ArchAddrWidth arch)
           (fs, _, LCLS.SomeOverrideSim _initFSOverride) <- liftIO $
             LCLS.initialLLVMFileSystem halloc sym WI.knownRepr

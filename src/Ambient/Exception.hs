@@ -177,6 +177,8 @@ data AmbientException where
   -- | Could not translate a @.c@ file meant for use as an override to a @.cbl@
   -- file.
   COverrideTransError :: FilePath -> ODSL.TransError -> AmbientException
+  -- | An error occurred while populating a relocation in memory.
+  RelocationMemoryError :: DMM.MemWidth w => DMM.MemoryError w -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -461,3 +463,7 @@ instance PP.Pretty AmbientException where
                   PP.pretty "to a .cbl file:"
                 , PP.pretty err
                 ]
+      RelocationMemoryError memErr ->
+        -- MemoryError doesn't have a Pretty instance, but its Show instance is
+        -- especially pretty
+        PP.viaShow memErr

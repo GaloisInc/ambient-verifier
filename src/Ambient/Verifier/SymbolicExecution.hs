@@ -24,6 +24,7 @@ import           Control.Monad ( foldM )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(..) )
 import qualified Control.Monad.State.Strict as CMS
+import qualified Data.BinarySymbols as BinSym
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
 import qualified Data.Foldable as F
@@ -97,6 +98,7 @@ import qualified Ambient.FunctionOverride.Overrides.ForwardDeclarations as AFOF
 import qualified Ambient.Lift as ALi
 import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Loader.LoadOptions as ALL
+import qualified Ambient.Loader.Relocations as ALR
 import qualified Ambient.Loader.Versioning as ALV
 import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
@@ -369,7 +371,7 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
               (funcAddrOff, bin) <- resolvePLTStub pltStubVersym
               dispatchFuncAddrOff funcAddr funcAddrOff bin state
           Nothing -> do
-            (funcAddrOff, bin) <- resolveFuncAddr funcAddr
+            (funcAddrOff, bin) <- resolveFuncAddrAndBin funcAddr
             dispatchFuncAddrOff funcAddr funcAddrOff bin state
 
     -- Resolve the address that a PLT stub will jump to, also returning the
@@ -380,25 +382,20 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
       IO (DMM.MemSegmentOff w, ALB.LoadedBinaryPath arch binFmt)
     resolvePLTStub pltStubVersym =
       case Map.lookup pltStubVersym (ALB.bcDynamicFuncSymbolMap binConf) of
-        Just funcAddr -> resolveFuncAddr funcAddr
+        Just funcAddr -> resolveFuncAddrAndBin funcAddr
         Nothing -> CMC.throwM (AE.UnhandledPLTStub pltStubVersym)
 
     -- Resolve an address offset, also returning the binary that the address
     -- resides in (see @Note [Address offsets for shared libraries]@ in
     -- A.Loader.LoadOffset).
-    resolveFuncAddr ::
+    resolveFuncAddrAndBin ::
       DMM.MemWord w ->
       IO (DMM.MemSegmentOff w, ALB.LoadedBinaryPath arch binFmt)
-    resolveFuncAddr funcAddr = do
-      -- To determine which Memory to use, we need to compute the index for
-      -- the appropriate binary. See Note [Address offsets for shared libraries]
-      -- in A.Loader.LoadOffset.
-      let binIndex = fromInteger $ ALL.addressToIndex funcAddr
+    resolveFuncAddrAndBin funcAddr = do
+      let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
+      (funcAddrOff, binIndex) <- resolveFuncAddr mems funcAddr
       let loadedBinaryPath = ALB.bcBinaries binConf NEV.! binIndex
-      let bin = ALB.lbpBinary loadedBinaryPath
-      case DMBE.resolveAbsoluteAddress (DMB.memoryImage bin) funcAddr of
-        Nothing -> panic ["Failed to resolve function address: " ++ show funcAddr]
-        Just funcAddrOff -> pure (funcAddrOff, loadedBinaryPath)
+      pure (funcAddrOff, loadedBinaryPath)
 
     -- This corresponds to steps (3) and (4) in lookupHandle's documentation.
     -- Any indirections by way of PLT stubs should be resolved by this point.
@@ -518,9 +515,6 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
          Ctx.Assignment (LCS.RegEntry sym) (Ctx.EmptyCtx LCT.::> LCT.StructType ctx)
       -> Ctx.Assignment (LCS.RegValue' sym) ctx
     massageRegAssignment = LCS.unRV . Ctx.last . FC.fmapFC (LCS.RV . LCS.regValue)
-
-    panic :: [String] -> a
-    panic = AP.panic AP.SymbolicExecution "lookupFunction"
 
 -- | Record a syscall transition
 recordSyscallEvent ::
@@ -694,6 +688,27 @@ insertFunctionOverrideHandles bak abi = go
                  go resolvedFnOv hdls')
         handles1
         (Map.toAscList $ AF.functionForwardDeclarations fnOverride)
+
+-- Check if the supplied address resides in one of the supplied 'DMM.Memory'
+-- values. If so, return the resolved address offset and the index of the
+-- 'DMM.Memory' value in the 'NEV.NonEmptyVector' (see
+-- @Note [Address offsets for shared libraries]@ in A.Loader.LoadOffset).
+-- If it does not reside in one of these values, this function will panic.
+resolveFuncAddr ::
+  DMM.MemWidth w =>
+  NEV.NonEmptyVector (DMM.Memory w) ->
+  DMM.MemWord w ->
+  IO (DMM.MemSegmentOff w, Int)
+resolveFuncAddr mems funcAddr = do
+  -- To determine which Memory to use, we need to compute the index for
+  -- the appropriate binary. See Note [Address offsets for shared libraries]
+  -- in A.Loader.LoadOffset.
+  let memIndex = fromInteger $ ALL.addressToIndex funcAddr
+  let mem = mems NEV.! memIndex
+  case DMBE.resolveAbsoluteAddress mem funcAddr of
+    Nothing -> AP.panic AP.SymbolicExecution "resolveFuncAddr"
+                 ["Failed to resolve function address: " ++ show funcAddr]
+    Just funcAddrOff -> pure (funcAddrOff, memIndex)
 
 -- | This function is used to generate a function handle for an override once a
 -- syscall is encountered
@@ -914,34 +929,32 @@ insertFreshGlobals sym globs initialState = foldM go initialState globs
 
 globalMemoryHooks :: forall w
                    . ( DMM.MemWidth w )
-                  => Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
+                  => NEV.NonEmptyVector (DMM.Memory w)
+                  -- ^ The memory for each loaded binary
+                  -> Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
                   -- ^ Mapping from shared library global variables to their
                   -- addresses
+                  -> Map.Map (DMM.MemWord w) ALR.RelocType
+                  -- ^ Supported relocation types
                   -> DMSM.GlobalMemoryHooks w
-globalMemoryHooks globals = DMSM.GlobalMemoryHooks {
-    DMSM.populateRelocation = \bak reloc -> do
-      -- This function populates relocation types we support with the
-      -- appropriate address from 'globals'.  It populates all other
-      -- relocations with symbolic bytes.
+globalMemoryHooks allMems globals supportedRelocs = DMSM.GlobalMemoryHooks {
+    DMSM.populateRelocation = \bak relocMem relocSeg relocAddr reloc -> do
+      -- This function populates relocation types we support as appropriate.
+      -- It populates all other relocations with symbolic bytes.
       let sym = LCB.backendGetSym bak
+      let relocAbsAddr = memAddrToAbsAddr relocMem relocSeg relocAddr
       case DMM.relocationSym reloc of
-        DMM.SymbolRelocation name version ->
-          case Map.lookup (ALV.VerSym name version) globals of
-            Just addr -> do
-              let bv = BVS.mkBV (DMM.memWidthNatRepr @w) (fromIntegral addr)
-              let bytesLE = fromMaybe
-                    (AP.panic AP.SymbolicExecution
-                              "globalMemoryHooks"
-                              ["Failed to split bitvector into bytes"])
-                    (BVS.asBytesLE (DMM.memWidthNatRepr @w) bv)
-              mapM ( WI.bvLit sym (WI.knownNat @8)
-                   . BVS.mkBV (WI.knownNat @8)
-                   . fromIntegral )
-                   bytesLE
-            Nothing -> symbolicRelocation sym reloc (Just (show name))
+        DMM.SymbolRelocation name version
+          |  Just relocType <- Map.lookup relocAbsAddr supportedRelocs
+          -> case relocType of
+               ALR.GlobDatReloc -> globDatRelocHook sym name version reloc
+               ALR.CopyReloc    -> copyRelocHook bak name version reloc
         _ -> symbolicRelocation sym reloc Nothing
   }
   where
+    -- Used for recursive calls to populateRelocation in copyRelocHook
+    hooks = globalMemoryHooks allMems globals supportedRelocs
+
     -- Build a symbolic relocation value for 'reloc'.  We use this for
     -- relocation types we don't yet support.
     symbolicRelocation sym reloc mName = do
@@ -952,6 +965,108 @@ globalMemoryHooks globals = DMSM.GlobalMemoryHooks {
     symbolicByte sym name idx = do
       let symbol = WI.safeSymbol $ name ++ "-byte" ++ show (idx-1)
       WI.freshConstant sym symbol WI.knownRepr
+
+    -- Convert a 'DMM.MemAddr' to an absolute address.
+    memAddrToAbsAddr ::
+         DMM.Memory w -> DMM.MemSegment w
+      -> DMM.MemAddr w -> DMM.MemWord w
+    memAddrToAbsAddr mem seg addr =
+      case DMM.resolveRegionOff mem (DMM.addrBase addr) (DMM.addrOffset addr) of
+        Just addrOff -> DMM.segmentOffset seg + DMM.segoffOffset addrOff
+        Nothing -> AP.panic AP.SymbolicExecution "memAddrToAbsAddr"
+                     ["Failed to resolve function address: " ++ show addr]
+
+    -- Handle a GLOB_DAT relocation. This involves copying the address of a
+    -- global variable defined in another shared library. Discovering this
+    -- address is a straightforward matter of looking it up in the supplied
+    -- global variable Map.
+    globDatRelocHook :: forall sym
+                      . LCB.IsSymInterface sym
+                     => sym
+                     -> BS.ByteString
+                     -> BinSym.SymbolVersion
+                     -> DMM.Relocation w
+                     -> IO [WI.SymExpr sym (WI.BaseBVType 8)]
+    globDatRelocHook sym name version reloc =
+      case Map.lookup (ALV.VerSym name version) globals of
+        Just addr -> do
+          let bv = BVS.mkBV (DMM.memWidthNatRepr @w) (fromIntegral addr)
+          let bytesLE = fromMaybe
+                (AP.panic AP.SymbolicExecution
+                          "globDataRelocHook"
+                          ["Failed to split bitvector into bytes"])
+                (BVS.asBytesLE (DMM.memWidthNatRepr @w) bv)
+          mapM ( WI.bvLit sym (WI.knownNat @8)
+               . BVS.mkBV (WI.knownNat @8)
+               . fromIntegral )
+               bytesLE
+        Nothing -> symbolicRelocation sym reloc (Just (show name))
+
+    -- Handle a COPY relocation. This involves copying the value of a global
+    -- variable defined in another shared library. See
+    -- Note [Global symbols and COPY relocations] in
+    -- Ambient.Loader.ELF.Symbols.
+    --
+    -- Discovering this value is a bit involved, as it requires:
+    --
+    -- 1. Looking up the address of the global variable that the relocation
+    --    references, and
+    --
+    -- 2. Looking up the 'MemChunk' located at that address, which contains
+    --    the value to copy.
+    --
+    -- 3. Finally, take an amount of bytes from the MemChunk equal in size
+    --    to the number of bytes in the relocation region. This is important
+    --    in case the region that the relocation references is larger in size.
+    copyRelocHook :: forall sym bak
+                   . LCB.IsSymBackend sym bak
+                  => bak
+                  -> BS.ByteString
+                  -> BinSym.SymbolVersion
+                  -> DMM.Relocation w
+                  -> IO [WI.SymExpr sym (WI.BaseBVType 8)]
+    copyRelocHook bak name version reloc =
+      let sym = LCB.backendGetSym bak in
+      -- Step (1)
+      case Map.lookup (ALV.VerSym name version) globals of
+        Just addr -> do
+          (segOff, memIndex) <- resolveFuncAddr allMems addr
+          let mem = allMems NEV.! memIndex
+          let segRelAddr = DMM.segoffAddr segOff
+          -- Step (2)
+          chunkBytes <- case DMM.segoffContentsAfter segOff of
+            Left memErr -> CMC.throwM $ AE.RelocationMemoryError memErr
+            Right chunks -> case chunks of
+              [] -> CMC.throwM $ AE.RelocationMemoryError
+                               $ DMM.AccessViolation segRelAddr
+
+              -- TODO: Is it possible that a COPY relocation could point to the
+              -- middle of a MemChunk? If that is the case, then we would need
+              -- to grab bytes from subsequent MemChunks in order to have
+              -- enough bytes to populate the entire size of the relocation.
+              -- On the other hand, macaw is quite good about putting each
+              -- global variable into its own MemChunk, so I'm unclear if this
+              -- can ever happen in practice.
+
+              -- It is possible that the target of a COPY relocation is itself
+              -- a relocation. For example, stderr is defined in uClibc by way
+              -- of an R_ARM_RELATIVE relocation, and other binaries will in
+              -- turn reference stderr using R_ARM_COPY. As a result, we have
+              -- to follow the relocations to get to the actual value to copy.
+              DMM.RelocationRegion r : _ ->
+                DMSM.populateRelocation hooks bak mem
+                  (DMM.segoffSegment segOff)
+                  (DMM.segoffAddr segOff)
+                  r
+              DMM.BSSRegion sz : _ ->
+                replicate (fromIntegral sz) <$> WI.bvLit sym w8 (BVS.zero w8)
+              DMM.ByteRegion bytes : _ ->
+                traverse (WI.bvLit sym w8 . BVS.word8) $ BS.unpack bytes
+          -- Step (3)
+          pure $ take (DMM.relocationSize reloc) chunkBytes
+        _ -> symbolicRelocation sym reloc (Just (show name))
+
+    w8 = WI.knownNat @8
 
 initializeMemory
   :: forall sym bak arch w p m t st fs
@@ -975,13 +1090,17 @@ initializeMemory
   -- ^ A list of additional function overrides to register.
   -> Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
   -- ^ Mapping from shared library global variables to their addresses
+  -> Map.Map (DMM.MemWord w) ALR.RelocType
+  -- ^ Supported relocation types
   -> m ( AM.InitialMemory sym w )
-initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobals) functionOvs globals = do
+initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobals)
+                 functionOvs globals supportedRelocs = do
   let sym = LCB.backendGetSym bak
 
   -- Initialize memory
   let endianness = DMSM.toCrucibleEndian (DMA.archEndianness archInfo)
-  (initMem, memPtrTbl) <- AEM.newMemPtrTable (globalMemoryHooks globals) bak endianness mems
+  (initMem, memPtrTbl) <-
+    AEM.newMemPtrTable (globalMemoryHooks mems globals supportedRelocs) bak endianness mems
   let validityCheck = AEM.mkGlobalPointerValidityPred memPtrTbl
   let globalMap = AEM.mapRegionPointers memPtrTbl
 
@@ -1328,6 +1447,7 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures e
                                  initGlobals
                                  (AFET.csoNamedOverrides (fcCrucibleSyntaxOverrides fnConf))
                                  (ALB.bcDynamicGlobalVarAddrs binConf)
+                                 (ALB.bcSupportedRelocations binConf)
   (memVar, crucibleExecResult, wmConfig) <- simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs
   return $ SymbolicExecutionResult { serMemVar = memVar
                                    , serCrucibleExecResult = crucibleExecResult

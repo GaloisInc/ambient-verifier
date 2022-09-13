@@ -19,6 +19,7 @@ import qualified Data.Macaw.Discovery as DMD
 import qualified Data.Macaw.Memory as DMM
 import qualified What4.FunctionName as WF
 
+import qualified Ambient.Loader.Relocations as ALR
 import qualified Ambient.Loader.Versioning as ALV
 import qualified Ambient.Panic as AP
 
@@ -78,6 +79,11 @@ data BinaryConfig arch binFmt = BinaryConfig {
   -- introduces IsRelocationType constraints that are difficult to fulfill
   -- when a function takes this underlying map but no binaries are loaded
   -- (such as when running crucible syntax override tests).
+
+  , bcSupportedRelocations :: Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) ALR.RelocType
+  -- ^ A mapping of supported relocations. Maps addresses to relocation types.
+  -- See also 'bcUnsuportedRelocations', which contains the rest of the
+  -- relocations.
   }
 
 -- | A loaded binary, along with the file path from which it was loaded and

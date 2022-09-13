@@ -54,6 +54,7 @@ import qualified Ambient.Loader.ELF.DynamicLoader as ALED
 import qualified Ambient.Loader.ELF.Symbols as ALES
 import qualified Ambient.Loader.ELF.Symbols.AArch32 as ALESA
 import qualified Ambient.Loader.ELF.PLTStubDetector as ALEP
+import qualified Ambient.Loader.Relocations as ALR
 import qualified Ambient.Loader.Versioning as ALV
 import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.AArch32.Linux as AMAL
@@ -138,6 +139,7 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
                                       -- (see ticket #98).
                                       Map.empty
                                       Map.empty
+                                      Map.empty
               -- Here we capture all of the necessary constraints required by the
               -- callback and pass them down along with the architecture info
               k DMX.x86_64_linux_info
@@ -157,13 +159,14 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
             Just archVals -> do
               binsAndPaths <- loadElfBinaries options ehi hdrMachine hdrClass
               let bins = NEV.map fst binsAndPaths
-              unsupportedRels <- liftIO $ ALESA.elfAarch32UnsupportedRels bins
-              let dynGlobSymMap = ALES.elfDynamicGlobalSymbolMap bins
+              (unsupportedRels, supportedRels) <- liftIO $ ALESA.elfAarch32Rels bins
+              let dynGlobSymMap = ALES.elfDynamicGlobalSymbolMap supportedRels bins
               binConf <- mkElfBinConf AA.AArch32Linux
                                       (Proxy @DE.ARM32_RelocationType)
                                       binsAndPaths
                                       dynGlobSymMap
                                       unsupportedRels
+                                      supportedRels
               k Macaw.AArch32.arm_linux_info
                 archVals
                 ASAL.aarch32LinuxSyscallABI
@@ -211,8 +214,11 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
       Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) String ->
       -- ^ Unsupported relocations.  Mapping from addresses to names of
       -- unsupported relocation types.
+      Map.Map (DMM.MemWord (DMC.ArchAddrWidth arch)) ALR.RelocType ->
+      -- ^ Supported relocation types
       m (ALB.BinaryConfig arch binFmt)
-    mkElfBinConf abi proxyReloc binsAndPaths dynGlobals unsupportedRels = do
+    mkElfBinConf abi proxyReloc binsAndPaths dynGlobals
+                 unsupportedRels supportedRels = do
       let loadedBinaryPaths =
             NEV.map
               (\(bin, path) ->
@@ -220,19 +226,20 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
                   { ALB.lbpBinary = bin
                   , ALB.lbpPath = path
                   , ALB.lbpEntryPoints = ALES.elfEntryPointAddrMap bin
-                  , ALB.lbpGlobalVars = ALES.elfGlobalSymbolMap bin
+                  , ALB.lbpGlobalVars = ALES.elfGlobalSymbolMap supportedRels bin
                   , ALB.lbpPltStubs = ALEP.pltStubSymbols abi proxyReloc bin
                   })
               binsAndPaths
       let bins = NEV.map fst binsAndPaths
-      let dynFuncSymMap = ALES.elfDynamicFuncSymbolMap bins
+      let dynFuncSymMap = ALES.elfDynamicFuncSymbolMap supportedRels bins
       return ALB.BinaryConfig
         { ALB.bcBinaries = loadedBinaryPaths
-        , ALB.bcMainBinarySymbolMap = ALES.elfEntryPointSymbolMap $ NEV.head bins
+        , ALB.bcMainBinarySymbolMap = ALES.elfEntryPointSymbolMap supportedRels $ NEV.head bins
         , ALB.bcDynamicFuncSymbolMap = dynFuncSymMap
         , ALB.bcDynamicGlobalVarAddrs = dynGlobals
         , ALB.bcPltStubs = Map.unions $ fmap ALB.lbpPltStubs loadedBinaryPaths
         , ALB.bcUnsuportedRelocations = unsupportedRels
+        , ALB.bcSupportedRelocations = supportedRels
         }
 
     -- The total size (in bytes) of a collection of ELF binaries.

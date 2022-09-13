@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Ambient.Loader.ELF.Symbols.AArch32 ( elfAarch32UnsupportedRels ) where
+module Ambient.Loader.ELF.Symbols.AArch32 ( elfAarch32Rels ) where
 
 import qualified Control.Exception as X
 import           Control.Monad ( unless )
@@ -17,22 +17,29 @@ import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Memory.LoadCommon as DMML
 
 import qualified Ambient.Exception as AE
+import qualified Ambient.Loader.Relocations as ALR
 import qualified Ambient.Panic as AP
 
--- | Read the .rel.dyn sections from a collection of binaries and return a
--- mapping from unsupported relocation variable addresses to names of the
--- unsupported relocation types.
-elfAarch32UnsupportedRels :: forall arch w f
-                           . ( Integral (DE.ElfWordType w)
-                             , DMM.MemWidth w
-                             , Foldable f )
-                          => f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w))
-                          -> IO (Map.Map (DMM.MemWord w) String)
-elfAarch32UnsupportedRels = F.foldlM go Map.empty
+-- | Read the .rel.dyn sections from a collection of binaries and return two
+-- 'Map.Map's, each mapping from relocation variable addresses to the relocation
+-- types. The first 'Map.Map' only contains relocations that the verifier does
+-- not (yet) support (with a string describing what sort of relocation it is),
+-- while the second 'Map.Map' only contains relocations that the verifier
+-- /does/ support.
+elfAarch32Rels :: forall arch w f
+                . ( Integral (DE.ElfWordType w)
+                  , DMM.MemWidth w
+                  , Foldable f )
+               => f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w))
+               -> IO ( Map.Map (DMM.MemWord w) String
+                     , Map.Map (DMM.MemWord w) ALR.RelocType
+                     )
+elfAarch32Rels = fmap (Map.mapEither partitionSupported)
+               . F.foldlM go Map.empty
   where
-    go :: Map.Map (DMM.MemWord w) String
+    go :: Map.Map (DMM.MemWord w) (DE.RelEntry DE.ARM32_RelocationType)
        -> DMB.LoadedBinary arch (DE.ElfHeaderInfo w)
-       -> IO (Map.Map (DMM.MemWord w) String)
+       -> IO (Map.Map (DMM.MemWord w) (DE.RelEntry DE.ARM32_RelocationType))
     go acc lb = do
       let elfHeaderInfo = DMB.originalBinary lb
       let (_, elf) = DE.getElf elfHeaderInfo
@@ -52,31 +59,30 @@ elfAarch32UnsupportedRels = F.foldlM go Map.empty
     -- | Check whether a relocation is supported and update 'unsupported' if it
     -- is not.
     updateMap :: Word64
-              -> Map.Map (DMM.MemWord w) String
+              -> Map.Map (DMM.MemWord w) (DE.RelEntry DE.ARM32_RelocationType)
               -> DE.RelEntry DE.ARM32_RelocationType
-              -> Map.Map (DMM.MemWord w) String
-    updateMap offset unsupported rel =
+              -> Map.Map (DMM.MemWord w) (DE.RelEntry DE.ARM32_RelocationType)
+    updateMap offset m rel =
       let addr = DMM.memWord (fromIntegral offset + fromIntegral (DE.relAddr rel)) in
-      if is_rel_type_supported rel
       -- In each of these updates we panic if a global already exists at the
       -- address.  This should not be possible and indicates that binaries are
       -- loaded at overlapping addresses.
-      then unsupported
-      else Map.insertWithKey panicAddrCollision
-                             addr
-                             (show (DE.relType rel))
-                             unsupported
+      Map.insertWithKey panicAddrCollision addr rel m
 
     panicAddrCollision addr _ _ =
       AP.panic AP.Loader
                "elfAarch32UnsupportedRels"
                ["Encoutered multiple globals at address: " ++ (show addr)]
 
-    is_rel_type_supported rel =
-      case DE.relType rel of
-        DE.R_ARM_GLOB_DAT -> True
-        _ -> False
-
     rightToMaybe :: Either l r -> Maybe r
     rightToMaybe = either (const Nothing) Just
 
+    -- 'Left' indicates a relocation type is not supported, while
+    -- 'Right' indicates that it is supported.
+    partitionSupported :: DE.RelEntry DE.ARM32_RelocationType
+                       -> Either String ALR.RelocType
+    partitionSupported rel =
+      case DE.relType rel of
+        DE.R_ARM_COPY     -> Right ALR.CopyReloc
+        DE.R_ARM_GLOB_DAT -> Right ALR.GlobDatReloc
+        _                 -> Left $ show $ DE.relType rel

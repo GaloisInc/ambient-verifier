@@ -174,7 +174,7 @@ mergedMemorySymbolicMemChunks bak hooks mems =
       IO [(IM.Interval (DMM.MemWord w), SymbolicMemChunk sym)]
     segmentSymbolicMemChunks mem seg = concat <$>
       traverse (\(addr, chunk) ->
-                 do allBytes <- mkSymbolicMemChunkBytes chunk
+                 do allBytes <- mkSymbolicMemChunkBytes mem seg addr chunk
                     let mut | DMMP.isReadonly (DMM.segmentFlags seg) = LCLM.Immutable
                             | otherwise                              = LCLM.Mutable
                     let absAddr =
@@ -199,11 +199,16 @@ mergedMemorySymbolicMemChunks bak hooks mems =
 
     -- NB: This is the same code as in this part of macaw-symbolic:
     -- https://github.com/GaloisInc/macaw/blob/ef0ece6a726217fe6231b9ddf523868e491e6ef0/symbolic/src/Data/Macaw/Symbolic/Memory.hs#L373-L378
-    mkSymbolicMemChunkBytes :: DMM.MemChunk w -> IO [WI.SymBV sym 8]
-    mkSymbolicMemChunkBytes memChunk =
+    mkSymbolicMemChunkBytes ::
+         DMM.Memory w
+      -> DMM.MemSegment w
+      -> DMM.MemAddr w
+      -> DMM.MemChunk w
+      -> IO [WI.SymBV sym 8]
+    mkSymbolicMemChunkBytes mem seg addr memChunk =
       liftIO $ case memChunk of
         DMM.RelocationRegion reloc ->
-          DMSM.populateRelocation hooks bak reloc
+          DMSM.populateRelocation hooks bak mem seg addr reloc
         DMM.BSSRegion sz ->
           replicate (fromIntegral sz) <$> WI.bvLit sym w8 (BV.zero w8)
         DMM.ByteRegion bytes ->

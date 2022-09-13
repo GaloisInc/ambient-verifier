@@ -36,6 +36,7 @@ import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Memory.LoadCommon as DMML
 import qualified What4.FunctionName as WF
 
+import qualified Ambient.Loader.Relocations as ALR
 import qualified Ambient.Loader.Versioning as ALV
 import qualified Ambient.Panic as AP
 
@@ -54,6 +55,8 @@ elfDynamicFuncSymbolMap ::
   , w ~ DMC.ArchAddrWidth arch
   , DMM.MemWidth w
   ) =>
+  Map.Map (DMM.MemWord w) ALR.RelocType ->
+  -- ^ Supported relocation types
   f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
   Map.Map ALV.VersionedFunctionName (DMM.MemWord w)
 elfDynamicFuncSymbolMap = elfDynamicSymbolMap
@@ -108,10 +111,12 @@ elfDynamicSymbolMap ::
   (DE.SymtabEntry (BSC.ByteString) (DE.ElfWordType w) -> Bool) ->
   -- ^ Filter function over SymtabEntries.  Only symbols for which this
   -- function returns True will be included in the returned map.
+  Map.Map (DMM.MemWord w) ALR.RelocType ->
+  -- ^ Supported relocation types
   f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
   -- ^ Binaries to build symbol map from
   Map.Map (ALV.VersionedSymbol symbol) (DMM.MemWord w)
-elfDynamicSymbolMap getSymbol filterFn =
+elfDynamicSymbolMap getSymbol filterFn relocs =
   fmap snd . F.foldl' addSymbols Map.empty
   where
     addSymbols ::
@@ -122,7 +127,8 @@ elfDynamicSymbolMap getSymbol filterFn =
               (DE.SymtabEntry (BSC.ByteString) (DE.ElfWordType w), DMM.MemWord w)
     addSymbols m loadedBinary =
       F.foldl' (\m' (versym, addr) ->
-                 addSymbolWithPriority (fmap getSymbol versym) (ALV.versymSymbol versym) addr m')
+                 addSymbolWithPriority (fmap getSymbol versym) (ALV.versymSymbol versym)
+                                       addr relocs m')
                m dynSymsAndAddrs
       where
         elfHeaderInfo = DMB.originalBinary loadedBinary
@@ -143,24 +149,36 @@ elfDynamicSymbolMap getSymbol filterFn =
 -- way) and associated @v@ value to a 'Map.Map'. If the 'Map.Map' already
 -- contains that @symbol@, the conflict is resolved as follows:
 --
--- 1. Global symbols are favored over weak symbols. See @Note [Weak symbols]@.
+-- 1. If one of those symbols uses a COPY relocation, then the other symbol
+--    is kept instead. See @Note [Global symbols and COPY relocations]@.
+--
+-- 2. Global symbols are favored over weak symbols. See @Note [Weak symbols]@.
 --    (The only reason the 'Map.Map' includes a 'DE.SymtabEntry' in its range
 --    is because we need to consult its 'DE.steBind' during this step.)
 --
--- 2. Otherwise, favor the already-encountered @symbol@ over the new @symbol@.
+-- 3. Otherwise, favor the already-encountered @symbol@ over the new @symbol@.
 --    This is what implements the lookup scope scheme described in
 --    @Note [Dynamic lookup scope]@ in "Ambient.Loader.ELF.DynamicLoader".
 addSymbolWithPriority ::
   Ord symbol =>
   symbol ->
-  DE.SymtabEntry nm w ->
-  v ->
-  Map.Map symbol (DE.SymtabEntry nm w, v) ->
-  Map.Map symbol (DE.SymtabEntry nm w, v)
-addSymbolWithPriority newSym newSt newVal =
+  DE.SymtabEntry nm (DE.ElfWordType w) ->
+  DMM.MemWord w ->
+  Map.Map (DMM.MemWord w) ALR.RelocType ->
+  -- ^ Supported relocation types
+  Map.Map symbol (DE.SymtabEntry nm (DE.ElfWordType w), DMM.MemWord w) ->
+  Map.Map symbol (DE.SymtabEntry nm (DE.ElfWordType w), DMM.MemWord w)
+addSymbolWithPriority newSym newSt newVal relocs =
   Map.insertWith
-    (\new@(newSte, _) old@(oldSte, _) ->
+    (\new@(newSte, newVal') old@(oldSte, oldVal) ->
       if -- Step (1)
+         |  Just ALR.CopyReloc <- Map.lookup newVal' relocs
+         -> old
+
+         |  Just ALR.CopyReloc <- Map.lookup oldVal relocs
+         -> new
+
+         -- Step (2)
          |  DE.steBind oldSte == DE.STB_GLOBAL
          ,  DE.steBind newSte == DE.STB_WEAK
          -> old
@@ -169,7 +187,7 @@ addSymbolWithPriority newSym newSt newVal =
          ,  DE.steBind oldSte == DE.STB_WEAK
          -> new
 
-         -- Step (2)
+         -- Step (3)
          |  otherwise
          -> old)
     newSym (newSt, newVal)
@@ -189,6 +207,8 @@ elfDynamicGlobalSymbolMap ::
   , w ~ DMC.ArchAddrWidth arch
   , DMM.MemWidth w
   ) =>
+  Map.Map (DMM.MemWord w) ALR.RelocType ->
+  -- ^ Supported relocation types
   f (DMB.LoadedBinary arch (DE.ElfHeaderInfo w)) ->
   Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
 elfDynamicGlobalSymbolMap = elfDynamicSymbolMap
@@ -237,11 +257,13 @@ elfEntryPointAddrMap loadedBinary =
 -- This includes entry points in both the static and dynamic symbol tables.
 elfEntryPointSymbolMap ::
   (w ~ DMC.ArchAddrWidth arch, DMM.MemWidth w) =>
+  Map.Map (DMM.MemWord w) ALR.RelocType ->
+  -- ^ Supported relocation types
   DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
   Map.Map WF.FunctionName (DMM.MemWord w)
-elfEntryPointSymbolMap loadedBinary =
+elfEntryPointSymbolMap relocs loadedBinary =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
-  elfSymbolMap symtabEntryFunctionName loadedBinary (elfEntryPoints elfHeaderInfo)
+  elfSymbolMap symtabEntryFunctionName relocs loadedBinary (elfEntryPoints elfHeaderInfo)
   where
     elfHeaderInfo = DMB.originalBinary loadedBinary
 
@@ -249,11 +271,13 @@ elfEntryPointSymbolMap loadedBinary =
 -- This includes entry points in both the static and dynamic symbol tables.
 elfGlobalSymbolMap ::
   (w ~ DMC.ArchAddrWidth arch, DMM.MemWidth w) =>
+  Map.Map (DMM.MemWord w) ALR.RelocType ->
+  -- ^ Supported relocation types
   DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
   Map.Map BS.ByteString (DMM.MemWord w)
-elfGlobalSymbolMap loadedBinary =
+elfGlobalSymbolMap relocs loadedBinary =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
-  elfSymbolMap DE.steName loadedBinary (elfGlobalVars elfHeaderInfo)
+  elfSymbolMap DE.steName relocs loadedBinary (elfGlobalVars elfHeaderInfo)
   where
     elfHeaderInfo = DMB.originalBinary loadedBinary
 
@@ -269,14 +293,16 @@ elfSymbolMap ::
   ) =>
   (DE.SymtabEntry BS.ByteString (DE.ElfWordType w) -> symbol) ->
   -- ^ Function to extract the symbol name from a 'DE.SymtabEntry'
+  Map.Map (DMM.MemWord w) ALR.RelocType ->
+  -- ^ Supported relocation types
   DMB.LoadedBinary arch (DE.ElfHeaderInfo w) ->
   [VersionedSymtabEntry BS.ByteString (DE.ElfWordType w)] ->
   Map.Map symbol (DMM.MemWord w)
-elfSymbolMap getSymbol loadedBinary symbols =
+elfSymbolMap getSymbol relocs loadedBinary symbols =
   DE.elfClassInstances (DE.headerClass (DE.header elfHeaderInfo)) $
   fmap snd $
   F.foldl'
-    (\m (ste, addr) -> addSymbolWithPriority (getSymbol ste) ste addr m)
+    (\m (ste, addr) -> addSymbolWithPriority (getSymbol ste) ste addr relocs m)
     Map.empty
     [ ( ste
       , fromIntegral (DE.steValue ste) + fromIntegral offset
@@ -475,4 +501,71 @@ symbols have already been resolved. Still, it's difficult to state with
 confidence that such a scenario could never happen. Just in case it does,
 we manually resolve such naming conflicts (in `addSymbolWithPriority`) by
 favoring global symbols over weak symbols in case of a name conflict.
+
+Note [Global symbols and COPY relocations]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider the following set of programs:
+
+  // copy1.c
+    int x = 0x2a;
+
+  // copy2.c
+    extern int x;
+    int main() { ...x... }
+
+Suppose that copy1.c is compiled into libcopy1.so, and copy2.c is compiled to
+copy2.exe, which dynamically links against libcopy1.so. Interestingly, it is
+quite possible that /both/ binaries will contain a global variable named `x`,
+but the way that each binary defines it will be different. libcopy1.so will
+contain this definition:
+
+  00011028 <x>:
+     11028:       0000002a
+
+And copy2.exe will contain this definition:
+
+  00021024 <x>:
+     21024:       00000000
+                          21024: R_ARM_COPY       x
+
+The definition in copy2.exe uses a COPY relocation to reference the version of
+`x` defined in libcopy1.so, which contains the initial value for the variable.
+The idea is that when copy2.exe is loaded, the dynamic loader will copy the
+value of `x` from libcopy1.so into the address space of the relocation in
+copy2.exe. As a result, it is important for the verifier to simulate this
+copying to achieve the behavior one would expect.
+
+The verifier simulates the behavior of COPY relocations in various parts:
+
+1. The verifier maintains a mapping from each relocation's address to the
+   type of relocation it is. (See bcSupportedRelocations in
+   Ambient.Loader.BinaryConfig.) One of these relocation types is CopyReloc.
+
+2. When loading global dynamic symbols, the verifier maintains a mapping from
+   each unique symbol name to the address where it is defined. (See
+   bcDynamicGlobalVarAddrs in Ambient.Loader.BinaryConfig.) In the example
+   above, however, there are /two/ addresses for `x`, one in each binary.
+   The address that we actually want to put in the map is the address for
+   `x` in libcopy1.so, as that is where the initial value for `x` is stored.
+
+   How do we ensure that we add an entry for `x` in libcopy1.so in the map
+   rather than the `x` in copy2.exe? Note that copy2.exe will declare a
+   dynamic dependency on libcopy1.so, and since symbols that are encountered
+   first in dynamic dependency order are kept over ones that are encountered
+   later (see Note [Dynamic lookup scope] in Ambient.Loader.ELF.DynamicLoader),
+   this would result in copy2.exe's `x` being kept over libcopy1.so's `x` if we
+   do not take corrective action.
+
+   To avoid this situation, we implement a special case when encountering a
+   symbol that has already been inserted into the map. Namely, if one of the
+   symbols' addresses maps to a CopyReloc in the bcSupportedRelocations map,
+   then we keep the other symbol instead. See the `addSymbolWithPriority`
+   function, which implements this special case.
+
+3. When populating a COPY relocation in
+   Ambient.Verifier.SymbolicExecution.globalMemoryHooks, we look up the
+   address of the value to be copied in the bcDynamicGlobalVarAddrs, which
+   we have ensured to point to the correct address in the previous step.
+   We then use that address to look up the value to be copied in the
+   appropriate macaw Memory value.
 -}

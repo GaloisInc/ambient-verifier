@@ -201,6 +201,12 @@ c-override/c-override.exe: c-override/c-override.c ambient_assert.o
 nested-forward-decs/nested-forward-decs.exe: nested-forward-decs/nested-forward-decs.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
 
+copy-reloc/libcopy1.so: copy-reloc/copy1.c
+	$(CC) -nostdlib $< -o $@ -shared
+
+copy-reloc/copy2.exe: copy-reloc/copy2.c copy-reloc/libcopy1.so ambient_assert.o
+	$(CC) -nostdlib -Lcopy-reloc/ -I./ copy-reloc/copy2.c ambient_assert.o -lcopy1 -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

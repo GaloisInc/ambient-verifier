@@ -73,6 +73,7 @@ library
                       Ambient.Loader.ELF.Symbols,
                       Ambient.Loader.ELF.Symbols.AArch32,
                       Ambient.Loader.LoadOptions,
+                      Ambient.Loader.Relocations,
                       Ambient.Loader.Versioning,
                       Ambient.Memory,
                       Ambient.Memory.SharedMemory,
