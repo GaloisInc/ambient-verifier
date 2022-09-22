@@ -20,6 +20,7 @@ import qualified Data.Time.Clock as DTC
 import           Numeric ( showHex )
 import qualified Prettyprinter as PP
 import qualified What4.Expr as WE
+import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.LabeledPred as WL
 import qualified What4.ProgramLoc as WP
@@ -76,6 +77,15 @@ data Diagnostic where
   ListingOverrides :: AOLT.OverrideLists arch -> Diagnostic
   -- | Reporting a symbolic branch
   SymbolicBranch :: Maybe WP.ProgramLoc -> Diagnostic
+  -- | Invoking a function call in the simulator
+  FunctionCall :: DMM.MemWidth w
+               => WF.FunctionName
+                  -- ^ The function name
+               -> DMM.MemWord w
+                  -- ^ The address where the function is defined
+               -> Maybe (DMM.MemWord w)
+                  -- ^ The address that the function returns to (if known)
+               -> Diagnostic
 
 ppSymbol :: (DMM.MemWidth w) => Maybe BSC.ByteString -> DMM.MemSegmentOff w -> String
 ppSymbol (Just fnName) addr = show addr ++ " (" ++ BSC.unpack fnName ++ ")"
@@ -166,6 +176,15 @@ instance PP.Pretty Diagnostic where
           DA.object [ DAK.fromString "symbolicBranchFunction" DA..= ppShowMaybe (WP.plFunction <$> maybeLoc)
                     , DAK.fromString "symbolicBranchLocation" DA..= ppShowMaybe (WP.plSourceLoc <$> maybeLoc)
                     ]) <> PP.line
+      FunctionCall fnName fnAddr mbRetAddr ->
+        PP.pretty "Invoking the" PP.<+> PP.squotes (PP.pretty fnName)
+          PP.<+> PP.pretty "function"
+          PP.<+> PP.parens (PP.pretty "address" PP.<+> PP.pretty fnAddr)
+          PP.<>  foldMap
+                   (\retAddr -> PP.pretty ", which returns to address"
+                         PP.<+> PP.pretty retAddr)
+                   mbRetAddr
+          PP.<> PP.line
 
     where
       overridesHeader title = PP.vcat

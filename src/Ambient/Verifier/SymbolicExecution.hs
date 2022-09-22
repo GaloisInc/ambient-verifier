@@ -32,7 +32,7 @@ import qualified Data.IntMap as IM
 import qualified Data.List as List
 import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
-import           Data.Maybe ( fromMaybe )
+import           Data.Maybe ( fromMaybe, isJust )
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.List as PL
 import qualified Data.Parameterized.Map as MapF
@@ -235,14 +235,31 @@ lookupFunction :: forall sym bak arch binFmt p ext w scope solver st fs args ret
    -> DMA.ArchitectureInfo arch
    -> AET.Properties
    -- ^ The properties to be checked, along with their corresponding global traces
+   -> Maybe FilePath
+   -- ^ Optional path to the file to log function calls to
    -> DMS.LookupFunctionHandle p sym arch
-lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo props =
+lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo props mFnCallLog =
   DMS.LookupFunctionHandle $ \state0 _mem regs -> do
     -- Extract instruction pointer value and look the address up in
     -- 'addressToFnHandle'
     funcAddr <- fromIntegral <$> extractIP bak archVals regs
     (hdl, state1) <- lookupHandle funcAddr state0
-    state2 <- recordFunctionEvent sym (LCF.handleName hdl) props state1
+
+    -- Record function event and emit a diagnostic
+    let hdlName = LCF.handleName hdl
+    state2 <- recordFunctionEvent sym hdlName props state1
+    mbReturnAddr <-
+      -- Checking the return address requires consulting an SMT solver, and the
+      -- time it takes to do this could add up. We only care about this
+      -- information when --log-function-calls is enabled, so we skip this step
+      -- if that option is disabled.
+      if isJust mFnCallLog
+      then let mem = readGlobal (AM.imMemVar initialMem) state1 in
+           AF.functionReturnAddr abi bak archVals regs mem
+      else pure Nothing
+    LJ.writeLog logAction $
+      AD.FunctionCall hdlName funcAddr mbReturnAddr
+
     pure (hdl, state2)
 
   where
@@ -515,6 +532,19 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
          Ctx.Assignment (LCS.RegEntry sym) (Ctx.EmptyCtx LCT.::> LCT.StructType ctx)
       -> Ctx.Assignment (LCS.RegValue' sym) ctx
     massageRegAssignment = LCS.unRV . Ctx.last . FC.fmapFC (LCS.RV . LCS.regValue)
+
+    readGlobal ::
+      forall tp rtp blocks r ctx.
+      LCS.GlobalVar tp ->
+      LCS.CrucibleState p sym ext rtp blocks r ctx ->
+      LCS.RegValue sym tp
+    readGlobal gv st = do
+      let globals = st ^. LCSE.stateTree . LCSE.actFrame . LCS.gpGlobals
+      case LCSG.lookupGlobal gv globals of
+        Just v  -> v
+        Nothing -> AP.panic AP.SymbolicExecution "lookupFunction"
+                     [ "Failed to find global variable: "
+                       ++ show (LCCC.globalName gv) ]
 
 -- | Record a syscall transition
 recordSyscallEvent ::
@@ -1272,6 +1302,8 @@ simulateFunction
   -> Maybe FilePath
   -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
   -- will be empty
+  -> Maybe FilePath
+  -- ^ Optional path to the file to log function calls to
   -> ALB.BinaryConfig arch binFmt
   -- ^ Information about the loaded binaries
   -> FunctionConfig arch sym p
@@ -1282,7 +1314,7 @@ simulateFunction
        , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
        , AVW.WMConfig
        )
-simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs = do
+simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot mFnCallLog binConf fnConf cliArgs = do
   let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
@@ -1350,7 +1382,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
                     LCS.regValue <$> LCS.callCFG cfg arguments
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak initialMem archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig)) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig)) (ALB.bcUnsuportedRelocations binConf)
+    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak initialMem archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig) mFnCallLog) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig)) (ALB.bcUnsuportedRelocations binConf)
     -- Register any auxiliary functions or forward declarations used in the
     -- startup overrides.
     startupBindings <-
@@ -1431,6 +1463,8 @@ symbolicallyExecute
   -> Maybe FilePath
   -- ^ Path to the symbolic filesystem.  If this is 'Nothing', the file system
   -- will be empty
+  -> Maybe FilePath
+  -- ^ Optional path to the file to log function calls to
   -> ALB.BinaryConfig arch binFmt
   -- ^ Information about the loaded binaries
   -> FunctionConfig arch sym p
@@ -1438,7 +1472,7 @@ symbolicallyExecute
   -> [BS.ByteString]
   -- ^ The user-supplied command-line arguments
   -> m (SymbolicExecutionResult arch sym)
-symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures entryPointAddr initGlobals mFsRoot binConf fnConf cliArgs = do
+symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures entryPointAddr initGlobals mFsRoot mFnCallLog binConf fnConf cliArgs = do
   let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
   initialMem <- initializeMemory bak
                                  halloc
@@ -1448,7 +1482,7 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures e
                                  (AFET.csoNamedOverrides (fcCrucibleSyntaxOverrides fnConf))
                                  (ALB.bcDynamicGlobalVarAddrs binConf)
                                  (ALB.bcSupportedRelocations binConf)
-  (memVar, crucibleExecResult, wmConfig) <- simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot binConf fnConf cliArgs
+  (memVar, crucibleExecResult, wmConfig) <- simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot mFnCallLog binConf fnConf cliArgs
   return $ SymbolicExecutionResult { serMemVar = memVar
                                    , serCrucibleExecResult = crucibleExecResult
                                    , serWMConfig = wmConfig

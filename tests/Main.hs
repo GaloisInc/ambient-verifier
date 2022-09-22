@@ -179,6 +179,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piSolverInteractionFile = Nothing
                                  , AV.piSharedObjectDir = sharedObjectsDir expectedResult
                                  , AV.piLogSymbolicBranches = Nothing
+                                 , AV.piLogFunctionCalls = Nothing
                                  , AV.piCCompiler = "gcc"
                                  }
 

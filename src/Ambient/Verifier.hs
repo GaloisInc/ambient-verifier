@@ -133,6 +133,8 @@ data ProgramInstance =
                   -- ^ Optional directory containing shared objects to verify
                   , piLogSymbolicBranches :: Maybe FilePath
                   -- ^ Log symbolic branches to a given file
+                  , piLogFunctionCalls :: Maybe FilePath
+                  -- ^ Optional location to log function calls to
                   , piCCompiler :: FilePath
                   -- ^ The C compiler to use to preprocess C overrides
                   }
@@ -382,7 +384,7 @@ verify logAction pinst timeoutDuration = do
         , AVS.fcCrucibleSyntaxOverrides = csOverrides
         }
 
-      ambientExecResult <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) binConf fnConf (piCommandLineArguments pinst)
+      ambientExecResult <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) (piLogFunctionCalls pinst) binConf fnConf (piCommandLineArguments pinst)
       let crucibleExecResult = AVS.serCrucibleExecResult ambientExecResult
       badBehavior' <- liftIO $ readIORef badBehavior
 

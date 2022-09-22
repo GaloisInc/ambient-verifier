@@ -315,6 +315,26 @@ data FunctionABI arch sym p =
      -- OverrideSim action with return type matching system return register
      -- type
 
+    -- If the return address for the function being called can be determined,
+    -- then return Just that address. Otherwise, return Nothing. Some ABIs
+    -- store this information directly in a register, while other ABIs store
+    -- this information on the stack, so we provide both registers and the stack
+    -- as arguments.
+  , functionReturnAddr
+      :: forall bak solver scope st fs mem
+       . ( LCB.IsSymBackend sym bak
+         , sym ~ WE.ExprBuilder scope st fs
+         , bak ~ LCBO.OnlineBackend solver scope st fs
+         , WPO.OnlineSolver solver
+         )
+      => bak
+      -> DMS.GenArchVals mem arch
+      -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes arch)
+      -- Registers for the given architecture
+      -> LCLM.MemImpl sym
+      -- The memory state at the time of the function call
+      -> IO (Maybe (DMC.MemWord (DMC.ArchAddrWidth arch)))
+
     -- A mapping of function addresses to overrides. This is utilized for two
     -- purposes:
     --

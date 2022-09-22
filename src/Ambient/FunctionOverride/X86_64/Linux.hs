@@ -17,12 +17,15 @@ module Ambient.FunctionOverride.X86_64.Linux (
 
 import           Control.Monad.IO.Class ( liftIO )
 import           Data.Foldable ( foldl' )
+import qualified Data.BitVector.Sized as BVS
 import qualified Data.List.NonEmpty as NEL
+import qualified Data.Macaw.Memory as DMM
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
 import           Data.Parameterized.Some ( Some(..) )
 import           GHC.TypeNats ( type (<=), KnownNat )
+import qualified Prettyprinter as PP
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
@@ -30,10 +33,17 @@ import qualified Data.Macaw.Types as DMT
 import qualified Data.Macaw.X86 as DMX
 import qualified Data.Macaw.X86.X86Reg as DMXR
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Backend.Online as LCBO
+import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.BaseTypes as WT
+import qualified What4.Expr as WE
 import qualified What4.Interface as WI
+import qualified What4.ProgramLoc as WP
+import qualified What4.Protocol.Online as WPO
 
 import qualified Ambient.Extensions as AE
 import qualified Ambient.Override as AO
@@ -43,6 +53,7 @@ import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.Overrides as AFO
 import qualified Ambient.FunctionOverride.StackArguments as AFS
 import qualified Ambient.FunctionOverride.X86_64.Linux.Specialized as AFXLS
+import qualified Ambient.Verifier.Concretize as AVC
 
 -- | Extract integer arguments from the corresponding six x86_64 registers.
 -- Any additional arguments are read from the stack at @8(%rsp)@, @16(%rsp)@,
@@ -142,6 +153,59 @@ x86_64LinuxIntegerReturnRegisters bak archVals ovTyp ovSim initRegs = do
              regs
              regUpdates
 
+-- | Retrieve the return address for the function being called by looking up
+-- the first argument on the stack.
+x86_64LinuxReturnAddr ::
+  forall bak mem sym solver scope st fs.
+     ( bak ~ LCBO.OnlineBackend solver scope st fs
+     , sym ~ WE.ExprBuilder scope st fs
+     , LCB.IsSymBackend sym bak
+     , WPO.OnlineSolver solver
+     , ?memOpts :: LCLM.MemOptions
+     , LCLM.HasLLVMAnn sym
+     )
+  => bak
+  -> DMS.GenArchVals mem DMX.X86_64
+  -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes DMX.X86_64)
+  -- ^ Registers to extract LR from
+  -> LCLM.MemImpl sym
+  -- ^ The memory state at the time of the function call
+  -> IO (Maybe (DMM.MemWord 64))
+x86_64LinuxReturnAddr bak archVals regs mem = do
+  let ?ptrWidth = WI.knownNat @64
+  addrPtr <- LCLM.doLoad bak mem
+               (LCS.regValue stackPointer)
+               (LCLM.bitvectorType 8)
+               (LCLM.LLVMPointerRepr ?ptrWidth)
+               LCLD.noAlignment
+  res <- AVC.resolveSymBVAs bak WT.knownNat $ LCLMP.llvmPointerOffset addrPtr
+  case res of
+    Left AVC.UnsatInitialAssumptions -> do
+      loc <- WI.getCurrentProgramLoc sym
+      AP.panic AP.FunctionOverride "x86_64LinuxReturnAddr"
+        ["Initial assumptions are unsatisfiable at " ++ show (PP.pretty (WP.plSourceLoc loc))]
+
+    -- This can genuinely happen if a function is invoked as a tail call, so
+    -- which the main reason why this returns a Maybe instead of panicking.
+    Left AVC.MultipleModels ->
+      pure Nothing
+
+    -- I'm unclear if this case can ever happen under normal circumstances, but
+    -- we'll return Nothing here just to be on the safe side.
+    Left AVC.SolverUnknown ->
+      pure Nothing
+
+    Right addrBV ->
+      pure $ Just $ fromIntegral $ BVS.asUnsigned addrBV
+  where
+    sym = LCB.backendGetSym bak
+
+    stackPointer :: LCS.RegEntry sym (LCLM.LLVMPointerType 64)
+    stackPointer = DMS.lookupReg archVals regsEntry DMXR.RSP
+
+    regsEntry :: LCS.RegEntry sym (LCT.StructType (DMS.MacawCrucibleRegTypes DMX.X86_64))
+    regsEntry = LCS.RegEntry (LCT.StructRepr (DMS.crucArchRegTypes (DMS.archFunctions archVals))) regs
+
 x86_64LinuxFunctionABI :: ( LCLM.HasLLVMAnn sym
                           , ?memOpts :: LCLM.MemOptions )
                        => AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
@@ -155,6 +219,7 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals un
                         x86_64LinuxIntegerArguments bak archVals
                     , AF.functionMainArgumentRegisters = (DMXR.RDI, DMXR.RSI)
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
+                    , AF.functionReturnAddr = x86_64LinuxReturnAddr
                     , AF.functionNameMapping =
                       Map.fromListWith (<>)
                                        [ (AF.functionName fo, sfo NEL.:| [])

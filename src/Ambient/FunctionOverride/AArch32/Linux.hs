@@ -16,6 +16,7 @@ module Ambient.FunctionOverride.AArch32.Linux (
 
 import           Control.Lens ( use )
 import           Control.Monad.IO.Class ( liftIO )
+import qualified Data.BitVector.Sized as BVS
 import           Data.Foldable ( foldl' )
 import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map as Map
@@ -23,19 +24,28 @@ import qualified Data.Parameterized.Classes as PC
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
 import           Data.Parameterized.Some ( Some(..) )
+import qualified Prettyprinter as PP
 
 import qualified Data.Macaw.AArch32.Symbolic as DMAS
 import qualified Data.Macaw.ARM as DMA
 import qualified Data.Macaw.ARM.ARMReg as ARMReg
+import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Symbolic as DMS
 import qualified Language.ASL.Globals as ASL
 import qualified Lang.Crucible.Backend as LCB
+import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.CFG.Common as LCCC
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
+import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Types as LCT
+import qualified What4.BaseTypes as WT
+import qualified What4.Expr as WE
+import qualified What4.Interface as WI
+import qualified What4.ProgramLoc as WP
+import qualified What4.Protocol.Online as WPO
 
 import qualified Ambient.Extensions as AE
 import qualified Ambient.FunctionOverride as AF
@@ -44,6 +54,7 @@ import qualified Ambient.FunctionOverride.Overrides as AFO
 import qualified Ambient.FunctionOverride.StackArguments as AFS
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
+import qualified Ambient.Verifier.Concretize as AVC
 
 -- | Integer arguments are passed in the first four registers in ARM. Functions
 -- that require additional arguments are passed on the stack at @[sp, #0]@,
@@ -123,6 +134,50 @@ aarch32LinuxIntegerReturnRegisters bak _archVals ovTy ovSim initRegs =
              regs
              (AF.regUpdates result)
 
+-- | Retrieve the return address for the function being called by looking up
+-- the current value of the link register.
+aarch32LinuxReturnAddr ::
+  forall bak mem sym solver scope st fs.
+     ( bak ~ LCBO.OnlineBackend solver scope st fs
+     , sym ~ WE.ExprBuilder scope st fs
+     , LCB.IsSymBackend sym bak
+     , WPO.OnlineSolver solver
+     )
+  => bak
+  -> DMS.GenArchVals mem DMA.ARM
+  -> Ctx.Assignment (LCS.RegValue' sym) (DMS.MacawCrucibleRegTypes DMA.ARM)
+  -- ^ Registers to extract LR from
+  -> LCLM.MemImpl sym
+  -- ^ The memory state at the time of the function call
+  -> IO (Maybe (DMM.MemWord 32))
+aarch32LinuxReturnAddr bak archVals regs _mem = do
+  let addrSymBV = LCLMP.llvmPointerOffset $ LCS.regValue
+                                          $ DMS.lookupReg archVals regsEntry ARMReg.arm_LR
+  res <- AVC.resolveSymBVAs bak WT.knownNat addrSymBV
+  case res of
+    Left AVC.UnsatInitialAssumptions -> do
+      loc <- WI.getCurrentProgramLoc sym
+      AP.panic AP.FunctionOverride "aarch32LinuxReturnAddr"
+        ["Initial assumptions are unsatisfiable at " ++ show (PP.pretty (WP.plSourceLoc loc))]
+
+    -- This can genuinely happen if a function is invoked as a tail call, so
+    -- which the main reason why this returns a Maybe instead of panicking.
+    Left AVC.MultipleModels ->
+      pure Nothing
+
+    -- I'm unclear if this case can ever happen under normal circumstances, but
+    -- we'll return Nothing here just to be on the safe side.
+    Left AVC.SolverUnknown ->
+      pure Nothing
+
+    Right addrBV ->
+      pure $ Just $ fromIntegral $ BVS.asUnsigned addrBV
+  where
+    sym = LCB.backendGetSym bak
+
+    regsEntry :: LCS.RegEntry sym (LCT.StructType (DMS.MacawCrucibleRegTypes DMA.ARM))
+    regsEntry = LCS.RegEntry (LCT.StructRepr (DMS.crucArchRegTypes (DMS.archFunctions archVals))) regs
+
 -- | Model @__kuser_get_tls@ by returning the value stored in the TLS global
 -- variable. See @Note [AArch32 and TLS]@.
 buildKUserGetTLSOverride ::
@@ -177,6 +232,7 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem ar
                      , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
                      )
                  , AF.functionIntegerReturnRegisters = aarch32LinuxIntegerReturnRegisters
+                 , AF.functionReturnAddr = aarch32LinuxReturnAddr
                  , AF.functionNameMapping =
                     Map.fromListWith (<>)
                                      [ (AF.functionName fo, sfo NEL.:| [])

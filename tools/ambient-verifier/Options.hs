@@ -68,12 +68,14 @@ data VerifyOptions =
                 -- ^ Optional location to write What4 solver debug messages to
                 , functionCFGsFile :: Maybe FilePath
                 -- ^ Optional location to write function CFGs to
+                , logSymbolicBranches :: Maybe FilePath
+                -- ^ Optional file to record symbolic branches to
+                , logFunctionCalls :: Maybe FilePath
+                -- ^ Optional file to record function call information to
                 , sharedObjectDir :: Maybe FilePath
                 -- ^ Directory containing shared objects to verify
                 , metricsFile :: Maybe FilePath
                 -- ^ File to write metrics to
-                , logSymbolicBranches :: Maybe FilePath
-                -- ^ Optional file to record symbolic branches to
                 , cCompiler :: FilePath
                 -- ^ The C compiler to use to preprocess C overrides
                 }
@@ -246,6 +248,14 @@ verifyOptions = VerifyOptions
                                         <> OA.metavar "FILE"
                                         <> OA.help "Log the control-flow graphs of functions that the verifier discovers to FILE"
                                        ))
+           <*> OA.optional (OA.strOption ( OA.long "log-symbolic-branches"
+                                        <> OA.metavar "FILE"
+                                        <> OA.help "Log all symbolic branches that occur to FILE"
+                                       ))
+           <*> OA.optional (OA.strOption ( OA.long "log-function-calls"
+                                        <> OA.metavar "FILE"
+                                        <> OA.help "Log each the name and address of each function call to FILE"
+                                       ))
            <*> OA.optional (OA.strOption ( OA.long "shared-objects"
                                         <> OA.short 'L'
                                         <> OA.metavar "DIRECTORY"
@@ -259,10 +269,6 @@ verifyOptions = VerifyOptions
            <*> OA.optional (OA.strOption ( OA.long "metrics"
                                         <> OA.metavar "FILE"
                                         <> OA.help "File to write metrics to"))
-           <*> OA.optional (OA.strOption ( OA.long "log-symbolic-branches"
-                                        <> OA.metavar "FILE"
-                                        <> OA.help "Log all symbolic branches that occur to FILE"
-                                       ))
            <*> withCCParser
 
 -- | A parser for the \"list-overrides\" subcommand
