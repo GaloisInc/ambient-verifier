@@ -362,6 +362,9 @@ The following overrides can only be invoked from syntax overrides:
 * ``write-c-string :: Pointer -> String Unicode -> Unit`` writes a
   UTF-8–encoded, concrete string to a ``Pointer``, including a null
   terminator.
+* ``print-pointer :: Pointer -> String Unicode`` converts a pointer to a string
+  representation.  This prints the pointer as ``(block, offset)``, or simply
+  ``offset`` if ``block`` is ``0``.
 
 The following overrides can only be invoked from syntax overrides when using
 the ``verify`` command, as they require interfacing with a binary. Attempting

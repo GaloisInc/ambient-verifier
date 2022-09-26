@@ -19,12 +19,15 @@ module Ambient.FunctionOverride.Overrides.CrucibleStrings
   , callReadCString
   , buildWriteCStringOverride
   , callWriteCString
+  , printPointerOverride
+  , callPrintPointer
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
+import qualified Data.Text as DT
 import qualified Data.Text.Encoding as DTE
 import qualified Data.Text.Encoding.Error as DTEE
 
@@ -60,6 +63,7 @@ crucibleStringOverrides ::
 crucibleStringOverrides initialMem unsupportedRelocs =
   [ SomeFunctionOverride (buildReadCStringOverride initialMem unsupportedRelocs)
   , SomeFunctionOverride (buildWriteCStringOverride initialMem)
+  , SomeFunctionOverride printPointerOverride
   ]
 
 buildReadCStringOverride ::
@@ -159,3 +163,26 @@ callWriteCString bak initialMem ptr (LCS.regValue -> str) =
       let bytes = BS.unpack $ DTE.encodeUtf8 txt
       mem' <- AExt.storeString bak mem initialMem ptr bytes
       pure ((), mem')
+
+-- | Override for the @print-pointer@ function.  Renders a pointer as a
+-- crucible string using crucible's 'LCLM.ppPtr' function.
+callPrintPointer
+  :: ( LCB.IsSymInterface sym )
+  => sym
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCT.StringType WI.Unicode))
+callPrintPointer sym (LCS.regValue -> ptr) = do
+  let ptrStr = show $ LCLM.ppPtr ptr
+  liftIO $ WI.stringLit sym $ WI.UnicodeLiteral $ DT.pack ptrStr
+
+printPointerOverride
+  :: ( LCLM.HasPtrWidth w )
+  => FunctionOverride (AExt.AmbientSimulatorState sym arch)
+                      sym
+                      (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w)
+                      arch
+                      (LCT.StringType WI.Unicode)
+printPointerOverride =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "print-pointer" $ \bak args ->
+    Ctx.uncurryAssignment (callPrintPointer (LCB.backendGetSym bak)) args
