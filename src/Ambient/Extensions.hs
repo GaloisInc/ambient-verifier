@@ -114,7 +114,10 @@ ambientExtensions ::
   -> LCSE.ExtensionImpl (AmbientSimulatorState sym arch) sym (DMS.MacawExt arch)
 ambientExtensions bak f initialMem lookupH lookupSyscall unsupportedRelocs =
   (DMS.macawExtensions f (AM.imMemVar initialMem) (AM.imGlobalMap initialMem) lookupH lookupSyscall (AM.imValidityCheck initialMem))
-    { LCSE.extensionExec = execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedRelocs
+    { LCSE.extensionEval = \_sym iTypes logFn cst g ->
+        evalMacawExprExtension bak f initialMem lookupH lookupSyscall iTypes logFn cst g
+    , LCSE.extensionExec =
+        execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedRelocs
     }
 
 -- | This function proceeds in two steps:
@@ -393,6 +396,50 @@ storeString bak memImpl initialMem = go memImpl
         writeMem bak mem initialMem st (DMC.addrWidthRepr ?ptrWidth) writeInfo p ptrByte'
       CMS.put st'
       pure mem'
+
+-- | This evaluates a Macaw expression extension in the simulator.
+--
+-- Currently, this simply uses the default implementation provided by
+-- 'DMS.macawExtensions'. We keep this around in case we want to override
+-- specific 'DMS.MacawExprExtension's (e.g., 'DMS.PtrToBits) for debugging
+-- purposes.
+evalMacawExprExtension ::
+     forall sym scope st fs bak solver arch p w f tp rtp blocks r ctx
+  .  ( LCB.IsSymInterface sym
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , WPO.OnlineSolver solver
+     , LCLM.HasLLVMAnn sym
+     , p ~ AmbientSimulatorState sym arch
+     , ?memOpts :: LCLM.MemOptions
+     , w ~ DMC.ArchAddrWidth arch
+     , DMM.MemWidth w
+     )
+  => bak
+  -> DMS.MacawArchEvalFn (AmbientSimulatorState sym arch) sym LCLM.Mem arch
+  -> AM.InitialMemory sym w
+  -- ^ Initial memory state for symbolic execution
+  -> DMS.LookupFunctionHandle (AmbientSimulatorState sym arch) sym arch
+  -- ^ A function to translate virtual addresses into function handles
+  -- dynamically during symbolic execution
+  -> DMS.LookupSyscallHandle (AmbientSimulatorState sym arch) sym arch
+  -- ^ A function to examine the machine state to determine which system call
+  -- should be invoked; returns the function handle to invoke
+  -> LCS.IntrinsicTypes sym
+  -> (Int -> String -> IO ())
+  -> LCS.CrucibleState p sym (DMS.MacawExt arch) rtp blocks r ctx
+  -> (forall utp . f utp -> IO (LCS.RegValue sym utp))
+  -> DMS.MacawExprExtension arch f tp
+  -> IO (LCS.RegValue sym tp)
+evalMacawExprExtension bak f initialMem lookupH lookupSyscall iTypes logFn cst g e0 =
+  case e0 of
+    _ ->
+      LCSE.extensionEval (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred)
+                         bak iTypes logFn cst g e0
+  where
+    mvar = AM.imMemVar initialMem
+    globs = AM.imGlobalMap initialMem
+    toMemPred = AM.imValidityCheck initialMem
 
 -- | This evaluates a Macaw statement extension in the simulator.
 execAmbientStmtExtension :: forall sym scope st fs bak solver arch p w.
