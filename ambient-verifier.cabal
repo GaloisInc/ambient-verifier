@@ -80,6 +80,8 @@ library
                       Ambient.Memory.AArch32.Linux,
                       Ambient.Memory.X86_64.Linux,
                       Ambient.MonadState,
+                      Ambient.ODSL.EmbeddedData,
+                      Ambient.ODSL.Paths,
                       Ambient.Override,
                       Ambient.Override.List,
                       Ambient.Override.List.Types,
@@ -141,7 +143,8 @@ library
                       vector,
                       multiset,
                       IntervalMap,
-                      split
+                      split,
+                      temporary
 
     hs-source-dirs:   src
     default-language: Haskell2010
