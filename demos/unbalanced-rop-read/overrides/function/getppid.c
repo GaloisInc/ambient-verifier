@@ -4,5 +4,5 @@
 // returns a new symbolic value each time to represent the fact that the parent
 // PID can change at any time.
 pid_t getppid() {
-      return crucible_pid_t();
+      return fresh_pid_t();
 }
