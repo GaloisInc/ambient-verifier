@@ -160,6 +160,7 @@ buildPinstFromVerifyOptions o = do
            , AV.piLogSymbolicBranches = O.logSymbolicBranches o
            , AV.piLogFunctionCalls = O.logFunctionCalls o
            , AV.piCCompiler = O.cCompiler o
+           , AV.piLogObservableEvents = O.logObservableEvents o
            }
 
 -- | This is the real verification driver that takes the parsed out command line

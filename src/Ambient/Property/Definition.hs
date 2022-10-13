@@ -56,8 +56,7 @@ data Transition where
   -- the function address, formatted as @0xNNNNN...@. In the future, we may
   -- wish to make this event finer-grained.
   InvokesFunction :: WF.FunctionName -> Transition
-
-deriving instance Show Transition
+  deriving (Show, Eq, Ord)
 
 -- | The type of a state (final, semi-final, normal)
 data StateType sid = NormalState

@@ -10,6 +10,7 @@ data Component = Extensions
                | FunctionOverride
                | Memory
                | Loader
+               | ObservableEvents
                | Override
                | PropertyParser
                | SymbolicExecution

@@ -72,6 +72,7 @@ import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Loader as AL
 import qualified Ambient.Loader.BinaryConfig as ALB
+import qualified Ambient.ObservableEvents as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Profiler.EmbeddedData as APE
 import qualified Ambient.Property.Definition as APD
@@ -137,6 +138,9 @@ data ProgramInstance =
                   -- ^ Optional location to log function calls to
                   , piCCompiler :: FilePath
                   -- ^ The C compiler to use to preprocess C overrides
+                  , piLogObservableEvents :: Maybe FilePath
+                  -- ^ Optional file to write observable events occurring after
+                  -- weird machine entry to.
                   }
 
 -- | A set of metrics from a verification run
@@ -209,6 +213,118 @@ getPersonality execResult =
     LCS.FinishedResult ctx _ -> return $ ctx ^. LCS.cruciblePersonality
     LCS.AbortedResult ctx _ -> return $ ctx ^. LCS.cruciblePersonality
     LCS.TimeoutResult{} -> X.throwIO AE.ExecutionTimeout
+
+-- | The result of observable event trace processing.
+data ProcessedObsEventTrace =
+    HasWM (Set.Set AO.ObservableEvent)
+ -- ^ Some trace(s) contained a weird machine.  The Set contains only events in
+ -- that trace (or traces) that contained a weird machine.
+  | NoWM (Set.Set AO.ObservableEvent)
+ -- ^ No traces contained a weird machine.  The Set contains all events from
+ -- all traces.
+
+-- | Reason about the observable event trace to extract only the events that
+-- occurred after weird machine entry.  This function writes the event trace
+-- out to a JSON file.
+processObservableEvents :: forall arch sym
+                         . ( WI.IsExprBuilder sym )
+                        => sym
+                        -> AVS.SymbolicExecutionResult arch sym
+                        -- ^ Result from symbolic execution
+                        -> FilePath
+                        -- ^ File to write event trace to
+                        -> IO ()
+processObservableEvents sym execResult path = do
+  obsEvtTrace <- getFinalGlobal sym
+                                (LCSS.muxSymSequence sym)
+                                (AVS.serObservableEventGlob execResult)
+                                (AVS.serCrucibleExecResult execResult)
+  evts <- processTrace obsEvtTrace Set.empty
+  DA.encodeFile path (Set.toList (fromHasWM evts))
+  where
+    -- | If passed a 'HasWM', this function returns the set within.  Otherwise
+    -- it returns an emtpy set.
+    fromHasWM :: ProcessedObsEventTrace -> Set.Set AO.ObservableEvent
+    fromHasWM processedTrace =
+      case processedTrace of
+        HasWM s -> s
+        NoWM _ -> Set.empty
+
+    -- | Recursively process the event trace into a set of observable events
+    -- occurring since weird machine entry. Returns a 'ProcessedObsEventTrace'
+    -- where 'HasWM' indicates some trace contained a weird machine entry (and
+    -- therefore the returned Set is valid), and 'NoWM' indicates that no trace
+    -- contained a weird machine.  The function uses the Set built up in the
+    -- 'NoWM' case to properly handle recursive traversals over the input
+    -- sequence, but other callers of this function should discard this set.
+    processTrace :: LCSS.SymSequence sym (WI.SymInteger sym)
+                 -- ^ Trace to process
+                 -> Set.Set AO.ObservableEvent
+                 -- ^ Set of events seen so far
+                 -> IO ProcessedObsEventTrace
+    processTrace t seen =
+      case t of
+        LCSS.SymSequenceNil -> do
+          -- No WM in this branch
+          return $ NoWM seen
+        LCSS.SymSequenceCons _ h t' -> do
+          let evt = idToEvent h
+          case (AO.oeEvent evt) of
+            APD.EnterWeirdMachine _ -> do
+              -- Done! We were in a WM!  Blank out the parent field as this is
+              -- now the parent of the entire trace.
+              let evt' = evt { AO.oeParents = [] }
+              return $ HasWM $ Set.insert evt' seen
+            _ ->
+              -- Keep processing
+              processTrace t' (Set.insert evt seen)
+        LCSS.SymSequenceAppend _ l r -> do
+          eSeen' <- processTrace l seen
+          case eSeen' of
+            HasWM seen' ->
+              -- The left side of the append contained the weird machine entry
+              -- point.  No need to keep searching
+              return $ HasWM $ seen'
+            NoWM seen' ->
+              -- The left side of the append did not contain the weird machine
+              -- entry point.  Continue searching down the right hand side
+              processTrace r seen'
+        LCSS.SymSequenceMerge _ _ l r -> do
+          -- Process both branches
+          elSeen' <- processTrace l seen
+          erSeen' <- processTrace r seen
+          case (elSeen', erSeen') of
+            (HasWM lSeen', HasWM rSeen') ->
+              -- Both sides contained weird machines
+              return $ HasWM $ Set.union lSeen' rSeen'
+            (HasWM lSeen', NoWM _) ->
+              -- Only the left branch contained a weird machine
+              return $ HasWM lSeen'
+            (NoWM _, HasWM rSeen') ->
+              -- Only the right branch contained a weird machine
+              return $ HasWM rSeen'
+            (NoWM lSeen', NoWM rSeen') ->
+              -- Neither side contained a weird machine
+              return $ NoWM $ Set.union lSeen' rSeen'
+
+    -- | Extract the event corresponding to an ID.
+    idToEvent :: WI.SymInteger sym -> AO.ObservableEvent
+    idToEvent symEvtId =
+      case WI.asInteger symEvtId of
+        Just evtId ->
+          let mEvt = Map.lookup (fromInteger evtId)
+                                (AVS.serObservableEventMap execResult) in
+          case mEvt of
+            Just evt -> evt
+            Nothing -> AP.panic AP.Verifier
+                                "processObservableEvents"
+                                ["No event corresponds to id " ++ (show evtId)]
+        Nothing ->
+          -- This shouldn't be possible because we only insert concrete
+          -- integers into the sequence.
+          AP.panic AP.Verifier
+                   "processObservableEvents"
+                   ["Encountered symbolic event ID"]
 
 -- | Extract the trace and assert that the last state is an accept state (along all branches)
 --
@@ -400,6 +516,12 @@ verify logAction pinst timeoutDuration = do
       -- symbolic execution/path sat checking. This is not required, and we
       -- could easily support allowing the user to choose two different solvers.
       metricProofStats <- AVP.proveObligations logAction bak (AS.offlineSolver (piSolver pinst)) timeoutDuration badBehavior'
+
+      liftIO $
+        F.traverse_ (\path -> processObservableEvents sym
+                                                      ambientExecResult
+                                                      path)
+                    (piLogObservableEvents pinst)
 
       crucMetrics <- liftIO $ LCSProf.readMetrics profTab
       _ <- liftIO $ mapM CCA.cancel (fmap snd profFeature)

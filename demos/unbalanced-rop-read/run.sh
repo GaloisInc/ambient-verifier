@@ -15,6 +15,13 @@ cabal run ambient-verifier:ambient-verifier -- \
   --overrides "overrides" \
   --metrics "metrics.json" \
   --fsroot "fs" \
-  --statechart "rop-unbal-read.exe.yaml"
+  --statechart "rop-unbal-read.exe.yaml" \
+  --log-observable-events "events.json"
 
+echo
+echo "metrics:"
 $CAT "metrics.json"
+
+echo
+echo "observable events:"
+$CAT "events.json"

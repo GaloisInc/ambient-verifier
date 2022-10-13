@@ -181,6 +181,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piLogSymbolicBranches = Nothing
                                  , AV.piLogFunctionCalls = Nothing
                                  , AV.piCCompiler = "gcc"
+                                 , AV.piLogObservableEvents = Nothing
                                  }
 
   chan <- CC.newChan

@@ -80,6 +80,7 @@ library
                       Ambient.Memory.AArch32.Linux,
                       Ambient.Memory.X86_64.Linux,
                       Ambient.MonadState,
+                      Ambient.ObservableEvents,
                       Ambient.ODSL.EmbeddedData,
                       Ambient.ODSL.Paths,
                       Ambient.Override,

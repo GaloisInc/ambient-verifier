@@ -78,6 +78,9 @@ data VerifyOptions =
                 -- ^ File to write metrics to
                 , cCompiler :: FilePath
                 -- ^ The C compiler to use to preprocess C overrides
+                , logObservableEvents :: Maybe FilePath
+                -- ^ Optional file to log observable events occurring after
+                -- a weird machine entry.
                 }
   deriving ( Show )
 
@@ -270,6 +273,10 @@ verifyOptions = VerifyOptions
                                         <> OA.metavar "FILE"
                                         <> OA.help "File to write metrics to"))
            <*> withCCParser
+           <*> OA.optional (OA.strOption ( OA.long "log-observable-events"
+                                        <> OA.metavar "FILE"
+                                        <> OA.help "Log observable events occurring after a weird machine entry to FILE"
+                                       ))
 
 -- | A parser for the \"list-overrides\" subcommand
 listOverridesParser :: OA.Parser Command

@@ -43,6 +43,7 @@ import qualified Lang.Crucible.Types as LCT
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.EventTrace as AE
 import qualified Ambient.Extensions as AExt
+import qualified Ambient.ObservableEvents as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
@@ -173,8 +174,10 @@ handleControlTransfer
   -- ^ The current simulator state (to be passed to the 'WMMCallback' if a Weird Machine is entered)
   -> LCS.ExecState p sym ext rtp
   -- ^ The current execution state
+  -> AO.ObservableEventConfig sym
+  -- ^ Configuration to use for observable event tracing
   -> IO (LCSEv.ExecutionFeatureResult p sym ext rtp)
-handleControlTransfer logAction adapter archVals props (WMMCallback action) regState st estate
+handleControlTransfer logAction adapter archVals props (WMMCallback action) regState st estate oec
   | Just PC.Refl <- PC.testEquality regsRepr (LCS.regType regState) = do
       case LCS.regValue (DMS.lookupReg archVals regState DMC.ip_reg) of
         LCLM.LLVMPointer _region ipVal -> do
@@ -247,13 +250,20 @@ handleControlTransfer logAction adapter archVals props (WMMCallback action) regS
           case sr of
             WSR.Unsat {} -> do
               LJ.writeLog logAction (AD.ExecutingWeirdMachineAt wmEntry)
-              let globs = st ^. LCSE.stateGlobals
+              let globs0 = st ^. LCSE.stateGlobals
+
+              -- Record WM entry in observable event trace
+              oeTrace <- lookupGlobal (AO.oecGlobal oec) globs0
+              let AO.RecordObservableEvent oecRecordFn = AO.oecRecordFn oec
+              oeTrace' <- oecRecordFn sym (APD.EnterWeirdMachine (fromInteger wmEntry)) cond oeTrace
+              let globs1 = LCSG.insertGlobal (AO.oecGlobal oec) oeTrace' globs0
+
               let pleatM seed xs f = F.foldlM f seed xs
-              globs' <- pleatM globs (AE.properties props) $ \theseGlobals (prop, eventTraceGlob) -> do
+              globs2 <- pleatM globs1 (AE.properties props) $ \theseGlobals (prop, eventTraceGlob) -> do
                 currentTrace <- lookupGlobal eventTraceGlob theseGlobals
                 nextTrace <- AE.recordEvent (matchWeirdEntry wmEntry) sym prop currentTrace
                 return (LCSG.insertGlobal eventTraceGlob nextTrace theseGlobals)
-              let st' = set LCSE.stateGlobals globs' st
+              let st' = set LCSE.stateGlobals globs2 st
               -- FIXME: The action probably needs to return an updated state, as
               -- it will have continued execution on its own
               result <- action wmEntry st'
@@ -290,8 +300,10 @@ wmmFeature
   -- ^ An action to run when a Weird Machine is recognized
   -> AE.Properties
   -- ^ The properties to verify, along with the globals capturing their symbolic traces
+  -> AO.ObservableEventConfig sym
+  -- ^ Configuration to use for observable event tracing
   -> LCSEv.ExecutionFeature p sym ext rtp
-wmmFeature logAction solver archVals action props = LCSEv.ExecutionFeature $ \estate ->
+wmmFeature logAction solver archVals action props oec = LCSEv.ExecutionFeature $ \estate ->
   case estate of
     LCSE.ResultState {} -> return LCSEv.ExecutionFeatureNoChange
     LCSE.AbortState {} -> return LCSEv.ExecutionFeatureNoChange
@@ -304,16 +316,16 @@ wmmFeature logAction solver archVals action props = LCSEv.ExecutionFeature $ \es
     LCSE.InitialState {} -> return LCSEv.ExecutionFeatureNoChange
     LCSE.CallState _ (LCSE.CrucibleCall _ cf) st ->
       case LCS.regMap (cf ^. LCSC.frameRegs) of
-        Ctx.Empty Ctx.:> regs -> handleControlTransfer logAction (AS.offlineSolver solver) archVals props action regs st estate
+        Ctx.Empty Ctx.:> regs -> handleControlTransfer logAction (AS.offlineSolver solver) archVals props action regs st estate oec
         _ -> return LCSEv.ExecutionFeatureNoChange
     LCSE.CallState _ _ _ -> return LCSEv.ExecutionFeatureNoChange
     LCSE.TailCallState _ (LCSE.CrucibleCall _ cf) st ->
       case LCS.regMap (cf ^. LCSC.frameRegs) of
-        Ctx.Empty Ctx.:> regs -> handleControlTransfer logAction (AS.offlineSolver solver) archVals props action regs st estate
+        Ctx.Empty Ctx.:> regs -> handleControlTransfer logAction (AS.offlineSolver solver) archVals props action regs st estate oec
         _ -> return LCSEv.ExecutionFeatureNoChange
     LCSE.TailCallState _ _ _ -> return LCSEv.ExecutionFeatureNoChange
     LCSE.ReturnState _ _ retRegEntry st ->
-      handleControlTransfer logAction (AS.offlineSolver solver) archVals props action retRegEntry st estate
+      handleControlTransfer logAction (AS.offlineSolver solver) archVals props action retRegEntry st estate oec
 
 
 {- Note [IP Matching]

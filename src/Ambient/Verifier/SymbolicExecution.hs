@@ -29,6 +29,7 @@ import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
 import qualified Data.Foldable as F
 import qualified Data.IntMap as IM
+import           Data.IORef ( readIORef )
 import qualified Data.List as List
 import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
@@ -75,6 +76,7 @@ import qualified Lang.Crucible.Simulator.EvalStmt as LCSEv
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Simulator.OverrideSim as LCSO
+import qualified Lang.Crucible.Simulator.SymSequence as LCSS
 import qualified Lang.Crucible.SymIO as LCSy
 import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
@@ -101,6 +103,7 @@ import qualified Ambient.Loader.LoadOptions as ALL
 import qualified Ambient.Loader.Relocations as ALR
 import qualified Ambient.Loader.Versioning as ALV
 import qualified Ambient.Memory as AM
+import qualified Ambient.ObservableEvents as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
@@ -127,6 +130,10 @@ data SymbolicExecutionResult arch sym = SymbolicExecutionResult
  -- ^ Crucible execution result
   , serWMConfig :: AVW.WMConfig
  -- ^ Configuration used in weird machine monitor
+  , serObservableEventGlob :: LCS.GlobalVar AO.ObservableEventTraceType
+ -- ^ Global variable holding the observable event trace
+  , serObservableEventMap :: Map.Map Int AO.ObservableEvent
+ -- ^ Mapping from observable event IDs to events
   }
 
 
@@ -237,8 +244,10 @@ lookupFunction :: forall sym bak arch binFmt p ext w scope solver st fs args ret
    -- ^ The properties to be checked, along with their corresponding global traces
    -> Maybe FilePath
    -- ^ Optional path to the file to log function calls to
+   -> AO.ObservableEventConfig sym
+   -- ^ Configuration to use for observable event tracing
    -> DMS.LookupFunctionHandle p sym arch
-lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo props mFnCallLog =
+lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo props mFnCallLog oec =
   DMS.LookupFunctionHandle $ \state0 _mem regs -> do
     -- Extract instruction pointer value and look the address up in
     -- 'addressToFnHandle'
@@ -247,7 +256,7 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
 
     -- Record function event and emit a diagnostic
     let hdlName = LCF.handleName hdl
-    state2 <- recordFunctionEvent sym hdlName props state1
+    state2 <- recordFunctionEvent bak hdlName props oec state1
     mbReturnAddr <-
       -- Checking the return address requires consulting an SMT solver, and the
       -- time it takes to do this could add up. We only care about this
@@ -263,8 +272,6 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
     pure (hdl, state2)
 
   where
-    sym = LCB.backendGetSym bak
-
     symArchFns :: DMS.MacawSymbolicArchFunctions arch
     symArchFns = DMS.archFunctions archVals
 
@@ -548,14 +555,15 @@ lookupFunction logAction bak initialMem archVals binConf abi hdlAlloc archInfo p
 
 -- | Record a syscall transition
 recordSyscallEvent ::
-  forall p sym ext rtp blocks r ctx.
-  WI.IsExprBuilder sym =>
-  sym ->
+  forall p sym ext rtp blocks r ctx bak.
+  LCB.IsSymBackend sym bak =>
+  bak ->
   DT.Text ->
   AET.Properties ->
+  AO.ObservableEventConfig sym ->
   LCS.CrucibleState p sym ext rtp blocks r ctx ->
   IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
-recordSyscallEvent sym syscallName = recordEvent (matchSyscallEvent syscallName) sym
+recordSyscallEvent bak syscallName = recordEvent (matchSyscallEvent syscallName) bak (APD.IssuesSyscall syscallName)
   where
     -- | Returns 'True' if the transition is for the named system call
     matchSyscallEvent :: DT.Text -> APD.Transition -> Bool
@@ -566,14 +574,15 @@ recordSyscallEvent sym syscallName = recordEvent (matchSyscallEvent syscallName)
 
 -- | Record a function property transition.
 recordFunctionEvent ::
-  forall p sym ext rtp blocks r ctx.
-  WI.IsExprBuilder sym =>
-  sym ->
+  forall p sym ext rtp blocks r ctx bak.
+  LCB.IsSymBackend sym bak =>
+  bak ->
   WF.FunctionName ->
   AET.Properties ->
+  AO.ObservableEventConfig sym ->
   LCS.CrucibleState p sym ext rtp blocks r ctx ->
   IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
-recordFunctionEvent sym fnName = recordEvent (matchFunctionEvent fnName) sym
+recordFunctionEvent bak fnName = recordEvent (matchFunctionEvent fnName) bak (APD.InvokesFunction fnName)
   where
     matchFunctionEvent :: WF.FunctionName -> APD.Transition -> Bool
     matchFunctionEvent expected t =
@@ -583,20 +592,29 @@ recordFunctionEvent sym fnName = recordEvent (matchFunctionEvent fnName) sym
 
 -- | Record a transition
 recordEvent ::
-  forall p sym ext rtp blocks r ctx.
-  WI.IsExprBuilder sym =>
+  forall p sym ext rtp blocks r ctx bak.
+  LCB.IsSymBackend sym bak =>
   (APD.Transition -> Bool) ->
-  sym ->
+  bak ->
+  APD.Transition ->
   AET.Properties ->
+  AO.ObservableEventConfig sym ->
   LCS.CrucibleState p sym ext rtp blocks r ctx ->
   IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
-recordEvent event sym props state = do
-  F.foldlM (\state' (prop, traceGlobal) ->
-             do let t0 = readGlobal traceGlobal state'
+recordEvent event bak t props oec state = do
+  let oeseq = readGlobal (AO.oecGlobal oec) state
+  let AO.RecordObservableEvent oecRecord = AO.oecRecordFn oec
+  cond <- LCB.getPathCondition bak
+  oeseq' <- oecRecord sym t cond oeseq
+  let state' = writeGlobal (AO.oecGlobal oec) oeseq' state
+  F.foldlM (\state'' (prop, traceGlobal) ->
+             do let t0 = readGlobal traceGlobal state''
                 t1 <- AET.recordEvent event sym prop t0
-                pure $ writeGlobal traceGlobal t1 state')
-           state (AET.properties props)
+                pure $ writeGlobal traceGlobal t1 state'')
+           state' (AET.properties props)
   where
+    sym = LCB.backendGetSym bak
+
     readGlobal ::
       forall tp.
       LCS.GlobalVar tp ->
@@ -759,8 +777,9 @@ lookupSyscall
   -- ^ System call ABI specification for 'arch'
   -> LCF.HandleAllocator
   -> AET.Properties
+  -> AO.ObservableEventConfig sym
   -> DMS.LookupSyscallHandle p sym arch
-lookupSyscall bak abi hdlAlloc props =
+lookupSyscall bak abi hdlAlloc props oec =
   DMS.LookupSyscallHandle $ \(atps :: LCT.CtxRepr atps) (rtps :: LCT.CtxRepr rtps) state0 reg -> do
     -- Extract system call number from register state
     syscallReg <- liftIO $ ASy.syscallNumberRegister abi bak atps reg
@@ -777,10 +796,9 @@ lookupSyscall bak abi hdlAlloc props =
     (hndl, state1) <- lazilyRegisterHandle state0 atps rtps syscallNum syscallName
 
     -- Record syscall event
-    state2 <- liftIO $ recordSyscallEvent sym syscallName props state1
+    state2 <- liftIO $ recordSyscallEvent bak syscallName props oec state1
     pure (hndl, state2)
   where
-    sym = LCB.backendGetSym bak
     -- This function abstracts over a common pattern when dealing with lazily
     -- registering overrides (see Note [Lazily registering overrides] in
     -- A.Extensions):
@@ -1310,10 +1328,7 @@ simulateFunction
   -- ^ Configuration parameters concerning functions and overrides
   -> [BS.ByteString]
   -- ^ The user-supplied command-line arguments
-  -> m ( LCS.GlobalVar LCLM.Mem
-       , LCS.ExecResult p sym ext (LCS.RegEntry sym (DMS.ArchRegStruct arch))
-       , AVW.WMConfig
-       )
+  -> m (SymbolicExecutionResult arch sym)
 simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot mFnCallLog binConf fnConf cliArgs = do
   let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
@@ -1380,9 +1395,18 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
                                 (AFET.csoStartupOverrides csOverrides)
                     -- ...and finally, run the entrypoint function.
                     LCS.regValue <$> LCS.callCFG cfg arguments
+  obsEventGlob <- liftIO $
+    LCCC.freshGlobalVar halloc
+                        (DT.pack "AMBIENT_ObservableEventTrace")
+                        AO.observableEventTraceRepr
+  emptyTrace <- liftIO $ LCSS.nilSymSequence sym
+  let globals3 = LCSG.insertGlobal obsEventGlob emptyTrace globals2
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak initialMem archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig) mFnCallLog) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig)) (ALB.bcUnsuportedRelocations binConf)
+
+    (obsEventMapRef, recordObsEventFn) <- liftIO $ AO.buildRecordObservableEvent
+    let oec = AO.ObservableEventConfig obsEventGlob recordObsEventFn
+    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (lookupFunction logAction bak initialMem archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig) mFnCallLog oec) (lookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig) oec) (ALB.bcUnsuportedRelocations binConf)
     -- Register any auxiliary functions or forward declarations used in the
     -- startup overrides.
     startupBindings <-
@@ -1392,7 +1416,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
                LCF.emptyHandleMap
                (AFET.csoStartupOverrides csOverrides)
     -- Also register the entry point function, as we will not be able to start
-    -- simulation witout it.
+    -- simulation without it.
     let bindings = LCF.insertHandleMap (LCCC.cfgHandle cfg)
                                        (LCS.UseCFG cfg (LCAP.postdomInfo cfg))
                                        startupBindings
@@ -1403,16 +1427,21 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
     let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings bindings) extImpl ambientSimState
-    let s0 = LCS.InitialState ctx globals2 LCS.defaultAbortHandler regsRepr simAction
+    let s0 = LCS.InitialState ctx globals3 LCS.defaultAbortHandler regsRepr simAction
 
     let wmCallback = secWMMCallback seConf
     let wmSolver = secSolver seConf
-    let wmm = AVW.wmmFeature logAction wmSolver archVals wmCallback (AVW.wmProperties wmConfig)
+    let wmm = AVW.wmmFeature logAction wmSolver archVals wmCallback (AVW.wmProperties wmConfig) oec
     let sbsRecorder = sbsFeature logAction
     let executionFeatures = wmm : [sbsRecorder | secLogBranches seConf] ++ fmap LCS.genericToExecutionFeature execFeatures
 
     res <- liftIO $ LCS.executeCrucible executionFeatures s0
-    return (AM.imMemVar initialMem, res, wmConfig)
+    obsEventMap <- liftIO $ readIORef obsEventMapRef
+    return $ SymbolicExecutionResult (AM.imMemVar initialMem)
+                                     res
+                                     wmConfig
+                                     obsEventGlob
+                                     obsEventMap
   where
     -- Syntax overrides cannot make use of variadic arguments, so if this
     -- callback is ever used, something has gone awry.
@@ -1482,8 +1511,4 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures e
                                  (AFET.csoNamedOverrides (fcCrucibleSyntaxOverrides fnConf))
                                  (ALB.bcDynamicGlobalVarAddrs binConf)
                                  (ALB.bcSupportedRelocations binConf)
-  (memVar, crucibleExecResult, wmConfig) <- simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot mFnCallLog binConf fnConf cliArgs
-  return $ SymbolicExecutionResult { serMemVar = memVar
-                                   , serCrucibleExecResult = crucibleExecResult
-                                   , serWMConfig = wmConfig
-                                   }
+  simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot mFnCallLog binConf fnConf cliArgs
