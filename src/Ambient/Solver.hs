@@ -33,6 +33,7 @@ import qualified Ambient.Exception as AE
 -- discharging individual verification conditions
 data Solver = Boolector
             | CVC4
+            | CVC5
             | Yices
             | Z3
             deriving (Read, Show, Eq, Ord)
@@ -59,6 +60,7 @@ offlineSolver s =
   case s of
     Boolector -> WS.boolectorAdapter
     CVC4 -> WS.cvc4Adapter
+    CVC5 -> WS.cvc5Adapter
     Yices -> WS.yicesAdapter
     Z3 -> WS.z3Adapter
 
@@ -98,6 +100,14 @@ withOnlineSolver solver fm ng k =
                 LCBO.withCVC4OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
         UF   -> withSym WE.FloatUninterpretedRepr $ \sym ->
                 LCBO.withCVC4OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
+    CVC5 ->
+      case fm of
+        IEEE -> withSym WE.FloatIEEERepr $ \sym ->
+                LCBO.withCVC5OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
+        Real -> withSym WE.FloatRealRepr $ \sym ->
+                LCBO.withCVC5OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
+        UF   -> withSym WE.FloatUninterpretedRepr $ \sym ->
+                LCBO.withCVC5OnlineBackend sym LCBO.NoUnsatFeatures WP.noFeatures k
     Yices ->
       case fm of
         IEEE -> CMC.throwM (AE.UnsupportedSolverCombination (show solver) (show fm))

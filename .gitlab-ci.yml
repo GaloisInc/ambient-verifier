@@ -73,7 +73,7 @@ ambient-verifier:
     - rm -f submods-to-source-repos.xz
     - chmod a+x submods-to-source-repos
   script:
-    - RUNNER_OS=Linux SOLVER_PKG_VERSION="snapshot-20220131" BUILD_TARGET_OS="ubuntu-20.04" .gitlab-ci/solvers.sh install_system_deps
+    - RUNNER_OS=Linux SOLVER_PKG_VERSION="snapshot-20220902" BUILD_TARGET_OS="ubuntu-20.04" .gitlab-ci/solvers.sh install_system_deps
     - yices --version
     - ghcup install ghc --platform x86_64-deb8-linux $GHCVER --verbose
     - ./submods-to-source-repos cabal.project.dist > cabal.project

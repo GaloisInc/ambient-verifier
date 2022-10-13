@@ -27,11 +27,12 @@ ENV LC_ALL en_US.UTF-8
 
 RUN mkdir -p /home/solvers
 WORKDIR /home/solvers
-RUN curl -o solvers.zip -sL "https://github.com/GaloisInc/what4-solvers/releases/download/snapshot-20210917/ubuntu-18.04-bin.zip"
+RUN curl -o solvers.zip -sL "https://github.com/GaloisInc/what4-solvers/releases/download/snapshot-20220902/ubuntu-20.04-bin.zip"
 RUN unzip solvers.zip && \
     rm solvers.zip && \
     chmod +x * && \
     cp cvc4 /usr/local/bin/cvc4 && \
+    cp cvc5 /usr/local/bin/cvc5 && \
     cp z3 /usr/local/bin/z3 && \
     cp yices /usr/local/bin/yices && \
     cp yices-smt2 /usr/local/bin/yices-smt2
@@ -61,6 +62,7 @@ RUN apt update && \
 COPY --from=0 /usr/local/bin/ambient-verifier \
               /usr/local/bin/ambient-tests \
               /usr/local/bin/cvc4 \
+              /usr/local/bin/cvc5 \
               /usr/local/bin/z3 \
               /usr/local/bin/yices \
               /usr/local/bin/yices-smt2 \
