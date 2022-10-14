@@ -433,10 +433,27 @@ evalMacawExprExtension ::
   -> IO (LCS.RegValue sym tp)
 evalMacawExprExtension bak f initialMem lookupH lookupSyscall iTypes logFn cst g e0 =
   case e0 of
+    DMS.PtrToBits xw xv -> do
+      x <- g xv
+      let defaultBehavior = DMSMO.doPtrToBits sym x
+      -- If the pointer argument has a special region number, then don't bother
+      -- checking if the region is equal to zero.
+      -- See Note [Special pointer region numbers].
+      -- Note that a special pointer must be as wide as the architecture width,
+      -- which is why it is admissable to use testEquality like it is used
+      -- below.
+      case WI.testEquality (DMC.memWidthNatRepr @w) xw of
+        Just WI.Refl -> do
+          xSpecial <- hasSpecialPointerRegion sym initialMem x
+          if xSpecial
+            then pure $ LCLMP.llvmPointerOffset x
+            else defaultBehavior
+        Nothing -> defaultBehavior
     _ ->
       LCSE.extensionEval (DMS.macawExtensions f mvar globs lookupH lookupSyscall toMemPred)
                          bak iTypes logFn cst g e0
   where
+    sym = LCB.backendGetSym bak
     mvar = AM.imMemVar initialMem
     globs = AM.imGlobalMap initialMem
     toMemPred = AM.imValidityCheck initialMem
@@ -517,6 +534,19 @@ execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedReloc
         Nothing -> return ()
       mem1 <- DMSMO.doCondWriteMem bak memImpl addrWidth memRep (LCS.regValue cond) ptr1 (LCS.regValue v)
       pure ((), DMSMO.setMem st1 mvar mem1)
+    DMS.PtrEq w xEntry yEntry -> do
+      let x = LCS.regValue xEntry
+      let y = LCS.regValue yEntry
+      xSpecial <- hasSpecialPointerRegion sym initialMem x
+      ySpecial <- hasSpecialPointerRegion sym initialMem y
+      -- If one of the pointers has a special region number, then don't bother
+      -- checking the region numbers for equality.
+      -- See Note [Special pointer region numbers].
+      if xSpecial || ySpecial
+        then do eq <- WI.bvEq sym (LCLMP.llvmPointerOffset x)
+                                  (LCLMP.llvmPointerOffset y)
+                pure (eq, st)
+        else DMSMO.doPtrEq st mvar w xEntry yEntry
     _ ->
       let lookupFnH = fromMaybe lookupH ( st
                                        ^. LCS.stateContext
@@ -529,6 +559,22 @@ execAmbientStmtExtension bak f initialMem lookupH lookupSyscall unsupportedReloc
     globs = AM.imGlobalMap initialMem
     toMemPred = AM.imValidityCheck initialMem
     mpt = AM.imMemPtrTable initialMem
+
+-- | Check if a pointer has a special region number. Currently, the only such
+-- special region number is that of the stack pointer.
+-- See Note [Special pointer region numbers].
+hasSpecialPointerRegion ::
+     LCB.IsSymInterface sym
+  => sym
+  -> AM.InitialMemory sym w
+  -> LCLM.LLVMPtr sym w
+  -> IO Bool
+hasSpecialPointerRegion sym initialMem ptr = do
+  eq <- WI.natEq sym (LCLMP.llvmPointerBlock (AM.imStackBasePtr initialMem))
+                     (LCLMP.llvmPointerBlock ptr)
+  case WI.asConstantPred eq of
+    Just b  -> pure b
+    Nothing -> pure False
 
 -- Update the metrics tracking the total number of reads and number of
 -- symbolic reads
@@ -1154,4 +1200,115 @@ verifier:
   stored in the discoveredFunctionHandles field of AmbientSimulatorState. That
   way, subsequent lookups of the function need not re-perform code discovery.
   This is very much in the same vein as Note [Lazily registering overrides].
+
+Note [Special pointer region numbers]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The verifier's currently has an extremely simplistic view of dynamically
+allocated memory: every call to malloc creates a unique region number that is
+separate from every other call to malloc. Moreover, malloc will always return
+a non-zero region number, as the region 0 is reserved for raw bitvector values.
+Comparing pointers with different region numbers, therefore, is usually a sign
+that something is amiss, and macaw will treat these situations as undefined
+behavior. (See, for instance, `doPtrEq` in `macaw-symbolic`.)
+
+This approach is extremely simplistic, but it usually works quite well in
+practice. Unfortunately, there are some corner cases where this breaks down.
+In particular, there is code in the wild that attempts to compare the addresses
+of different pointers. To illustrate the difficulty, we will use the following
+C program example that iterates over a stack-allocated array (this will take a
+bit of exposition, so bear with me):
+
+  int arr[ARR_LEN];
+  for (int i = 0; i < ARR_LEN; i++) {
+    arr[i] = 0;
+  }
+
+An optimizing compiler can optimize away the intermediate `i` index value by
+instead traversing the stack. Here is what that may look like as AArch32
+psuedo-assembly, where `r1` is the address to the top of the stack and `r2`
+is an address somewhere between `sp` (the stack pointer) and `r1`:
+
+  0x0: str     #0, [r2, #4]!
+  0x4: cmp     r1, r2
+  0x8: bne     0x0
+
+Here is what happens in these three lines:
+
+0x0: Write `0x0` to the memory that `r2` points to, then increment `r2`'s
+     address by 4.
+0x4: Compare the addresses of `r1` and `r2`. The full semantics of the `cmp`
+     instruction are too complicated to describe here, but one key step is
+     that a value derived from `r1` and `r2` will be compared to `0x0`. If
+     they are equal, the Z condition flag will be set. Otherwise, Z will
+     not be set.
+0x8: If the Z condition flag is not set, then go back to address 0x0.
+     Otherwise, proceed.
+
+This works because the compiler knows what part of the stack is dedicated to
+storing `arr`'s elements, so the assembly iterates over the relevant stack
+addresses rather than incrementing an intermediate variable. The loop will
+end when `r1` and `r2` contain the same address, which will cause the Z
+condition flag to be set.
+
+OK, what does any of this have to do with allocation region numbers in the
+verifier? Recall that raw bitvectors always have a region number of 0, whereas
+malloc'd memory always has a non-zero region number. This is dire for the
+example above, since `r1` and `r2` are both derived from `sp`. The verifier
+backs the memory in the stack pointer with a chunk of malloc'd memory, which
+means that `sp` (and any pointer resulting from arithmetic on `sp`) will have
+a non-zero region number. As a result, the verifier will always claim that
+`r1`/`r2` are not equal to 0x0, as they always have different region numbers.
+This means that the Z flag will never be set, which will cause this loop to
+never terminate. Ack!
+
+The issue ultimately lies in the fact that the verifier's treatment of
+dynamically allocated memory is not very well equipped to handle pointer
+comparisons in general. The simplistic approach of giving every piece of
+malloc'd memory a unique region number is good for catching undefined behavior,
+but it is less suitable for handling the sorts of pointer optimizations seen
+above. In the long term, we will want a more nuanced approach to dynamic
+memory allocation.
+
+In the short term, however, we get by with a hack: we treat the stack pointer's
+region number specially. That is, we recognize that compilers are liable to do
+stack-traversing optimizations like the one above that require more flexibility
+vis-à-vis pointer comparisons. As a result, we override the following macaw
+operations and provide slightly different semantics when one of the arguments
+is a pointer with the same region number as the stack pointer:
+
+* PtrEq: Normally, macaw's default behavior is to treat pointers from different
+  regions as being uncomparable. If one of the pointers is derived from the
+  stack pointer, however, we relax this requirement and simply compare the
+  pointer offsets without considering the region numbers.
+
+* PtrToBits: Normally, macaw will only allow converting pointers with the region
+  number 0 to a raw bitvector. If the pointer is derived from the stack pointer,
+  however, we relax this requirement and simply convert the pointer offset to a
+  bitvector.
+
+It is worth emphasizing that this is a hack. It is possible that there are other
+special pointers requiring similar treatment that we have not yet identified.
+If that is the case, we will need to expand the scope of the hack (i.e., the
+`hasSpecialPointerBlock` function will need to be changed). It is also possible
+that there are other macaw operations that need to be included above. For
+instance, PtrToBits only applies to pointer comparisons where the pointer width
+is the same as the architecture width. This appears to be enough in practice to
+handle the type of code illustrated above, but this may not work if a pointer's
+width is truncated or widened.
+
+One might wonder: what happens if we apply this hack to /all/ pointers, not just
+the stack pointer? While tempting, this would return incorrect behavior for C
+programs that check if a pointer is NULL, which is a common idiom:
+
+  int *x = malloc(sizeof(int));
+  if (x != NULL) {
+    puts("This should be printed");
+  }
+
+We know that each call to malloc returns a unique, non-zero region number. This
+guarantees that the pointer representing `x`'s address is (1) not the same as
+the stack pointer's region, and (2) not zero, which is the region number for
+NULL (i.e., 0x0). In this particular example, we /do/ want to consider the
+region number when checking for pointer equality, so it is important that we
+exclude it from the scope of the hack.
 -}

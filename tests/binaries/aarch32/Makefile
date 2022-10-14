@@ -207,6 +207,12 @@ copy-reloc/libcopy1.so: copy-reloc/copy1.c
 copy-reloc/copy2.exe: copy-reloc/copy2.c copy-reloc/libcopy1.so ambient_assert.o
 	$(CC) -nostdlib -Lcopy-reloc/ -I./ copy-reloc/copy2.c ambient_assert.o -lcopy1 -o $@
 
+fd-zero.exe: fd-zero.c ambient_assert.o
+	$(CC) -nostartfiles -no-pie -O $^ -o $@
+
+null-check.exe: null-check.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 
