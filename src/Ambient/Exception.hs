@@ -16,6 +16,7 @@ import qualified Data.ElfEdit as DE
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Text as T
 import qualified Language.C as LangC
+import qualified Numeric as Num
 import qualified Prettyprinter as PP
 import qualified Text.Megaparsec as MP
 
@@ -50,7 +51,7 @@ data AmbientException where
   -- | The solver returned @UNKNOWN@ when trying to resolve a value as concrete
   ConcretizationFailedUnknown :: WP.ProgramLoc -> ConcretizationTarget -> AmbientException
   -- | There is no model for this syscall number
-  UnsupportedSyscallNumber :: Integer -> AmbientException
+  UnsupportedSyscallNumber :: WP.ProgramLoc -> T.Text -> Integer -> AmbientException
   -- | The solver returned @UNKNOWN@ when trying to resolve a function address
   SolverUnknownFunctionAddress :: AmbientException
   -- | Symbolic execution timed out, and no result is available
@@ -306,8 +307,10 @@ instance PP.Pretty AmbientException where
         PP.pretty "yielded UNKNOWN at" PP.<+> PP.pretty (WP.plSourceLoc loc)
       SolverUnknownFunctionAddress ->
         PP.pretty "Solving function address yielded UNKNOWN"
-      UnsupportedSyscallNumber syscallNum ->
-        PP.pretty "Failed to find override for syscall:" PP.<+> PP.viaShow syscallNum
+      UnsupportedSyscallNumber loc syscallName syscallNum ->
+        PP.pretty "Failed to find override for syscall:"
+        PP.<+> PP.pretty syscallName PP.<> PP.brackets (PP.pretty "0x" <> PP.pretty (Num.showHex syscallNum ""))
+        PP.<+> PP.pretty "called from" PP.<+> PP.pretty (WP.plSourceLoc loc)
       ExecutionTimeout ->
         PP.pretty "Symbolic execution timed out"
       MalformedEventTrace name ->

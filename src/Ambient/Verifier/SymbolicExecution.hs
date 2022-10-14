@@ -841,7 +841,10 @@ lookupSyscall bak abi hdlAlloc props oec =
                              (MapF.insert syscallNumRepr (ASy.SyscallFnHandle handle))
                              state'
           pure (handle, state'')
-        Nothing -> CMC.throwM $ AE.UnsupportedSyscallNumber syscallNum
+        Nothing -> do
+          let sym = LCB.backendGetSym bak
+          loc <- liftIO $ WI.getCurrentProgramLoc sym
+          CMC.throwM $ AE.UnsupportedSyscallNumber loc syscallName syscallNum
 
     mkAndBindOverride :: forall atps rtps syscallArgs syscallRet rtp blocks r ctx
                        . LCS.CrucibleState p sym ext rtp blocks r ctx
