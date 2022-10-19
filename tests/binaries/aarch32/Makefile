@@ -83,6 +83,12 @@ stripped-so/libgetone-stripped.so: getone.c
 so/so.exe: so/so.c so/libfib.so ambient_assert.o
 	$(CC) -nostdlib -Lso/ -I./ so/so.c ambient_assert.o -lfib -lgetone -o $@
 
+so-rop-unbal/libweird.so: so-rop-unbal/weird.c
+	$(CC) -nostartfiles -shared $< -o $@
+
+so-rop-unbal/so-rop-unbal.exe: so-rop-unbal/so-rop-unbal.c so-rop-unbal/libweird.so
+	$(CC) -nostartfiles -fno-stack-protector -Lso-rop-unbal/ -I./ so-rop-unbal/so-rop-unbal.c -lweird -o $@
+
 so-static-function/libgetone-static-function.so: so-static-function/getone-static-function.c
 	$(CC) -nostdlib -shared $< -o $@
 
