@@ -160,7 +160,11 @@ callWriteCString bak initialMem ptr (LCS.regValue -> str) =
     Nothing -> LCS.overrideError $
       LCS.AssertFailureSimError "Call to @write-c-string with symbolic string" ""
     Just (WI.UnicodeLiteral txt) -> do
-      let bytes = BS.unpack $ DTE.encodeUtf8 txt
+      -- Convert any escaped unicode characters into actual unicode
+      let txt' = read ("\"" ++ DT.unpack txt ++ "\"") :: String
+
+      -- Convert to bytes and write out
+      let bytes = BS.unpack $ DTE.encodeUtf8 $ DT.pack txt'
       mem' <- AExt.storeString bak mem initialMem ptr bytes
       pure ((), mem')
 
