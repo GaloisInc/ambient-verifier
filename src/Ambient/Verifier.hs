@@ -484,7 +484,8 @@ verify logAction pinst timeoutDuration = do
                                    , recursionBoundFeature
                                    ]
       let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
-                                               , AVS.secWMMCallback = AVWme.wmExecutor bak archInfo (ALB.bcBinaries binConf) hdlAlloc archVals execFeatures
+                                               , AVS.secWMMCallback = \initialMem abi ->
+                                                   AVWme.wmExecutor bak logAction initialMem archInfo (ALB.bcBinaries binConf) abi hdlAlloc archVals (piLogFunctionCalls pinst) execFeatures
                                                , AVS.secSolver = piSolver pinst
                                                , AVS.secLogBranches = isJust $ piLogSymbolicBranches pinst
                                                }

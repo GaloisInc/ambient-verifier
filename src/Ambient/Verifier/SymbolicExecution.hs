@@ -113,7 +113,9 @@ import qualified Ambient.Verifier.WMM as AVW
 
 data SymbolicExecutionConfig arch sym =
   SymbolicExecutionConfig { secProperties :: [APD.Property APD.StateID]
-                          , secWMMCallback :: AVW.WMMCallback arch sym
+                          , secWMMCallback :: AM.InitialMemory sym (DMC.ArchAddrWidth arch)
+                                           -> AF.FunctionABI arch sym (AExt.AmbientSimulatorState sym arch)
+                                           -> AVW.WMMCallback arch sym
                           , secSolver :: AS.Solver
                           , secLogBranches :: Bool
                           -- ^ Report symbolic branches
@@ -1432,7 +1434,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
     let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings bindings) extImpl ambientSimState
     let s0 = LCS.InitialState ctx globals3 LCS.defaultAbortHandler regsRepr simAction
 
-    let wmCallback = secWMMCallback seConf
+    let wmCallback = secWMMCallback seConf initialMem functionABI
     let wmSolver = secSolver seConf
     let wmm = AVW.wmmFeature logAction wmSolver archVals wmCallback (AVW.wmProperties wmConfig) oec
     let sbsRecorder = sbsFeature logAction

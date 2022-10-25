@@ -13,12 +13,14 @@ import           Control.Lens ( (^.), (&), (.~), set )
 import qualified Control.Monad.Reader as CMR
 import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
+import           Data.Maybe ( isJust )
 import qualified Data.Parameterized.Classes as PC
 import qualified Data.Parameterized.Context as Ctx
 import           Data.Parameterized.Some ( Some(..) )
 import           Data.Parameterized.TraversableFC ( anyFC )
 import qualified Data.Vector.NonEmpty as NEV
 import           GHC.TypeNats ( KnownNat, type (<=) )
+import qualified Lumberjack as LJ
 import           Numeric (showHex)
 
 import qualified Data.Macaw.Architecture.Info as DMAI
@@ -39,15 +41,19 @@ import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.CallFrame as LCSC
 import qualified Lang.Crucible.Simulator.EvalStmt as LCSEv
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
+import qualified Lang.Crucible.Simulator.GlobalState as LCSG
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Expr as WE
 import qualified What4.Interface as WI
 import qualified What4.Protocol.Online as WPO
 
+import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Extensions as AExt
+import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Lift as AL
 import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Loader.LoadOptions as ALL
+import qualified Ambient.Memory as AM
 import qualified Ambient.Panic as AP
 import qualified Ambient.Verifier.SymbolicExecution as AVS
 import qualified Ambient.Verifier.WMM as AVW
@@ -155,8 +161,9 @@ buildCfgFromAddr archInfo loadedBinaryPaths hdlAlloc addr symArchFns = do
 -- ROP gadgets as ending in a tail call, this function is also called at the
 -- end of each gadget to disassemble and jump to the next gadget.
 wmeLookupFunction
-  :: forall arch mem binFmt p sym bak solver scope st fs
-   . ( bak ~ LCBO.OnlineBackend solver scope st fs
+  :: forall arch mem binFmt w p sym bak solver scope st fs
+   . ( w ~ DMC.ArchAddrWidth arch
+     , bak ~ LCBO.OnlineBackend solver scope st fs
      , sym ~ WE.ExprBuilder scope st fs
      , p ~ AExt.AmbientSimulatorState sym arch
      , DMS.SymArchConstraints arch
@@ -165,25 +172,59 @@ wmeLookupFunction
      , DMB.BinaryLoader arch binFmt
      )
   => bak
+  -> LJ.LogAction IO AD.Diagnostic
+  -> AM.InitialMemory sym w
   -> DMAI.ArchitectureInfo arch
   -> DMS.GenArchVals mem arch
   -> NEV.NonEmptyVector (ALB.LoadedBinaryPath arch binFmt)
+  -> AF.FunctionABI arch sym p
+  -- ^ Function call ABI specification for 'arch'
   -> LCF.HandleAllocator
+  -> Maybe FilePath
+  -- ^ Optional path to the file to log function calls to
   -> DMS.LookupFunctionHandle p sym arch
-wmeLookupFunction bak archInfo archVals loadedBinaryPaths hdlAlloc =
-  DMS.LookupFunctionHandle $ \state _mem regs -> do
+wmeLookupFunction bak logAction initialMem archInfo archVals loadedBinaryPaths abi hdlAlloc mFnCallLog =
+  DMS.LookupFunctionHandle $ \state0 _mem regs -> do
     addr <- AVS.extractIP bak archVals regs
-    mCfg <- buildCfgFromAddr archInfo loadedBinaryPaths hdlAlloc (toInteger addr) symArchFns
+    mCfg <- buildCfgFromAddr archInfo loadedBinaryPaths hdlAlloc addr symArchFns
     case mCfg of
       Just (LCCC.SomeCFG cfg) -> do
         let handle = LCCC.cfgHandle cfg
+        let hdlName = LCF.handleName handle
         let fnState = LCS.UseCFG cfg (LCAP.postdomInfo cfg)
-        return (handle, AVS.insertFunctionHandle state handle fnState)
+        let state1  = AVS.insertFunctionHandle state0 handle fnState
+
+        mbReturnAddr <-
+          -- Checking the return address requires consulting an SMT solver, and the
+          -- time it takes to do this could add up. We only care about this
+          -- information when --log-function-calls is enabled, so we skip this step
+          -- if that option is disabled.
+          if isJust mFnCallLog
+          then let mem = readGlobal (AM.imMemVar initialMem) state1 in
+               AF.functionReturnAddr abi bak archVals regs mem
+          else pure Nothing
+        LJ.writeLog logAction $
+          AD.FunctionCall hdlName (fromInteger addr) mbReturnAddr
+
+        return (handle, state1)
       Nothing -> AP.panic AP.WME
                           "wmeLookupFunction"
                           ["Failed to build CFG at 0x" ++ (showHex addr "")]
   where
     symArchFns = DMS.archFunctions archVals
+
+    readGlobal ::
+      forall tp ext rtp blocks r ctx.
+      LCS.GlobalVar tp ->
+      LCS.CrucibleState p sym ext rtp blocks r ctx ->
+      LCS.RegValue sym tp
+    readGlobal gv st = do
+      let globals = st ^. LCSE.stateTree . LCSE.actFrame . LCS.gpGlobals
+      case LCSG.lookupGlobal gv globals of
+        Just v  -> v
+        Nothing -> AP.panic AP.SymbolicExecution "lookupFunction"
+                     [ "Failed to find global variable: "
+                       ++ show (LCCC.globalName gv) ]
 
 -- | This classifier identifies gadgets in which the instruction pointer at the
 -- end of the block is either read from memory, or computed from a memory read.
@@ -230,10 +271,11 @@ weirdClassifier = DMAI.classifierName "Weird gadget" $ do
 --
 -- Currently this only supports return oriented programs, but could be extended
 -- to support other types of weird machines.
-wmExecutor :: forall arch binFmt w bak sym mem solver scope st fs
+wmExecutor :: forall arch binFmt w p bak sym mem solver scope st fs
             . ( w ~ DMC.ArchAddrWidth arch
               , bak ~ LCBO.OnlineBackend solver scope st fs
               , sym ~ WE.ExprBuilder scope st fs
+              , p ~ AExt.AmbientSimulatorState sym arch
               , DMS.SymArchConstraints arch
               , 1 <= w
               , KnownNat w
@@ -242,21 +284,27 @@ wmExecutor :: forall arch binFmt w bak sym mem solver scope st fs
               , WPO.OnlineSolver solver
               )
            => bak
+           -> LJ.LogAction IO AD.Diagnostic
+           -> AM.InitialMemory sym w
            -> DMAI.ArchitectureInfo arch
            -> NEV.NonEmptyVector (ALB.LoadedBinaryPath arch binFmt)
            -- ^ Binary to disassemble
+           -> AF.FunctionABI arch sym p
+           -- ^ Function call ABI specification for 'arch'
            -> LCF.HandleAllocator
            -> DMS.GenArchVals mem arch
+           -> Maybe FilePath
+           -- ^ Optional path to the file to log function calls to
            -> [LCS.GenericExecutionFeature sym]
            -- ^ Additional execution features to use when executing the weird
            -- machine
            -> AVW.WMMCallback arch sym
-wmExecutor bak archInfo loadedBinaryPaths hdlAlloc archVals execFeatures = AVW.WMMCallback $ \addr st -> do
+wmExecutor bak logAction initialMem archInfo loadedBinaryPaths abi hdlAlloc archVals mFnCallLog execFeatures = AVW.WMMCallback $ \addr st -> do
   let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
   let archInfo' = archInfo { DMAI.archClassifier = DMAI.archClassifier archInfo
                                                <|> weirdClassifier }
-  let lookupFn = wmeLookupFunction bak archInfo' archVals loadedBinaryPaths hdlAlloc
+  let lookupFn = wmeLookupFunction bak logAction initialMem archInfo' archVals loadedBinaryPaths abi hdlAlloc mFnCallLog
   mCfg <- buildCfgFromAddr archInfo' loadedBinaryPaths hdlAlloc addr symArchFns
   case mCfg of
     Just (LCCC.SomeCFG cfg) -> do
