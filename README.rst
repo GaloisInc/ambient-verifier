@@ -354,11 +354,18 @@ The following overrides can only be invoked from syntax overrides:
 
 * ``malloc-global :: SizeT -> Pointer`` is like ``malloc``, except that it is
   explicitly meant for allocating memory for use in global variables.
+* ``read-bytes :: Pointer -> Vector (Bitvector 8)`` reads a null-terminated,
+  sequence of concrete bytes from the ``Pointer``. Unlike ``read-c-string``,
+  this reads the raw bytes without converting to a particular text encoding.
 * ``read-c-string :: Pointer -> String Unicode`` reads a null-terminated,
   UTF-8–encoded, concrete string from the ``Pointer`` and converts it to a
   ``String``. Representing it as a ``String`` can be more convenient in the
   syntax override language, as it is easier to manipulate and check for
   equality.
+* ``write-bytes :: Pointer -> Vector (Bitvector 8)`` writes a sequence of
+  concrete bytes to a ``Pointer``, including a null terminator. Unlike
+  ``write-c-string``, this writes the raw bytes without converting to a
+  particular text encoding.
 * ``write-c-string :: Pointer -> String Unicode -> Unit`` writes a
   UTF-8–encoded, concrete string to a ``Pointer``, including a null
   terminator.

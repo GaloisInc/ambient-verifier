@@ -1,6 +1,8 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -15,8 +17,12 @@
 -- name collisions much, much less likely.
 module Ambient.FunctionOverride.Overrides.CrucibleStrings
   ( crucibleStringOverrides
+  , buildReadBytesOverride
+  , callReadBytes
   , buildReadCStringOverride
   , callReadCString
+  , buildWriteBytesOverride
+  , callWriteBytes
   , buildWriteCStringOverride
   , callWriteCString
   , printPointerOverride
@@ -24,12 +30,16 @@ module Ambient.FunctionOverride.Overrides.CrucibleStrings
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
+import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
+import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Text as DT
 import qualified Data.Text.Encoding as DTE
 import qualified Data.Text.Encoding.Error as DTEE
+import qualified Data.Traversable as Trav
+import qualified Data.Vector as V
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Lang.Crucible.Backend as LCB
@@ -61,10 +71,60 @@ crucibleStringOverrides ::
   -- unsupported relocation types.
   [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym arch]
 crucibleStringOverrides initialMem unsupportedRelocs =
-  [ SomeFunctionOverride (buildReadCStringOverride initialMem unsupportedRelocs)
+  [ SomeFunctionOverride (buildReadBytesOverride initialMem unsupportedRelocs)
+  , SomeFunctionOverride (buildReadCStringOverride initialMem unsupportedRelocs)
+  , SomeFunctionOverride (buildWriteBytesOverride initialMem)
   , SomeFunctionOverride (buildWriteCStringOverride initialMem)
   , SomeFunctionOverride printPointerOverride
   ]
+
+buildReadBytesOverride ::
+  ( LCLM.HasPtrWidth w
+  , LCLM.HasLLVMAnn sym
+  , DMC.MemWidth w
+  , w ~ DMC.ArchAddrWidth arch
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  AM.InitialMemory sym w ->
+  Map.Map (DMC.MemWord w) String ->
+  FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
+    (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) arch
+    (LCT.VectorType (LCT.BVType 8))
+buildReadBytesOverride initialMem unsupportedRelocs =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "read-bytes" $ \bak args ->
+    Ctx.uncurryAssignment (callReadBytes bak initialMem unsupportedRelocs) args
+
+-- | Override for the @read-bytes@ function. Note that:
+-- * The loaded string must be concrete. If a symbolic character is encountered
+--   while loading, this override will generate an assertion failure.
+--
+-- * The loaded string should be UTF-8–encoded. Any invalid code points in the
+--   string will be replaced with the Unicode replacement character @U+FFFD@.
+callReadBytes ::
+  ( LCB.IsSymBackend sym bak
+  , sym ~ WE.ExprBuilder scope st fs
+  , bak ~ LCBO.OnlineBackend solver scope st fs
+  , WPO.OnlineSolver solver
+  , LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  , DMC.MemWidth w
+  , w ~ DMC.ArchAddrWidth arch
+  , p ~ AExt.AmbientSimulatorState sym arch
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  bak ->
+  AM.InitialMemory sym w ->
+  Map.Map (DMC.MemWord w) String ->
+  LCS.RegEntry sym (LCLM.LLVMPointerType w) ->
+  LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCT.VectorType (LCT.BVType 8)))
+callReadBytes bak initialMem unsupportedRelocs ptr = do
+  let sym = LCB.backendGetSym bak
+  mem <- LCS.readGlobal $ AM.imMemVar initialMem
+  bytes <- AExt.loadString bak mem initialMem unsupportedRelocs ptr Nothing
+  let w8 = WI.knownNat @8
+  symBytes <- liftIO $ Trav.traverse (WI.bvLit sym w8 . BVS.mkBV w8 . toInteger) bytes
+  pure $ V.fromList symBytes
 
 buildReadCStringOverride ::
   ( LCLM.HasPtrWidth w
@@ -83,13 +143,9 @@ buildReadCStringOverride initialMem unsupportedRelocs =
   mkFunctionOverride "read-c-string" $ \bak args ->
     Ctx.uncurryAssignment (callReadCString bak initialMem unsupportedRelocs) args
 
--- | Override for the @read-c-string@ function. Note that:
---
--- * The loaded string must be concrete. If a symbolic character is encountered
---   while loading, this override will generate an assertion failure.
---
--- * The loaded string should be UTF-8–encoded. Any invalid code points in the
---   string will be replaced with the Unicode replacement character @U+FFFD@.
+-- | Override for the @read-c-string@ function. Note that the loaded bytes must
+-- be concrete. If a symbolic byte is encountered while loading, this
+-- override will generate an assertion failure.
 callReadCString ::
   ( LCB.IsSymBackend sym bak
   , sym ~ WE.ExprBuilder scope st fs
@@ -113,6 +169,54 @@ callReadCString bak initialMem unsupportedRelocs ptr = do
   bytes <- AExt.loadString bak mem initialMem unsupportedRelocs ptr Nothing
   let lit = DTE.decodeUtf8With DTEE.lenientDecode $ BS.pack bytes
   liftIO $ WI.stringLit sym $ WI.UnicodeLiteral lit
+
+buildWriteBytesOverride ::
+  ( LCLM.HasPtrWidth w
+  , LCLM.HasLLVMAnn sym
+  , DMC.MemWidth w
+  , w ~ DMC.ArchAddrWidth arch
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  AM.InitialMemory sym w ->
+  FunctionOverride (AExt.AmbientSimulatorState sym arch) sym
+    (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
+                  Ctx.::> LCT.VectorType (LCT.BVType 8)) arch
+    LCT.UnitType
+buildWriteBytesOverride initialMem =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "write-bytes" $ \bak args ->
+    Ctx.uncurryAssignment (callWriteBytes bak initialMem) args
+
+-- | Override for the @write-bytes@ function. Note that each byte provided as an
+-- argument must be concrete. If given a symbolic string, this override will
+-- generate an assertion failure.
+callWriteBytes ::
+  ( LCB.IsSymBackend sym bak
+  , sym ~ WE.ExprBuilder scope st fs
+  , bak ~ LCBO.OnlineBackend solver scope st fs
+  , WPO.OnlineSolver solver
+  , LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  , DMC.MemWidth w
+  , w ~ DMC.ArchAddrWidth arch
+  , p ~ AExt.AmbientSimulatorState sym arch
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  bak ->
+  AM.InitialMemory sym w ->
+  LCS.RegEntry sym (LCLM.LLVMPointerType w) ->
+  LCS.RegEntry sym (LCT.VectorType (LCT.BVType 8)) ->
+  LCS.OverrideSim p sym ext r args ret ()
+callWriteBytes bak initialMem ptr (LCS.regValue -> symBytes) = do
+  bytes <- Trav.for symBytes $ \symByte ->
+    case WI.asBV symByte of
+      Nothing -> LCS.overrideError $
+        LCS.AssertFailureSimError "Call to @write-bytes with symbolic byte" ""
+      Just byte -> pure $ fromInteger $ BVS.asUnsigned byte
+  let bytesList = F.toList bytes
+  LCS.modifyGlobal (AM.imMemVar initialMem) $ \mem -> do
+    mem' <- AExt.storeString bak mem initialMem ptr bytesList
+    pure ((), mem')
 
 buildWriteCStringOverride ::
   ( LCLM.HasPtrWidth w
