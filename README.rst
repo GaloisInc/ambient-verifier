@@ -365,10 +365,19 @@ The following overrides can only be invoked from syntax overrides:
 * ``write-bytes :: Pointer -> Vector (Bitvector 8)`` writes a sequence of
   concrete bytes to a ``Pointer``, including a null terminator. Unlike
   ``write-c-string``, this writes the raw bytes without converting to a
-  particular text encoding.
+  particular text encoding. For example, to write the string ``"abc"``,
+  supply ``(vector (bv 8 97) (bv 8 98) (bv 8 99))`` as an argument, as
+  the bytes ``97``, ``98``, and ``99`` correspond to the numeric values of the
+  ``a``, ``b``, and ``c`` characters, respectively.
 * ``write-c-string :: Pointer -> String Unicode -> Unit`` writes a
   UTF-8–encoded, concrete string to a ``Pointer``, including a null
   terminator.
+
+  Note that in order to write an escaped Unicode character, one must supply an
+  extra backslash. For instance, to write the ``☃`` character, supply the
+  string ``"\\9731"``. Note that some Unicode characters require multiple bytes
+  in the UTF-8 encoding, so make sure that the ``Pointer`` has enough space
+  allocated to store all of the bytes.
 * ``print-pointer :: Pointer -> String Unicode`` converts a pointer to a string
   representation.  This prints the pointer as ``(block, offset)``, or simply
   ``offset`` if ``block`` is ``0``.
