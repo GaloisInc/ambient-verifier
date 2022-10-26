@@ -109,7 +109,7 @@ initWMConfig sym halloc globals0 props = do
 --   1. The address of the Weird Machine entry point
 --   2. The entire symbolic execution state at the start of the Weird Machine
 newtype WMMCallback arch sym where
-  WMMCallback :: (forall f a . Integer -> LCSE.SimState (AExt.AmbientSimulatorState sym arch) sym (DMS.MacawExt arch) (LCS.RegEntry sym (DMS.ArchRegStruct arch)) f a -> IO (WMMCallbackResult sym arch f a)) -> WMMCallback arch sym
+  WMMCallback :: (forall f a . DMC.MemWord (DMC.ArchAddrWidth arch) -> LCSE.SimState (AExt.AmbientSimulatorState sym arch) sym (DMS.MacawExt arch) (LCS.RegEntry sym (DMS.ArchRegStruct arch)) f a -> IO (WMMCallbackResult sym arch f a)) -> WMMCallback arch sym
 
 -- | The SMT interaction logger
 smtLogger :: LJ.LogAction IO AD.Diagnostic -> WS.LogData
@@ -266,7 +266,7 @@ handleControlTransfer logAction adapter archVals props (WMMCallback action) regS
               let st' = set LCSE.stateGlobals globs2 st
               -- FIXME: The action probably needs to return an updated state, as
               -- it will have continued execution on its own
-              result <- action wmEntry st'
+              result <- action (fromInteger wmEntry) st'
               return $ Just (result, st')
             _ -> go ipVal rest
 

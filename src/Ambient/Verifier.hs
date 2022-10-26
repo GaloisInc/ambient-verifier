@@ -71,7 +71,6 @@ import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Loader as AL
-import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.ObservableEvents as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Profiler.EmbeddedData as APE
@@ -483,12 +482,16 @@ verify logAction pinst timeoutDuration = do
                                    , iterationBoundFeature
                                    , recursionBoundFeature
                                    ]
-      let seConf = AVS.SymbolicExecutionConfig { AVS.secProperties = piProperties pinst
-                                               , AVS.secWMMCallback = \initialMem abi ->
-                                                   AVWme.wmExecutor bak logAction initialMem archInfo (ALB.bcBinaries binConf) abi hdlAlloc archVals (piLogFunctionCalls pinst) execFeatures
-                                               , AVS.secSolver = piSolver pinst
-                                               , AVS.secLogBranches = isJust $ piLogSymbolicBranches pinst
-                                               }
+      let seConf = AVS.SymbolicExecutionConfig
+                     { AVS.secProperties = piProperties pinst
+                     , AVS.secWMMCallback = \initialMem abi props oec ->
+                         AVWme.wmExecutor logAction bak initialMem binConf abi
+                                          hdlAlloc archInfo props archVals
+                                          (piLogFunctionCalls pinst) oec
+                                          execFeatures
+                     , AVS.secSolver = piSolver pinst
+                     , AVS.secLogBranches = isJust $ piLogSymbolicBranches pinst
+                     }
       let ?memOpts = LCLM.defaultMemOptions
       csOverrides <-
         case piOverrideDir pinst of
