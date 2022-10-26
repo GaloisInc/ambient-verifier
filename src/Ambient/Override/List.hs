@@ -79,10 +79,10 @@ listOverrides logAction pinst = do
       (fs, _, LCLS.SomeOverrideSim _initFSOverride) <- liftIO $
         LCLS.initialLLVMFileSystem hdlAlloc sym WI.knownRepr fileContents [] (AM.imGlobals initialMem)
       let syscallABI = buildSyscallABI fs initialMem Map.empty
-      -- The choice of VerifyContext here isn't that important, since we never
+      -- The choice of TestContext here isn't that important, since we never
       -- actually use the part of the FunctionABI that requires the
       -- FunctionOverrideContext.
-      let functionABI = buildFunctionABI (AF.VerifyContext binConf)
+      let functionABI = buildFunctionABI AF.TestContext
                                          fs initialMem archVals Map.empty
                                          csoAddressOverrides csoNamedOverrides
 

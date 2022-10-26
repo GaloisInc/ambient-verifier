@@ -20,6 +20,7 @@ module Ambient.FunctionOverride (
   , FunctionOverrideContext(..)
   ) where
 
+import           Control.Monad.IO.Class ( MonadIO(liftIO) )
 import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
@@ -39,8 +40,12 @@ import qualified What4.Expr as WE
 import qualified What4.FunctionName as WF
 import qualified What4.Protocol.Online as WPO
 
+import qualified Ambient.EventTrace as AET
 import qualified Ambient.Loader.BinaryConfig as ALB
 import qualified Ambient.Memory as AM
+import qualified Ambient.MonadState as AMS
+import qualified Ambient.ObservableEvents as AO
+import qualified Ambient.Property.Record as APR
 import qualified Ambient.Syscall as AS
 
 -------------------------------------------------------------------------------
@@ -208,18 +213,30 @@ mkVariadicSpecializedFunctionOverride name ov = FunctionOverride
 -- semantics. Note that this override will not perform any error-checking on
 -- the value returned by the syscall. (See #144.)
 syscallToFunctionOverride ::
+  FunctionOverrideContext arch sym ->
+  -- ^ In what context is this override being run?
   AS.Syscall p sym args (DMS.MacawExt arch) ret ->
   FunctionOverride p sym args arch ret
-syscallToFunctionOverride syscallOv = FunctionOverride
-  { functionName = AS.syscallName syscallOv
+syscallToFunctionOverride fovCtx syscallOv = FunctionOverride
+  { functionName = name
   , functionGlobals = []
   , functionArgTypes = AS.syscallArgTypes syscallOv
   , functionReturnType = AS.syscallReturnType syscallOv
   , functionAuxiliaryFnBindings = []
   , functionForwardDeclarations = Map.empty
-  , functionOverride = \bak args _getVarArg _parents ->
+  , functionOverride = \bak args _getVarArg _parents -> do
+      -- Although this is a function override, we would like to have it also
+      -- register as invoking a syscall. We do so here.
+      case fovCtx of
+        TestContext ->
+          pure ()
+        VerifyContext _ props oec ->
+          AMS.stateM $ liftIO . APR.recordSyscallEvent bak (WF.functionName name) props oec
+
       OverrideResult [] <$> AS.syscallOverride syscallOv bak args
   }
+  where
+    name = AS.syscallName syscallOv
 
 -- | Given a type, retrieve the value of a variadic argument in a function
 -- override, as well a callback for retrieving the next variadic argument.
@@ -371,7 +388,7 @@ data FunctionABI arch sym p =
 -- A function to construct a FunctionABI with memory access
 newtype BuildFunctionABI arch sym p = BuildFunctionABI (
        forall mem
-     . FunctionOverrideContext arch
+     . FunctionOverrideContext arch sym
     -- In what context are the function overrides are being run?
     -> LCLS.LLVMFileSystem (DMC.ArchAddrWidth arch)
     -- File system to use in overrides
@@ -392,13 +409,22 @@ newtype BuildFunctionABI arch sym p = BuildFunctionABI (
 -- | In what context are we running a function override? This tracked because
 -- some function overrides (e.g., @get-global-pointer-named@) can only be run in
 -- a 'VerifyContext', which has access to information about binaries.
-data FunctionOverrideContext arch where
+data FunctionOverrideContext arch sym where
   -- | A function override is being ran from the @verify@ command, which has
-  -- access to one or more binaries.
-  VerifyContext :: ALB.BinaryConfig arch binFmt -> FunctionOverrideContext arch
+  -- access to:
+  --
+  -- * One or more binaries.
+  --
+  -- * The observable event configuration.
+  --
+  -- * The properties to verify.
+  VerifyContext :: ALB.BinaryConfig arch binFmt
+                -> AET.Properties
+                -> AO.ObservableEventConfig sym
+                -> FunctionOverrideContext arch sym
   -- | A function override is being ran from the @list-overrides@ command, which
   -- runs independently of any binary.
-  TestContext :: FunctionOverrideContext arch
+  TestContext :: FunctionOverrideContext arch sym
 
 {-
 Note [Passing arguments to functions]

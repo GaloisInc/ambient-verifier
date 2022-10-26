@@ -12,7 +12,7 @@ data Component = Extensions
                | Loader
                | ObservableEvents
                | Override
-               | PropertyParser
+               | Property
                | SymbolicExecution
                | Syscall
                | Verifier

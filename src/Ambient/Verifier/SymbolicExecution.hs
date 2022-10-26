@@ -84,7 +84,6 @@ import qualified Lang.Crucible.SymIO.Loader as LCSL
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.BaseTypes as WT
 import qualified What4.Expr as WE
-import qualified What4.FunctionName as WF
 import qualified What4.Interface as WI
 import qualified What4.ProgramLoc as WP
 import qualified What4.Protocol.Online as WPO
@@ -108,6 +107,7 @@ import qualified Ambient.Memory as AM
 import qualified Ambient.ObservableEvents as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Property.Definition as APD
+import qualified Ambient.Property.Record as APR
 import qualified Ambient.Solver as AS
 import qualified Ambient.Syscall as ASy
 import qualified Ambient.Verifier.Concretize as AVC
@@ -318,7 +318,7 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
 
     -- Record function event and emit a diagnostic
     let hdlName = LCF.handleName hdl
-    state2 <- recordFunctionEvent bak hdlName props oec state1
+    state2 <- APR.recordFunctionEvent bak hdlName props oec state1
     mbReturnAddr <-
       -- Checking the return address requires consulting an SMT solver, and the
       -- time it takes to do this could add up. We only care about this
@@ -612,92 +612,6 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
                      [ "Failed to find global variable: "
                        ++ show (LCCC.globalName gv) ]
 
--- | Record a syscall transition
-recordSyscallEvent ::
-  forall p sym ext rtp blocks r ctx bak.
-  LCB.IsSymBackend sym bak =>
-  bak ->
-  DT.Text ->
-  AET.Properties ->
-  AO.ObservableEventConfig sym ->
-  LCS.CrucibleState p sym ext rtp blocks r ctx ->
-  IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
-recordSyscallEvent bak syscallName = recordEvent (matchSyscallEvent syscallName) bak (APD.IssuesSyscall syscallName)
-  where
-    -- | Returns 'True' if the transition is for the named system call
-    matchSyscallEvent :: DT.Text -> APD.Transition -> Bool
-    matchSyscallEvent expected t =
-      case t of
-        APD.IssuesSyscall name | name == expected -> True
-        _ -> False
-
--- | Record a function property transition.
-recordFunctionEvent ::
-  forall p sym ext rtp blocks r ctx bak.
-  LCB.IsSymBackend sym bak =>
-  bak ->
-  WF.FunctionName ->
-  AET.Properties ->
-  AO.ObservableEventConfig sym ->
-  LCS.CrucibleState p sym ext rtp blocks r ctx ->
-  IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
-recordFunctionEvent bak fnName = recordEvent (matchFunctionEvent fnName) bak (APD.InvokesFunction fnName)
-  where
-    matchFunctionEvent :: WF.FunctionName -> APD.Transition -> Bool
-    matchFunctionEvent expected t =
-      case t of
-        APD.InvokesFunction name | name == expected -> True
-        _ -> False
-
--- | Record a transition
-recordEvent ::
-  forall p sym ext rtp blocks r ctx bak.
-  LCB.IsSymBackend sym bak =>
-  (APD.Transition -> Bool) ->
-  bak ->
-  APD.Transition ->
-  AET.Properties ->
-  AO.ObservableEventConfig sym ->
-  LCS.CrucibleState p sym ext rtp blocks r ctx ->
-  IO (LCS.CrucibleState p sym ext rtp blocks r ctx)
-recordEvent event bak t props oec state = do
-  let oeseq = readGlobal (AO.oecGlobal oec) state
-  let AO.RecordObservableEvent oecRecord = AO.oecRecordFn oec
-  cond <- LCB.getPathCondition bak
-  oeseq' <- oecRecord sym t cond oeseq
-  let state' = writeGlobal (AO.oecGlobal oec) oeseq' state
-  F.foldlM (\state'' (prop, traceGlobal) ->
-             do let t0 = readGlobal traceGlobal state''
-                t1 <- AET.recordEvent event sym prop t0
-                pure $ writeGlobal traceGlobal t1 state'')
-           state' (AET.properties props)
-  where
-    sym = LCB.backendGetSym bak
-
-    readGlobal ::
-      forall tp.
-      LCS.GlobalVar tp ->
-      LCS.CrucibleState p sym ext rtp blocks r ctx ->
-      LCS.RegValue sym tp
-    readGlobal gv st = do
-      let globals = st ^. LCSE.stateTree . LCSE.actFrame . LCS.gpGlobals
-      case LCSG.lookupGlobal gv globals of
-        Just v  -> v
-        Nothing -> AP.panic AP.SymbolicExecution "recordFunctionEvent"
-                     [ "Failed to find global variable: "
-                       ++ show (LCCC.globalName gv) ]
-
-    writeGlobal ::
-      forall tp.
-      LCS.GlobalVar tp ->
-      LCS.RegValue sym tp ->
-      LCS.CrucibleState p sym ext rtp blocks r ctx ->
-      LCS.CrucibleState p sym ext rtp blocks r ctx
-    writeGlobal gv rv st =
-      over (LCSE.stateTree . LCSE.actFrame . LCS.gpGlobals)
-           (LCSG.insertGlobal gv rv)
-           st
-
 -- | This function builds a function handle for an override and inserts it into
 -- a state's function bindings
 bindOverrideHandle :: MonadIO m
@@ -880,7 +794,7 @@ symExLookupSyscall bak abi hdlAlloc props oec =
     (hndl, state1) <- lazilyRegisterHandle state0 atps rtps syscallNum syscallName
 
     -- Record syscall event
-    state2 <- liftIO $ recordSyscallEvent bak syscallName props oec state1
+    state2 <- liftIO $ APR.recordSyscallEvent bak syscallName props oec state1
     pure (hndl, state2)
   where
     -- This function abstracts over a common pattern when dealing with lazily
@@ -1441,12 +1355,19 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
     LCLS.initialLLVMFileSystem halloc sym WI.knownRepr fileContents [] (AM.imGlobals initialMem)
 
   (wmConfig, globals1) <- liftIO $ AVW.initWMConfig sym halloc globals0 (secProperties seConf)
+  (obsEventMapRef, recordObsEventFn) <- liftIO $ AO.buildRecordObservableEvent
+  obsEventGlob <- liftIO $
+    LCCC.freshGlobalVar halloc
+                        (DT.pack "AMBIENT_ObservableEventTrace")
+                        AO.observableEventTraceRepr
 
+  let props = AVW.wmProperties wmConfig
+  let oec = AO.ObservableEventConfig obsEventGlob recordObsEventFn
   let csOverrides = fcCrucibleSyntaxOverrides fnConf
   let ASy.BuildSyscallABI buildSyscallABI = fcBuildSyscallABI fnConf
   let syscallABI = buildSyscallABI fs initialMem (ALB.bcUnsuportedRelocations binConf)
   let AF.BuildFunctionABI buildFunctionABI = fcBuildFunctionABI fnConf
-  let functionABI = buildFunctionABI (AF.VerifyContext binConf) fs initialMem archVals
+  let functionABI = buildFunctionABI (AF.VerifyContext binConf props oec) fs initialMem archVals
                                      (ALB.bcUnsuportedRelocations binConf)
                                      (AFET.csoAddressOverrides csOverrides)
                                      (AFET.csoNamedOverrides csOverrides)
@@ -1482,18 +1403,11 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
                                 (AFET.csoStartupOverrides csOverrides)
                     -- ...and finally, run the entrypoint function.
                     LCS.regValue <$> LCS.callCFG cfg arguments
-  obsEventGlob <- liftIO $
-    LCCC.freshGlobalVar halloc
-                        (DT.pack "AMBIENT_ObservableEventTrace")
-                        AO.observableEventTraceRepr
   emptyTrace <- liftIO $ LCSS.nilSymSequence sym
   let globals3 = LCSG.insertGlobal obsEventGlob emptyTrace globals2
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
-
-    (obsEventMapRef, recordObsEventFn) <- liftIO $ AO.buildRecordObservableEvent
-    let oec = AO.ObservableEventConfig obsEventGlob recordObsEventFn
-    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (symExLookupFunction logAction bak initialMem archVals binConf functionABI halloc archInfo (AVW.wmProperties wmConfig) mFnCallLog oec) (symExLookupSyscall bak syscallABI halloc (AVW.wmProperties wmConfig) oec) (ALB.bcUnsuportedRelocations binConf)
+    let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (symExLookupFunction logAction bak initialMem archVals binConf functionABI halloc archInfo props mFnCallLog oec) (symExLookupSyscall bak syscallABI halloc props oec) (ALB.bcUnsuportedRelocations binConf)
     -- Register any auxiliary functions or forward declarations used in the
     -- startup overrides.
     startupBindings <-

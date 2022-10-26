@@ -359,7 +359,9 @@ validateProperty p = do
         SemiFinalState names ->
           SemiFinalState (map (lookupNameID m) names)
 
-    panic name = AP.panic AP.PropertyParser "fixupStateTypeIdent" ["No identifier for component: " ++ show name]
+    panic name = AP.panic AP.Property
+                          "fixupStateTypeIdent"
+                          ["No identifier for component: " ++ show name]
 
 -- | Parse a YAML value into a property (or return an error)
 --

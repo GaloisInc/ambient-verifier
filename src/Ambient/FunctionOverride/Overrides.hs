@@ -88,7 +88,7 @@ builtinGenericOverrides ::
   , w ~ DMC.ArchAddrWidth arch
   , ?memOpts :: LCLM.MemOptions
   ) =>
-  FunctionOverrideContext arch ->
+  FunctionOverrideContext arch sym ->
     -- In what context are the function overrides are being run?
   LCLS.LLVMFileSystem w ->
   AM.InitialMemory sym w ->
@@ -113,7 +113,7 @@ builtinGenericOverrides fovCtx fs initialMem unsupportedRelocs = concat
     syscallWrapperOverrides =
       mapMaybe (\(AS.SomeSyscall syscall) ->
                  if AS.syscallHasWrapperFunction syscall
-                    then Just $ SomeFunctionOverride $ syscallToFunctionOverride syscall
+                    then Just $ SomeFunctionOverride $ syscallToFunctionOverride fovCtx syscall
                     else Nothing)
                (ASO.allOverrides fs initialMem unsupportedRelocs)
 
@@ -335,7 +335,7 @@ binOverrides ::
   , DMC.MemWidth w
   , LCLM.HasPtrWidth w
   ) =>
-  FunctionOverrideContext arch ->
+  FunctionOverrideContext arch sym ->
   -- ^ In what context are the overrides being run?
   AM.InitialMemory sym w ->
   -- ^ Initial memory state for symbolic execution
@@ -350,7 +350,7 @@ buildGetGlobalPointerAddrOverride ::
   , DMM.MemWidth w
   , LCLM.HasPtrWidth w
   ) =>
-  FunctionOverrideContext arch ->
+  FunctionOverrideContext arch sym ->
   -- ^ In what context is this override being run?
   AM.InitialMemory sym w ->
   -- ^ Initial memory state for symbolic execution
@@ -378,7 +378,7 @@ callGetGlobalPointerAddr ::
   , DMM.MemWidth w
   ) =>
   bak ->
-  FunctionOverrideContext arch ->
+  FunctionOverrideContext arch sym ->
   -- ^ In what context is this override being run?
   AM.InitialMemory sym w ->
   -- ^ Initial memory state for symbolic execution
@@ -411,7 +411,7 @@ buildGetGlobalPointerNamedOverride ::
   , DMM.MemWidth w
   , LCLM.HasPtrWidth w
   ) =>
-  FunctionOverrideContext arch ->
+  FunctionOverrideContext arch sym ->
   AM.InitialMemory sym w ->
   FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCT.StringType WI.Unicode
                                        Ctx.::> LCT.StringType WI.Unicode) arch
@@ -439,7 +439,7 @@ callGetGlobalPointerNamed ::
   , DMM.MemWidth w
   ) =>
   bak ->
-  FunctionOverrideContext arch ->
+  FunctionOverrideContext arch sym ->
   -- ^ In what context is this override being run?
   AM.InitialMemory sym w ->
   -- ^ Initial memory state for symbolic execution
@@ -483,7 +483,7 @@ findLoadedBinaryNamed ::
   , CMC.MonadThrow m
   ) =>
   sym ->
-  FunctionOverrideContext arch ->
+  FunctionOverrideContext arch sym ->
   -- ^ In what context is this override being run?
   AE.GetGlobalPointerFunction ->
   -- ^ Is this @get-global-pointer-addr@ or @get-global-pointer-named@?
@@ -506,7 +506,7 @@ findLoadedBinaryNamed sym fovCtx ggpFun binName = do
 
   -- Ensure that the supplied address actually exists within the binary.
   case fovCtx of
-    VerifyContext binConf ->
+    VerifyContext binConf _ _ ->
       -- TODO: This requires searching through the binaries in order, which
       -- takes time linear to the number of binaries. We might want to cache
       -- which binary names map to which LoadedBinaryPaths somewhere in the

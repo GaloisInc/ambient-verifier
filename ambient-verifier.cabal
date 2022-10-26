@@ -91,6 +91,7 @@ library
                       Ambient.Profiler.EmbeddedData,
                       Ambient.Profiler.Paths,
                       Ambient.Property.Definition,
+                      Ambient.Property.Record,
                       Ambient.Solver,
                       Ambient.Syscall,
                       Ambient.Syscall.Overrides,
