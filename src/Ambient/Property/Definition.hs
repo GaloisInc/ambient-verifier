@@ -206,11 +206,17 @@ spaceConsumer = TMCL.space TMC.space1 empty empty
 symbol :: TM.Tokens T.Text -> Parser T.Text
 symbol = TMCL.symbol spaceConsumer
 
+-- | Currently, we only allow alphanumeric characters and underscores in
+-- identifier names, and we do not allow identifiers to begin with a number.
+-- We may want to relax these requirements in the future.
 identifier :: Parser T.Text
 identifier = do
-  c1 <- TMC.letterChar
-  cs <- TM.many TMC.alphaNumChar
+  c1 <- TMC.letterChar <|> underscore
+  cs <- TM.many (TMC.alphaNumChar <|> underscore)
   return (T.pack (c1 : cs))
+  where
+    underscore :: Parser Char
+    underscore = TMC.char '_'
 
 parens :: Parser a -> Parser a
 parens = TM.between (symbol "(") (symbol ")")
