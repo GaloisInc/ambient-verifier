@@ -59,6 +59,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt update && \
     apt install -y \
       libgmp10 \
+      locales \
       zlib1g \
       zlibc && \
     locale-gen en_US.UTF-8
