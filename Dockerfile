@@ -54,11 +54,19 @@ RUN cp $(cabal list-bin exe:ambient-verifier) /usr/local/bin/ambient-verifier &&
     cp $(cabal list-bin test:ambient-tests) /usr/local/bin/ambient-tests
 
 FROM ubuntu:20.04
+ENV TZ=America/Los_Angeles
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt update && \
     apt install -y \
       libgmp10 \
       zlib1g \
-      zlibc
+      zlibc && \
+    locale-gen en_US.UTF-8
+
+ENV LANG en_US.UTF-8
+ENV LANGUAGE en_US:en
+ENV LC_ALL en_US.UTF-8
+
 COPY --from=0 /usr/local/bin/ambient-verifier \
               /usr/local/bin/ambient-tests \
               /usr/local/bin/cvc4 \
