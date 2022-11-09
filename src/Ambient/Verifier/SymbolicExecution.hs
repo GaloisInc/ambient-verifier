@@ -21,7 +21,7 @@ module Ambient.Verifier.SymbolicExecution (
   , insertFunctionHandle
   ) where
 
-import           Control.Lens ( Lens', (^.), set, over )
+import           Control.Lens ( Lens', (^.), (&), (.~), set, over )
 import           Control.Monad ( foldM )
 import qualified Control.Monad.Catch as CMC
 import           Control.Monad.IO.Class ( MonadIO(..) )
@@ -580,13 +580,16 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
       let ov :: LCSO.Override p sym ext args ret
           ov = LCSO.mkOverride' (AF.functionName fnOverride) regsRepr retOV
 
-      -- Next, register any auxiliary functions or forward declarations that are
-      -- used in the override.
+      -- Next, register any externs, auxiliary functions, or forward
+      -- declarations that are used in the override.
       let LCS.FnBindings curHandles = state0 ^. LCS.stateContext ^. LCS.functionBindings
-      newHandles <- insertFunctionOverrideHandles bak abi fnOverride curHandles
-      let state1 = set (LCS.stateContext . LCS.functionBindings)
-                       (LCS.FnBindings newHandles)
-                       state0
+      let curGlobals = state0 ^. LCSE.stateGlobals
+      (newHandles, newGlobals) <-
+        insertFunctionOverrideReferences bak abi fnOverride curHandles curGlobals
+      let state1 = state0 & LCS.stateContext . LCS.functionBindings
+                              .~ LCS.FnBindings newHandles
+                          & LCSE.stateGlobals
+                              .~ newGlobals
 
       -- Finally, build a function handle for the override and insert it into
       -- the state.
@@ -649,15 +652,21 @@ insertFunctionHandle state handle fnState =
                    LCF.insertHandleMap handle fnState curHandles in
   set (LCS.stateContext . LCS.functionBindings) newHandles state
 
--- | A 'AF.FunctionOverride' can contain references to auxiliary functions or
--- forward declarations (see @Note [Resolving forward declarations]@ in
--- "Ambient.FunctionOverride.Overrides.ForwardDeclarations"), all of which have
--- associated 'LCF.FnHandle's. This inserts all of these handles into a
--- 'LCF.FnHandleMap'.
+-- | A 'AF.FunctionOverride' can contain references to:
+--
+-- * Auxiliary functions or forward declarations (see
+--   @Note [Resolving forward declarations]@ in
+--   "Ambient.FunctionOverride.Overrides.ForwardDeclarations"), all of which
+--   have associated 'LCF.FnHandle's. This function inserts all of these handles
+--   into a 'LCF.FnHandleMap'.
+--
+-- * Externs, which have associated 'LCS.GlobalVar's. This function inserts all
+--   of these global variables into the 'LCSG.SymGlobalState'.
 --
 -- This function is monadic because constructing the overrides for forward
 -- declarations can fail if the declared function name cannot be found.
-insertFunctionOverrideHandles ::
+-- (Similarly for externs.)
+insertFunctionOverrideReferences ::
   forall sym bak arch scope solver st fs p ext args ret.
   ( LCB.IsSymBackend sym bak
   , LCLM.HasLLVMAnn sym
@@ -670,27 +679,54 @@ insertFunctionOverrideHandles ::
   AF.FunctionABI arch sym p ->
   AF.FunctionOverride p sym args arch ret ->
   LCF.FnHandleMap (LCS.FnState p sym ext) ->
-  IO (LCF.FnHandleMap (LCS.FnState p sym ext))
-insertFunctionOverrideHandles bak abi = go
+  LCSG.SymGlobalState sym ->
+  IO (LCF.FnHandleMap (LCS.FnState p sym ext), LCSG.SymGlobalState sym)
+insertFunctionOverrideReferences bak abi = go
   where
     go :: forall args' ret'.
       AF.FunctionOverride p sym args' arch ret' ->
       LCF.FnHandleMap (LCS.FnState p sym ext) ->
-      IO (LCF.FnHandleMap (LCS.FnState p sym ext))
-    go fnOverride handles0 = do
-      -- Register any auxiliary functions that are used in the override...
+      LCSG.SymGlobalState sym ->
+      IO (LCF.FnHandleMap (LCS.FnState p sym ext), LCSG.SymGlobalState sym)
+    go fnOverride handles0 globals0 = do
+      -- First, insert any externs that are used in the override into the
+      -- SymGlobalState...
+      globals1 <-
+        F.foldlM
+          (\gbls (externName, Some externVar) -> do
+            Some gblVar <-
+              case Map.lookup externName (AF.functionGlobalMapping abi) of
+                Just someGblVar -> pure someGblVar
+                Nothing -> CMC.throwM $ AE.ExternNameNotFound externName
+            WI.Refl <-
+              case WI.testEquality (LCS.globalType externVar) (LCS.globalType gblVar) of
+                Just eq -> pure eq
+                Nothing -> CMC.throwM $ AE.ExternTypeMismatch externName
+            case LCSG.lookupGlobal gblVar gbls of
+              Just gblVal -> pure $ LCSG.insertGlobal externVar gblVal gbls
+              Nothing ->
+                AP.panic AP.SymbolicExecution
+                        "insertFunctionOverrideReferences"
+                        [ "Failed to find value for global variable: "
+                          ++ DT.unpack (LCS.globalName gblVar)
+                        ])
+          globals0
+          (Map.toAscList $ AF.functionExterns fnOverride)
+
+      -- ...next, register any auxiliary functions that are used in the
+      -- override...
       let handles1 =
             F.foldl' (\hdls (LCS.FnBinding fnHdl fnSt) ->
                        LCF.insertHandleMap fnHdl fnSt hdls)
                      handles0
                      (AF.functionAuxiliaryFnBindings fnOverride)
 
-      -- ...and register overrides for any forward declarations. In addition
-      -- to registering the override for the forward declaration itself, we
-      -- must also recursively register any forward declarations contained
-      -- within the resolved function's override.
+      -- ...and finally, register overrides for any forward declarations. In
+      -- addition to registering the override for the forward declaration
+      -- itself, we must also recursively register any forward declarations
+      -- contained within the resolved function's override.
       F.foldlM
-        (\hdls (fwdDecName, LCF.SomeHandle fwdDecHandle) ->
+        (\hdlsAndGbls@(hdls, gbls) (fwdDecName, LCF.SomeHandle fwdDecHandle) ->
           do case LCF.lookupHandleMap fwdDecHandle hdls of
                Just _ ->
                  -- If the handle is already in the HandleMap, don't bother
@@ -698,7 +734,7 @@ insertFunctionOverrideHandles bak abi = go
                  -- important to ensure that this function terminates if it
                  -- invokes a function that uses mutually recursive forward
                  -- declarations.
-                 pure hdls
+                 pure hdlsAndGbls
                Nothing -> do
                  (ovSim, AF.SomeFunctionOverride resolvedFnOv) <-
                    AFOF.mkForwardDeclarationOverride
@@ -706,8 +742,8 @@ insertFunctionOverrideHandles bak abi = go
                  let hdls' = LCF.insertHandleMap fwdDecHandle
                                                  (LCS.UseOverride ovSim)
                                                  hdls
-                 go resolvedFnOv hdls')
-        handles1
+                 go resolvedFnOv hdls' gbls)
+        (handles1, globals1)
         (Map.toAscList $ AF.functionForwardDeclarations fnOverride)
 
 -- Check if the supplied function address resides in one of the supplied
@@ -943,11 +979,11 @@ a similar fashion.
 
 -- | Initialize a list of globals to have fresh symbolic values and insert them
 -- into global state.
-insertFreshGlobals :: forall sym
-                    . (LCB.IsSymInterface sym)
+insertFreshGlobals :: forall sym f
+                    . (LCB.IsSymInterface sym, Foldable f)
                    => sym
-                   -> [Some LCS.GlobalVar]
-                   -- ^ List of global variables to initialize
+                   -> f (Some LCS.GlobalVar)
+                   -- ^ Collection of global variables to initialize
                    -> LCSG.SymGlobalState sym
                    -- ^ Global state to insert variables into
                    -> IO (LCSG.SymGlobalState sym)
@@ -1164,8 +1200,8 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
   memVar <- liftIO $ LCLM.mkMemVar (DT.pack "ambient-verifier::memory") halloc
   (mem3, globals0) <- liftIO $ initGlobals bak mem2
   let globals1 = LCSG.insertGlobal memVar mem3 globals0
-  let functionOvGlobals = concat [ AF.functionGlobals ov
-                                 | AF.SomeFunctionOverride ov <- functionOvs ]
+  let functionOvGlobals = Map.unions [ AF.functionGlobals ov
+                                     | AF.SomeFunctionOverride ov <- functionOvs ]
   globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
 
   return (AM.InitialMemory { AM.imMemVar = memVar
@@ -1408,13 +1444,13 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
 
   DMS.withArchEval archVals sym $ \archEvalFn -> do
     let extImpl = AExt.ambientExtensions bak archEvalFn initialMem (symExLookupFunction logAction bak initialMem archVals binConf functionABI halloc archInfo props mFnCallLog oec) (symExLookupSyscall bak syscallABI halloc props oec) (ALB.bcUnsuportedRelocations binConf)
-    -- Register any auxiliary functions or forward declarations used in the
-    -- startup overrides.
-    startupBindings <-
-      F.foldlM (\bindings functionOv ->
-                 liftIO $ insertFunctionOverrideHandles
-                            bak functionABI functionOv bindings)
-               LCF.emptyHandleMap
+    -- Register any externs, auxiliary functions, forward declarations used in
+    -- the startup overrides.
+    (startupBindings, globals4) <-
+      F.foldlM (\(bindings, globals) functionOv ->
+                 liftIO $ insertFunctionOverrideReferences
+                            bak functionABI functionOv bindings globals)
+               (LCF.emptyHandleMap, globals3)
                (AFET.csoStartupOverrides csOverrides)
     -- Also register the entry point function, as we will not be able to start
     -- simulation without it.
@@ -1428,7 +1464,7 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
     -- Crucible CFG; we shouldn't have any, but if we did it would be better to
     -- capture the output over a pipe.
     let ctx = LCS.initSimContext bak (MapF.union LCLI.llvmIntrinsicTypes LCLS.llvmSymIOIntrinsicTypes) halloc IO.stdout (LCS.FnBindings bindings) extImpl ambientSimState
-    let s0 = LCS.InitialState ctx globals3 LCS.defaultAbortHandler regsRepr simAction
+    let s0 = LCS.InitialState ctx globals4 LCS.defaultAbortHandler regsRepr simAction
 
     let wmCallback = secWMMCallback seConf initialMem functionABI (AVW.wmProperties wmConfig) oec
     let wmSolver = secSolver seConf

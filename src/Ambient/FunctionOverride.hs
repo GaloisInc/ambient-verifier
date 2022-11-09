@@ -24,7 +24,7 @@ import           Control.Monad.IO.Class ( MonadIO(liftIO) )
 import qualified Data.List.NonEmpty as NEL
 import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
-import           Data.Parameterized.Some ( Some(..) )
+import           Data.Parameterized.Some ( Some )
 
 import qualified Data.Macaw.CFG as DMC
 import qualified Data.Macaw.Symbolic as DMS
@@ -35,6 +35,7 @@ import qualified Lang.Crucible.FunctionHandle as LCF
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.SymIO as LCLS
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Syntax.Atoms as LCSA
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.Expr as WE
 import qualified What4.FunctionName as WF
@@ -70,8 +71,13 @@ data FunctionOverride p sym args arch ret =
   FunctionOverride
     { functionName :: WF.FunctionName
     -- ^ Name of the function
-    , functionGlobals :: [Some LCS.GlobalVar]
+    , functionGlobals :: Map.Map LCSA.GlobalName (Some LCS.GlobalVar)
     -- ^ Global variables the function uses
+    , functionExterns :: Map.Map LCSA.GlobalName (Some LCS.GlobalVar)
+    -- ^ Externs associated with a syntax override that must be inserted into
+    --   the symbolic global state before invoking the override.
+    --   See @Wrinkle: Externs@ in @Note [Resolving forward declarations]@ in
+    --   "Ambient.FunctionOverride.Overrides.ForwardDeclarations".
     , functionArgTypes :: LCT.CtxRepr args
     -- ^ Types of the arguments to the function
     , functionReturnType :: LCT.TypeRepr ret
@@ -126,6 +132,8 @@ data FunctionOverride p sym args arch ret =
 --
 -- * There are no global variables.
 --
+-- * No externs are used.
+--
 -- * The argument and result types are statically known.
 --
 -- * No auxiliary function bindings are used.
@@ -172,7 +180,8 @@ mkVariadicFunctionOverride ::
   FunctionOverride p sym args arch ret
 mkVariadicFunctionOverride name ov = FunctionOverride
   { functionName = name
-  , functionGlobals = []
+  , functionGlobals = Map.empty
+  , functionExterns = Map.empty
   , functionArgTypes = LCT.knownRepr
   , functionReturnType = LCT.knownRepr
   , functionAuxiliaryFnBindings = []
@@ -201,7 +210,8 @@ mkVariadicSpecializedFunctionOverride ::
   FunctionOverride p sym args arch ret
 mkVariadicSpecializedFunctionOverride name ov = FunctionOverride
   { functionName = name
-  , functionGlobals = []
+  , functionGlobals = Map.empty
+  , functionExterns = Map.empty
   , functionArgTypes = LCT.knownRepr
   , functionReturnType = LCT.knownRepr
   , functionAuxiliaryFnBindings = []
@@ -219,7 +229,8 @@ syscallToFunctionOverride ::
   FunctionOverride p sym args arch ret
 syscallToFunctionOverride fovCtx syscallOv = FunctionOverride
   { functionName = name
-  , functionGlobals = []
+  , functionGlobals = Map.empty
+  , functionExterns = Map.empty
   , functionArgTypes = AS.syscallArgTypes syscallOv
   , functionReturnType = AS.syscallReturnType syscallOv
   , functionAuxiliaryFnBindings = []
@@ -383,6 +394,10 @@ data FunctionABI arch sym p =
      :: (LCB.IsSymInterface sym, LCLM.HasLLVMAnn sym)
      => Map.Map WF.FunctionName
                 (NEL.NonEmpty (SomeFunctionOverride p sym arch))
+
+    -- A mapping from global names to global variables.
+  , functionGlobalMapping
+     :: Map.Map LCSA.GlobalName (Some LCS.GlobalVar)
   }
 
 -- A function to construct a FunctionABI with memory access

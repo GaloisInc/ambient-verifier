@@ -39,7 +39,6 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
 import qualified Data.Parameterized.Nonce as Nonce
-import qualified Data.Parameterized.Pair as Pair
 import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.String as DS
 import qualified Data.Text as DT
@@ -556,14 +555,15 @@ parsedProgToFunctionOverride ::
   IO (AF.SomeFunctionOverride p sym arch)
 parsedProgToFunctionOverride path parsedProg = do
   let fnName = DS.fromString $ SF.takeBaseName path
-  let globals = parsedProgGlobalsList parsedProg
+  let globals = LCSC.parsedProgGlobals parsedProg
+  let externs = LCSC.parsedProgExterns parsedProg
   let (matchCFGs, auxCFGs) = List.partition (hasSameNameAsCblFile path)
                                             (LCSC.parsedProgCFGs parsedProg)
   let fwdDecs = LCSC.parsedProgForwardDecs parsedProg
   case matchCFGs of
     [] -> CMC.throwM (AE.CrucibleSyntaxFunctionNotFound fnName path)
     [acfg] ->
-      return $ acfgToFunctionOverride fnName globals fwdDecs auxCFGs acfg
+      return $ acfgToFunctionOverride fnName globals externs fwdDecs auxCFGs acfg
     _ ->
       -- This shouldn't be possible.  Multiple functions with the same name
       -- should have already been caught by crucible-syntax.
@@ -573,15 +573,17 @@ parsedProgToFunctionOverride path parsedProg = do
 acfgToFunctionOverride
   :: ( ext ~ DMS.MacawExt arch )
   => WF.FunctionName
-  -> [ Some LCS.GlobalVar ]
+  -> Map.Map LCSA.GlobalName (Some LCS.GlobalVar)
   -- ^ GlobalVars used in function override
+  -> Map.Map LCSA.GlobalName (Some LCS.GlobalVar)
+  -- ^ Externs declared in the override
   -> Map.Map WF.FunctionName LCF.SomeHandle
   -- ^ Forward declarations declared in the override
   -> [LCSC.ACFG ext]
   -- ^ The ACFGs for auxiliary functions
   -> LCSC.ACFG ext
   -> AF.SomeFunctionOverride p sym arch
-acfgToFunctionOverride name globals fwdDecs auxCFGs (LCSC.ACFG argTypes retType cfg) =
+acfgToFunctionOverride name globals externs fwdDecs auxCFGs (LCSC.ACFG argTypes retType cfg) =
   let argMap = AFA.bitvectorArgumentMapping argTypes
       (ptrTypes, ptrTypeMapping) = AFA.pointerArgumentMappping argMap
       retRepr = AFA.promoteBVToPtr retType
@@ -590,6 +592,7 @@ acfgToFunctionOverride name globals fwdDecs auxCFGs (LCSC.ACFG argTypes retType 
          AF.SomeFunctionOverride $ AF.FunctionOverride
          { AF.functionName = name
          , AF.functionGlobals = globals
+         , AF.functionExterns = externs
          , AF.functionArgTypes = ptrTypes
          , AF.functionReturnType = retRepr
          , AF.functionAuxiliaryFnBindings = map acfgToFnBinding auxCFGs
@@ -622,8 +625,7 @@ acfgHandleName (LCSC.ACFG _ _ g) = LCF.handleName (LCCR.cfgHandle g)
 -- | Retrieve the global variables in a 'LSCS.ParsedProgram' in list form.
 parsedProgGlobalsList :: LCSC.ParsedProgram ext -> [Some LCS.GlobalVar]
 parsedProgGlobalsList (LCSC.ParsedProgram{LCSC.parsedProgGlobals = globals}) =
-  [ Some glob
-  | (_, (Pair.Pair _ glob)) <- Map.toList globals ]
+  Map.elems globals
 
 -- | Does a function's name begin with @test_@?
 hasTestName :: LCSC.ACFG ext -> Bool
@@ -735,7 +737,7 @@ extensionParser :: forall s m ext arch w
                 -- ^ Mapping from names to syntax extensions
                 -> LCSC.ParserHooks ext
                 -- ^ ParserHooks for the desired syntax extension
-                -> m (Pair.Pair LCT.TypeRepr (LCCR.Atom s))
+                -> m (Some (LCCR.Atom s))
                 -- ^ A pair containing a result type and an atom of that type
 extensionParser wrappers hooks =
   let ?parserHooks = hooks in
@@ -781,7 +783,7 @@ extensionParser wrappers hooks =
   where
     go :: (?parserHooks :: LCSC.ParserHooks ext)
        => SomeExtensionWrapper arch
-       -> m (Pair.Pair LCT.TypeRepr (LCCR.Atom s))
+       -> m (Some (LCCR.Atom s))
     go (SomeExtensionWrapper wrapper) = do
       loc <- LCSE.position
       -- Generate atoms for the arguments to this extension
@@ -789,9 +791,8 @@ extensionParser wrappers hooks =
       -- Pass these atoms to the extension wrapper and return an atom for the
       -- resulting value
       atomVal <- extWrapper wrapper operandAtoms
-      let retType = LCCR.typeOfAtomValue atomVal
       endAtom <- LCSC.freshAtom loc atomVal
-      return (Pair.Pair retType endAtom)
+      return (Some endAtom)
 
     -- Parse an 'LCSA.AtomName' representing an endianness into a
     -- 'Maybe DMM.Endianness'

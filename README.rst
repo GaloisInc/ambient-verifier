@@ -425,15 +425,45 @@ Overrides may declare global variables using ``defglobal`` at the top level::
   (defglobal $$varname Type)
 
 The verifier permits global variable declarations anywhere in the top level,
-including after their use sites.  Currently global variables are scoped to the
-files they are declared in, but `we plan to expand global variable scope to
-cover all override files soon
-<https://gitlab-ext.galois.com/ambient/verifier/-/issues/52>`_.
-
-The verifier instantiates global variables as fresh symbolic values.  To change
-the value of a global variable, use ``set-global!``::
+including after their use sites. Global variables are scoped to the files they
+are declared in. The verifier instantiates global variables as fresh symbolic
+values.  To change the value of a global variable, use ``set-global!``::
 
   (set-global! $$varname value)
+
+A ``.cbl`` file can also access global variables defined externally by using an
+*extern*. An extern declaration states the type of a global variable that is
+not defined in the file itself, but will be provided later by some other means.
+(Externs are to global variables what forward declarations are to functions.)
+
+For instance, suppose we have overrides for functions named ``f`` and ``g``,
+where ``f`` defines a global variable::
+
+  (defglobal $$f-glob Int)
+
+  (defun @f () Unit
+    (start start:
+      (let val (bv-typed-literal Int 42))
+      (set-global! $$f-glob val)
+      (return ())))
+
+And ``g`` accesses ``f``'s global variable::
+
+  (extern $$f-glob Integer)
+
+  (defun @g () Int
+    (start start:
+      (return $$f-glob))
+
+Suppose that we first invoke ``f``, then ``g``. By the time that ``g`` is
+invoked, the value of ``$$f-glob`` will already have been set to ``42``, so
+``g`` will return ``42``.
+
+Currently, externs can be resolved to global variables defined in other
+override files. Note that the verifier will raise an error if it cannot find a
+global variable of the same name, or if it finds a global variable with a
+different type than what is stated in the ``extern`` declaration.  Resolving
+externs to global variables defined in binaries is not currently supported.
 
 Tests
 -----

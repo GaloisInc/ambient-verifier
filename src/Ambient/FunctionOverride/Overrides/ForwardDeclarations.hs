@@ -211,4 +211,14 @@ Both the `verify` and `test-overrides` commands must register overrides for
 forward declarations, but the `verify` command does so lazily (see
 Note [Lazily registering overrides] in A.Extensions) while the `test-overrides`
 command registers everything upfront.
+
+-----
+-- Wrinkle: Externs
+-----
+
+A similar process occurs for resolving externs to global variables. This
+process, however, is made simpler by the fact that we do not yet have any
+global variables that are built into the verifier itself, so we do not have
+to perform any pipe-fitting. (If we do wire global variables into the
+verifier later, we may need to revisit this choice.)
 -}

@@ -21,6 +21,7 @@ import qualified Prettyprinter as PP
 import qualified Text.Megaparsec as MP
 
 import qualified Data.Macaw.Memory as DMM
+import qualified Lang.Crucible.Syntax.Atoms as LCSA
 import qualified Lang.Crucible.Syntax.Concrete as LCSC
 import qualified Lang.Crucible.Syntax.ExprParse as LCSE
 import qualified Lang.Crucible.Types as LCT
@@ -180,6 +181,12 @@ data AmbientException where
   COverrideTransError :: FilePath -> ODSL.TransError -> AmbientException
   -- | An error occurred while populating a relocation in memory.
   RelocationMemoryError :: DMM.MemWidth w => DMM.MemoryError w -> AmbientException
+  -- | When resolving an extern, a global variable with the same name could not
+  -- be found.
+  ExternNameNotFound :: LCSA.GlobalName -> AmbientException
+  -- | When resolving an extern, a global variable was found with the same name
+  -- but with a different type.
+  ExternTypeMismatch :: LCSA.GlobalName -> AmbientException
 
 deriving instance Show AmbientException
 instance X.Exception AmbientException
@@ -470,3 +477,9 @@ instance PP.Pretty AmbientException where
         -- MemoryError doesn't have a Pretty instance, but its Show instance is
         -- especially pretty
         PP.viaShow memErr
+      ExternNameNotFound (LCSA.GlobalName externName) ->
+        PP.pretty "Could not find a global variable to resolve the extern named" PP.<+>
+        PP.squotes (PP.pretty externName)
+      ExternTypeMismatch (LCSA.GlobalName externName) ->
+        PP.pretty "Type mismatch between an extern and a global variable named" PP.<+>
+        PP.squotes (PP.pretty externName)

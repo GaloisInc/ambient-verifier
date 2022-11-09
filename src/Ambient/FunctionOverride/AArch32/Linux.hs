@@ -239,6 +239,11 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem ar
                                      | sfo@(AF.SomeFunctionOverride fo) <-
                                          customNamedOvs ++ namedOvs
                                      ]
+                 , AF.functionGlobalMapping =
+                     Map.unions [ AF.functionGlobals fo
+                                | AF.SomeFunctionOverride fo <-
+                                    customNamedOvs ++ namedOvs
+                                ]
                  , AF.functionAddrMapping =
                      Map.union (Map.fromList customKernelOvs) addrOvs
                  }

@@ -219,6 +219,9 @@ fd-zero.exe: fd-zero.c ambient_assert.o
 null-check.exe: null-check.c
 	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
 
+extern/extern.exe: extern/extern.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

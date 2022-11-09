@@ -226,6 +226,11 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals un
                                        | sfo@(AF.SomeFunctionOverride fo) <-
                                            customNamedOvs ++ namedOvs
                                        ]
+                    , AF.functionGlobalMapping =
+                        Map.unions [ AF.functionGlobals fo
+                                   | AF.SomeFunctionOverride fo <-
+                                       customNamedOvs ++ namedOvs
+                                   ]
                     , AF.functionAddrMapping = addrOvs
                     }
 
