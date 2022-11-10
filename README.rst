@@ -11,14 +11,23 @@ See the requirements and design documents in the ``doc`` directory for more deta
 Building
 ========
 
+To build the verifier, first clone this repository with::
+
+  git clone git@gitlab-ext.galois.com:ambient/verifier.git
+  cd verifier
+  git submodule update --init
+
+Note: if these steps complete successfully, the directories in ``submodules/`` will be populated (not empty).
+
+Important: do not use ``--recursive`` - it's not needed, and will result in downloading unnecessary content.
+
 The verifier is built with the GHC Haskell compiler (versions 8.10, 9.0, and 9.2). To get the compiler, use your distribution packages or the `ghcup tool <https://www.haskell.org/ghcup/>`_::
 
   ghcup install ghc 9.2.4
   ghcup install cabal 3.6.2.0
 
-To build the verifier, first clone this repository and then::
+Then, in the ``verifier`` directory::
 
-  cd verifier
   ln -s cabal.project.dist cabal.project
   cabal configure -w ghc-9.2.4 pkg:ambient-verifier
   cabal build pkg:ambient-verifier
