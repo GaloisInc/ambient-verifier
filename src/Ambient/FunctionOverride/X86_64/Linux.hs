@@ -217,7 +217,7 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals un
                     ++ AFXLS.x86_64LinuxSpecializedOverrides
   in AF.FunctionABI { AF.functionIntegerArguments = \bak ->
                         x86_64LinuxIntegerArguments bak archVals
-                    , AF.functionMainArgumentRegisters = (DMXR.RDI, DMXR.RSI)
+                    , AF.functionIntegerArgumentRegisters = DMX.x86ArgumentRegs
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
                     , AF.functionReturnAddr = x86_64LinuxReturnAddr
                     , AF.functionNameMapping =

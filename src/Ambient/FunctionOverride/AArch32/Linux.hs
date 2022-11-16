@@ -31,6 +31,7 @@ import qualified Data.Macaw.ARM as DMA
 import qualified Data.Macaw.ARM.ARMReg as ARMReg
 import qualified Data.Macaw.Memory as DMM
 import qualified Data.Macaw.Symbolic as DMS
+import qualified Data.Macaw.Types as DMT
 import qualified Language.ASL.Globals as ASL
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
@@ -83,14 +84,17 @@ aarch32LinuxIntegerArguments bak archVals argTypes regFile mem = do
   AO.buildArgumentAssignment bak argTypes argList
   where
     ptrWidth = PN.knownNat @32
-    regArgList = map (pure . lookupReg)
-                     [ ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
-                     , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
-                     , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R2")
-                     , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R3")
-                     ]
+    regArgList = map (pure . lookupReg) aarch32LinuxIntegerArgumentRegisters
     lookupReg r = LCS.RegEntry (LCLM.LLVMPointerRepr ptrWidth)
                                (LCS.unRV (DMAS.lookupReg r regFile))
+
+aarch32LinuxIntegerArgumentRegisters :: [ARMReg.ARMReg (DMT.BVType 32)]
+aarch32LinuxIntegerArgumentRegisters =
+  [ ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
+  , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
+  , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R2")
+  , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R3")
+  ]
 
 -- | Inject override return values back into the register state
 --
@@ -227,10 +231,7 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem ar
         ] in
   AF.FunctionABI { AF.functionIntegerArguments = \bak ->
                      aarch32LinuxIntegerArguments bak archVals
-                 , AF.functionMainArgumentRegisters =
-                     ( ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
-                     , ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R1")
-                     )
+                 , AF.functionIntegerArgumentRegisters = aarch32LinuxIntegerArgumentRegisters
                  , AF.functionIntegerReturnRegisters = aarch32LinuxIntegerReturnRegisters
                  , AF.functionReturnAddr = aarch32LinuxReturnAddr
                  , AF.functionNameMapping =

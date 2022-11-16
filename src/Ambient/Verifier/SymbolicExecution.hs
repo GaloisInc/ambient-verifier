@@ -1413,7 +1413,11 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
                Nothing  -> AP.panic AP.FunctionOverride "simulateFunction"
                              [ "Failed to find global variable for memory: "
                                ++ show (LCCC.globalName (AM.imMemVar initialMem)) ]
-  let (mainReg0, mainReg1) = AF.functionMainArgumentRegisters functionABI
+  (mainReg0, mainReg1) <-
+    case AF.functionIntegerArgumentRegisters functionABI of
+      (reg0:reg1:_) -> pure (reg0, reg1)
+      _ -> AP.panic AP.SymbolicExecution "simulateFunction"
+             [ "Not enough registers for the main() function" ]
   (regsWithMainArgs, mem1) <- liftIO $ initMainArguments bak mem0 archVals mainReg0 mainReg1 cliArgs regsWithStack
   let globals2 = LCSG.insertGlobal (AM.imMemVar initialMem) mem1 globals1
   let arguments = LCS.RegMap (Ctx.singleton regsWithMainArgs)

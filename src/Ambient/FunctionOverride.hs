@@ -318,12 +318,9 @@ data FunctionABI arch sym p =
       -- A pair containing the function argument values and a callback for
       -- retrieving variadic arguments.
 
-    -- The two registers used to store arguments in an
-    -- @int main(int argc, char *argv[])@ function.
-  , functionMainArgumentRegisters
-      :: ( DMC.ArchReg arch (DMT.BVType (DMC.ArchAddrWidth arch))
-         , DMC.ArchReg arch (DMT.BVType (DMC.ArchAddrWidth arch))
-         )
+    -- The registers used to pass integer arguments to functions.
+  , functionIntegerArgumentRegisters
+      :: [DMC.ArchReg arch (DMT.BVType (DMC.ArchAddrWidth arch))]
 
     -- Build an OverrideSim action with appropriate return register types from
     -- a given OverrideSim action
