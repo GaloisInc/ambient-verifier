@@ -66,6 +66,7 @@ import qualified What4.Partial as WP
 
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.EntryPoint as AEp
+import qualified Ambient.EnvVar as AEnv
 import qualified Ambient.EventTrace as AEt
 import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
@@ -105,6 +106,12 @@ data ProgramInstance =
                   -- Note that the command line UI can take textual arguments;
                   -- the real arguments here are 'BS.ByteString's because that
                   -- is how they must be represented in the memory model.
+                  , piConcreteEnvVars :: [AEnv.ConcreteEnvVar BS.ByteString]
+                  -- ^ The environment variables to pass to the program, where
+                  -- the values are concrete.
+                  , piSymbolicEnvVars :: [AEnv.SymbolicEnvVar BS.ByteString]
+                  -- ^ The environment variables to pass to the program, where
+                  -- the values are symbolic.
                   , piSolver :: AS.Solver
                   -- ^ The solver to use for path satisfiability checking and
                   -- goals
@@ -503,8 +510,9 @@ verify logAction pinst timeoutDuration = do
         , AVS.fcBuildFunctionABI = functionABI
         , AVS.fcCrucibleSyntaxOverrides = csOverrides
         }
+      envVarMap <- liftIO $ AEnv.mkEnvVarMap bak (piConcreteEnvVars pinst) (piSymbolicEnvVars pinst)
 
-      ambientExecResult <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) (piLogFunctionCalls pinst) binConf fnConf (piCommandLineArguments pinst)
+      ambientExecResult <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) (piLogFunctionCalls pinst) binConf fnConf (piCommandLineArguments pinst) envVarMap
       let crucibleExecResult = AVS.serCrucibleExecResult ambientExecResult
       badBehavior' <- liftIO $ readIORef badBehavior
 

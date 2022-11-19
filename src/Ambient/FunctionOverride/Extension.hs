@@ -425,6 +425,8 @@ runOverrideTests logAction bak archInfo archVals (AF.BuildFunctionABI buildFunct
                             -- cannot invoke function addresses, so we do not
                             -- need to register any function address overrides.
                   cblNameOvs
+                  []        -- We do not have any additional global variables
+                            -- to register for simulation outside of a binary.
           fwdDecBindings <- resolveForwardDecs (AF.functionNameMapping functionABI) fwdDecsMap
           -- Make sure to also include functions that don't begin with `test_`
           -- (i.e., the `auxCFGs`), as they might be used during simulation.

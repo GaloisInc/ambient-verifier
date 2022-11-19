@@ -225,6 +225,12 @@ extern/extern.exe: extern/extern.c ambient_assert.o
 getenv-symbolic/getenv-symbolic.exe: getenv-symbolic/getenv-symbolic.c ambient_assert.o
 	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
 
+envp/envp.exe: envp/envp.c ambient_assert.h
+	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
+environ/environ.exe: environ/environ.c ambient_assert.h
+	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

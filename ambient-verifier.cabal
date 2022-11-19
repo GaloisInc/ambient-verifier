@@ -37,6 +37,7 @@ common shared
         mtl >= 2 && < 3,
         panic >= 0.4 && < 0.5,
         parameterized-utils >= 2 && < 3,
+        parser-combinators >= 1.2 && < 1.4,
         prettyprinter >= 1.7 && < 1.8,
         yaml >= 0.11 && < 0.12,
         text
@@ -48,6 +49,7 @@ library
                       Ambient.Discovery,
                       Ambient.Encoding,
                       Ambient.EntryPoint,
+                      Ambient.EnvVar,
                       Ambient.EventTrace,
                       Ambient.Exception,
                       Ambient.Extensions,

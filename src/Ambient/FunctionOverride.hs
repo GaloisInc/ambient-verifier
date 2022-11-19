@@ -415,6 +415,8 @@ newtype BuildFunctionABI arch sym p = BuildFunctionABI (
     -- Overrides for functions at particular addresses
     -> [ SomeFunctionOverride p sym arch ]
     -- Overrides for functions with particular names
+    -> [ Some LCS.GlobalVar ]
+    -- Additional global variables to register for simulation
     -> FunctionABI arch sym p
   )
 

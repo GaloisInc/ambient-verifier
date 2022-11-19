@@ -5,13 +5,16 @@ module Options (
   , parser
   ) where
 
+import qualified Data.String as Str
 import qualified Data.Text as T
 import           Data.Word ( Word64 )
 import qualified Options.Applicative as OA
+import qualified Text.Megaparsec as TM
 import           Text.Read (readMaybe)
 
 import qualified Ambient.ABI as AA
 import qualified Ambient.EntryPoint as AEp
+import qualified Ambient.EnvVar as AEnv
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 
@@ -27,17 +30,23 @@ data VerifyOptions =
                 -- See also @Note [Future Symbolic IO Improvements]@.
                 , commandLineArgv0 :: Maybe T.Text
                 -- ^ If @'Just' arg@, use @arg@ as the first element of @argv@
-                -- when simulating a @main(argc, argv)@ function.
-                -- If 'Nothing', use @binaryPath@ instead.
+                -- when simulating a @main(...)@ function. If 'Nothing', use
+                -- @binaryPath@ instead.
                 --
-                -- See @Note [Simulating main(argc, argv)]@.
+                -- See @Note [Simulating main()]@.
                 , commandLineArguments :: [T.Text]
                 -- ^ A list of command line arguments to set up in the environment of
                 -- the program. Note that this excludes the command name
                 -- (i.e., @argv[0]@), which is handled separately in
                 -- 'commandLineArgv0'.
                 --
-                -- See @Note [Simulating main(argc, argv)]@.
+                -- See @Note [Simulating main()]@.
+                , concreteEnvVars :: [AEnv.ConcreteEnvVar T.Text]
+                -- ^ A list of environment variables to set up when simulating
+                --   the program, where the values are concrete.
+                , symbolicEnvVars :: [AEnv.SymbolicEnvVar T.Text]
+                -- ^ A list of environment variables to set up when simulating
+                --   the program, where the values are symbolic.
                 , solver :: AS.Solver
                 -- ^ The SMT solver to use for path satisfiability checking and
                 -- discharging verification conditions
@@ -187,6 +196,19 @@ withCCParser =
 verifyParser :: OA.Parser Command
 verifyParser = Verify <$> verifyOptions
 
+-- | Convert a @megaparsec@ parser to an @optparse-applicative@ 'OA.ReadM'.
+mkEnvVarReader ::
+     ( TM.ShowErrorComponent e
+     , Str.IsString s
+     , TM.VisualStream s
+     , TM.TraversableStream s
+     )
+  => TM.Parsec e s a -> OA.ReadM a
+mkEnvVarReader p = OA.eitherReader $ \rawStr ->
+  case TM.parse p "" (Str.fromString rawStr) of
+    Left err  -> Left $ TM.errorBundlePretty err
+    Right val -> Right val
+
 -- | The options used for the @verify@ and @list-overrides@ subcommands.
 verifyOptions :: OA.Parser VerifyOptions
 verifyOptions = VerifyOptions
@@ -213,6 +235,27 @@ verifyOptions = VerifyOptions
                                           , "supplied multiple times to pass multiple arguments."
                                           ])
                                     ))
+           <*> OA.many (OA.option (mkEnvVarReader AEnv.concreteEnvVarParser)
+                                  ( OA.long "env-var"
+                                 <> OA.metavar "KEY=VALUE"
+                                 <> OA.help (unlines
+                                       [ "Define a environment variable named KEY with the"
+                                       , "concrete value VALUE for the duration of the process."
+                                       , "This can be supplied multiple times to define"
+                                       , "multiple environment variables."
+                                       ])
+                                 ))
+           <*> OA.many (OA.option (mkEnvVarReader AEnv.symbolicEnvVarParser)
+                                  ( OA.long "env-var-symbolic"
+                                 <> OA.metavar "KEY[LEN]"
+                                 <> OA.help (unlines
+                                       [ "Define a environment variable named KEY with a"
+                                       , "value containing LEN symbolic characters (plus a"
+                                       , "null terminator) for the duration of the process."
+                                       , "This can be supplied multiple times to define"
+                                       , "multiple symbolic environment variables."
+                                       ])
+                                 ))
            <*> solverParser
            <*> floatModeParser
            <*> timeoutParser
@@ -324,20 +367,23 @@ supported). This will likely need to be generalized to support:
 - environment variables
 - symbolic contents of each (currently, only concrete values are supported)
 
-Note [Simulating main(argc, argv)]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-When simulating an entry point, we assume it has the same type signature as
-`int main()` or `int main(int argc, char *argv[])`. In the latter case, we need
-to pre-populate the registers corresponding to `argc` and `argv` to ensure that
-simulation works as expected. (We aren't strictly required to do so in the
-former case, but we do so anyway, as it does no harm and avoids us having to
+Note [Simulating main()]
+~~~~~~~~~~~~~~~~~~~~~~~~
+When simulating an entry point, we assume it has the same type signature as one
+of `int main()`, `int main(int argc, char *argv[])`, or
+`int main(int argc, char *argv[], char *envp[])`. In case `main` accepts
+arguments, we need to pre-populate the registers corresponding to `argc`,
+`argv`, and `envp` to ensure that simulation works as expected. (We aren't
+strictly required to do so in the event that `main` doesn't accept some of
+these arguments, but we do so anyway, as it does no harm and avoids us having to
 figure out which type of main() function we're in.)
 
 After obtaining the arguments from the command line, we have to marshal them to
 the appropriate C values. This process is quite straightfoward for `argc`, but
-`argv` is a bit trickier. The user provides the values in `argv` as [Text], but
-in C, `argv` is represented as an array of C strings. To convert from the
-former to the latter, we need to do the following:
+`argv` and `envp` are a bit trickier. Let's start with `argv` first. The user
+provides the values in `argv` as [Text], but in C, `argv` is represented as an
+array of C strings. To convert from the former to the latter, we need to do the
+following:
 
 * We need to convert each Text value to a ByteString, which corresponds closely
   to C's representation of a string (i.e., an array of bytes). We must also
@@ -363,16 +409,29 @@ former to the latter, we need to do the following:
 Once we've done all that, all that's left is to update the appropriate
 registers. Because these will be different on each OS/architecture
 configuration, we abstract out the values of these registers into the
-`functionMainArgumentRegisters` field of a `FunctionABI`.
+`functionIntegerArgumentRegisters` field of a `FunctionABI`.
+
+The process for `envp` is largely similar to that of `argv`, as `envp` is also
+an array of C strings. See `allocaEnvp` in A.Verifier.SymbolicExecution for the
+implementation. The primary differences between the handling of `argv` and
+`envp` are that:
+
+* Each element of `envp` is in `KEY=VALUE` format. Moreover, we ensure that
+  each `KEY` is only present in one element of `envp`, i.e., there are no
+  duplicate keys.
+
+* Environment variable `VALUE`s can be made symbolic by using the
+  --env-var-symbolic KEY[n] command-line option, where KEY is assigned a
+  VALUE of `n` symbolic characters, followed by a null terminator.
 
 Be aware of the following limitations:
 
-* The command line parameters are currently concrete. We may want them to be
-  symbolic at some point. In particular, we might be interested in whether or not
-  argv[0] is absolute or relative.  In that example, we could improve our
-  diagnostics by just making argv[0] a mux on a fresh boolean variable that we
-  record; if it is referenced in a counterexample, that would tell us that the
-  condition is important for explaining a failure.
+* The command line parameters specifying `argv` are currently concrete. We may
+  want them to be symbolic at some point. In particular, we might be interested
+  in whether or not argv[0] is absolute or relative.  In that example, we could
+  improve our diagnostics by just making argv[0] a mux on a fresh boolean
+  variable that we record; if it is referenced in a counterexample, that would
+  tell us that the condition is important for explaining a failure.
 
 * Command line parameters are currently text; if we need to support
   binary data in command line arguments, that should be done through a separate

@@ -217,8 +217,9 @@ command registers everything upfront.
 -----
 
 A similar process occurs for resolving externs to global variables. This
-process, however, is made simpler by the fact that we do not yet have any
-global variables that are built into the verifier itself, so we do not have
-to perform any pipe-fitting. (If we do wire global variables into the
-verifier later, we may need to revisit this choice.)
+process, however, is made simpler by the fact that the only global variables
+that we bundle into the verifier itself (e.g., AMBIENT_environ) are of type
+Pointer. This type happens to not require any pipe-fitting, which greatly
+simplifies matters. (If we wire global variables into the verifier later that
+do require pipe-fitting, we will need to revisit this.)
 -}

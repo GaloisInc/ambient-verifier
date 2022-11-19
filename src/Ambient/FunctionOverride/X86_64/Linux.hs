@@ -38,6 +38,7 @@ import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.Simulator as LCS
+import qualified Lang.Crucible.Syntax.Atoms as LCSA
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.BaseTypes as WT
 import qualified What4.Expr as WE
@@ -209,7 +210,7 @@ x86_64LinuxReturnAddr bak archVals regs mem = do
 x86_64LinuxFunctionABI :: ( LCLM.HasLLVMAnn sym
                           , ?memOpts :: LCLM.MemOptions )
                        => AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
-x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
+x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals unsupportedRelocs addrOvs namedOvs otherGlobs ->
   let ?ptrWidth = PN.knownNat @64 in
   -- NOTE: The order of elements in customNamedOvs is important.  See @Note
   -- [Override Specialization Order]@ for more information.
@@ -227,10 +228,18 @@ x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals un
                                            customNamedOvs ++ namedOvs
                                        ]
                     , AF.functionGlobalMapping =
-                        Map.unions [ AF.functionGlobals fo
-                                   | AF.SomeFunctionOverride fo <-
-                                       customNamedOvs ++ namedOvs
-                                   ]
+                        let otherGlobMap =
+                              Map.fromList
+                                [ (LCSA.GlobalName (LCS.globalName glob), sg)
+                                | sg@(Some glob) <- otherGlobs
+                                ] in
+                        let functionGlobMap =
+                              Map.unions $
+                                [ AF.functionGlobals fo
+                                | AF.SomeFunctionOverride fo <-
+                                    customNamedOvs ++ namedOvs
+                                ] in
+                        otherGlobMap `Map.union` functionGlobMap
                     , AF.functionAddrMapping = addrOvs
                     }
 

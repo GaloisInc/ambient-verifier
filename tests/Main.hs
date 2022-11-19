@@ -35,6 +35,7 @@ import qualified Ambient.ABI as AA
 import qualified Ambient.Diagnostic as AD
 import qualified Ambient.Encoding as AEnc
 import qualified Ambient.EntryPoint as AEp
+import qualified Ambient.EnvVar as AEnv
 import qualified Ambient.Exception as AE
 import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Property.Definition as APD
@@ -68,6 +69,12 @@ data ExpectedGoals =
                   -- If we ever opt to write ExpectedGoals' FromJSON instance
                   -- by hand, as proposed in #90, we could change this field
                   -- from type Maybe [Text] to just [Text] at that time.
+                , concreteEnvVars :: Maybe [AEnv.ConcreteEnvVar DT.Text]
+                  -- Similar to above, Nothing represents the empty list, as
+                  -- does Just [].
+                , symbolicEnvVars :: Maybe [AEnv.SymbolicEnvVar DT.Text]
+                  -- Similar to above, Nothing represents the empty list, as
+                  -- does Just [].
                 , throwsException :: Maybe Bool
                   -- Similar to above, Nothing represents False, as does Just False
                 }
@@ -86,6 +93,8 @@ emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , entryPointAddr = Nothing
                                    , argv0 = Nothing
                                    , arguments = Nothing
+                                   , concreteEnvVars = Nothing
+                                   , symbolicEnvVars = Nothing
                                    , throwsException = Nothing
                                    }
 
@@ -160,6 +169,8 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   let args = AEnc.encodeCommandLineArguments binaryFilePath
                                              (argv0 expectedResult)
                                              (fromMaybe [] (arguments expectedResult))
+  let concreteEnvVars' = map (fmap AEnc.encodeCLIText) (fromMaybe [] (concreteEnvVars expectedResult))
+  let symbolicEnvVars' = map (fmap AEnc.encodeCLIText) (fromMaybe [] (symbolicEnvVars expectedResult))
 
   -- Create a problem instance; note that we are currently providing no
   -- arguments and no standard input.  The expected output file could include
@@ -170,6 +181,8 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piSolver = AS.Yices
                                  , AV.piFloatMode = AS.Real
                                  , AV.piCommandLineArguments = args
+                                 , AV.piConcreteEnvVars = concreteEnvVars'
+                                 , AV.piSymbolicEnvVars = symbolicEnvVars'
                                  , AV.piProperties = maybeToList mprop
                                  , AV.piEntryPoint = entryPoint
                                  , AV.piProfileTo = Nothing

@@ -1,0 +1,8 @@
+successful: 18
+failed: 0
+concreteEnvVars:
+  - "FOO=wombat"
+  - "BAR=koala"
+symbolicEnvVars:
+  - "BAZ[5]"
+overrideDir: tests/binaries/aarch32/environ/overrides

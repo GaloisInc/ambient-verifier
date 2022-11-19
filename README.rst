@@ -470,6 +470,19 @@ global variable of the same name, or if it finds a global variable with a
 different type than what is stated in the ``extern`` declaration.  Resolving
 externs to global variables defined in binaries is not currently supported.
 
+Built-in Global Variables
+-------------------------
+
+There are some global variables that are built in to the verifier itself and
+are accessible via ``extern`` declarations. These global variables are often
+useful in startup overrides, as they can be written to particular locations in
+the binary before simulating the entry point function.
+
+* ``AMBIENT_environ :: Pointer``: An array of ``KEY=VALUE`` pairs representing
+  each environment variable. This has the same contents as the ``envp``
+  argument to the ``main()`` function. (See the "``main()`` Arguments"
+  section.)
+
 Tests
 -----
 
@@ -507,6 +520,42 @@ then the verifier will not be able to discover the ``main`` symbol and will
 give up as a result. To work around this problem, one can manally specify the
 address of the entry point function (be in ``main()`` or otherwise) with the
 ``--entry-point-addr <function-address>`` option.
+
+``main()`` Arguments
+--------------------
+
+If ``main()`` is the entry point function for your binary, you may want to
+supply arguments or environment variables to it. These can be specified with
+the following command-line arguments:
+
+* ``--argv0 <ARG>`` specifies the name of the first command-line argument to
+  pass to the process (i.e., ``argv[0]``). Usually, this is the name of the
+  binary itself, so if ``--argv0`` is not specified, its value will default to
+  the ``--binary`` path.
+* ``--argument <ARG>`` specifies a command-line argument to pass to the process.
+  In other words, these specify all of the elements of the ``argv`` array
+  besides the first one. This can be supplied multiple times to pass multiple
+  arguments (e.g., ``--argument foo --argument bar ...``.
+* ``--env-var <KEY>=<VALUE>`` defines a environment variable named ``KEY`` with
+  the concrete value ``VALUE`` for the duration of the process. In other words,
+  these specify elements of the ``envp`` array. This can be supplied multiple
+  times to define multiple environment variables.
+
+  ``--env-var-symbolic <KEY>[LEN]`` defines a environment variable named ``KEY``
+  with a value containing ``LEN`` symbolic characters (plus a null terminator)
+  for the duration of the process. Like ``--env-var``, this is a way to specify
+  elements of the ``envp`` array. This can be supplied multiple
+  times to define multiple symbolic environment variables.
+
+  Note that unlike ``argv``, the order of environment variables in the ``envp``
+  array is *not* specified. For example, passing
+  ``--env-var FOO=f --env-var BAR=g`` does not guarantee that ``FOO=f`` will
+  appear before ``BAR=g``.
+
+  If an environment variable is redefined on the command-line (e.g.,
+  ``--env-var TWEEDLE=dee --env-ar TWEEDLE=dum``), it is not specified which
+  value ``TWEEDLE`` will have in ``envp``. As a result, we don't recommend
+  redefining environment variables like this.
 
 Static and Dynamic Binaries
 ===========================

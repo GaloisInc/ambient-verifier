@@ -29,6 +29,7 @@ import qualified Control.Monad.State.Strict as CMS
 import qualified Data.BinarySymbols as BinSym
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
+import           Data.Char as C
 import qualified Data.Foldable as F
 import qualified Data.IntMap as IM
 import           Data.IORef ( readIORef )
@@ -1212,10 +1213,19 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
                            , AM.imMemPtrTable = memPtrTbl
                            })
 
--- | Populate the registers corresponding to @main(argc, argv)@'s arguments
--- with the user-supplied command line arguments.
+-- | The values of the arguments to the @main()@ function.
 --
--- See @Note [Simulating main(argc, argv)]@ in @Options@.
+-- See @Note [Simulating main()]@ in @Options@.
+data MainArgVals sym w = MainArgVals
+  { argcVal :: WI.SymBV sym w
+  , argvVal :: LCLM.LLVMPtr sym w
+  , envpVal :: LCLM.LLVMPtr sym w
+  }
+
+-- | Populate the registers corresponding to @main(...)@'s arguments with the
+-- user-supplied command line arguments.
+--
+-- See @Note [Simulating main()]@ in @Options@.
 initMainArguments ::
   ( LCB.IsSymBackend sym bak
   , LCLM.HasLLVMAnn sym
@@ -1231,29 +1241,41 @@ initMainArguments ::
   -- ^ The register for the first argument (@argc@)
   DMC.ArchReg arch (DMT.BVType w) ->
   -- ^ The register for the second argument (@argv@)
+  DMC.ArchReg arch (DMT.BVType w) ->
+  -- ^ The register for the third argument (@envp@)
   [BS.ByteString] ->
   -- ^ The user-supplied command-line arguments
+  Map.Map BS.ByteString [WI.SymBV sym 8] ->
+  -- ^ The user-supplied environment variables
   LCS.RegEntry sym (DMS.ArchRegStruct arch) ->
   -- ^ The initial register state
-  IO ( LCS.RegEntry sym (DMS.ArchRegStruct arch)
+  IO ( MainArgVals sym w
+     , LCS.RegEntry sym (DMS.ArchRegStruct arch)
      , LCLM.MemImpl sym
      )
-initMainArguments bak mem0 archVals r0 r1 argv regStruct0 = do
+initMainArguments bak mem0 archVals r0 r1 r2 argv envVars regStruct0 = do
   let sym = LCB.backendGetSym bak
   let argc = List.genericLength argv
   argcBV  <- WI.bvLit sym ?ptrWidth $ BVS.mkBV ?ptrWidth argc
   argcPtr <- LCLM.llvmPointer_bv sym argcBV
   let regStruct1 = DMS.updateReg archVals regStruct0 r0 argcPtr
-  (argvPtr, mem2) <- allocaArgv bak mem0 argv
+  (argvPtr, mem1) <- allocaArgv bak mem0 argv
   let regStruct2 = DMS.updateReg archVals regStruct1 r1 argvPtr
-  pure (regStruct2, mem2)
+  (envpPtr, mem2) <- allocaEnvp bak mem1 envVars
+  let regStruct3 = DMS.updateReg archVals regStruct2 r2 envpPtr
+  let argVals = MainArgVals
+                  { argcVal = argcBV
+                  , argvVal = argvPtr
+                  , envpVal = envpPtr
+                  }
+  pure (argVals, regStruct3, mem2)
 
--- | Allocate an @argv@ array for use in a @main(argc, argv)@ entry point
--- function. This marshals the list of ByteStrings to an array of C strings.
--- As mandated by section 5.1.2.2.1 of the C standard, the last element of the
--- array will be a null pointer.
+-- | Allocate an @argv@ array for use in a @main(...)@ entry point function.
+-- This marshals the list of ByteStrings to an array of C strings. As mandated
+-- by section 5.1.2.2.1 of the C standard, the last element of the array will be
+-- a null pointer.
 --
--- See @Note [Simulating main(argc, argv)]@ in @Options@.
+-- See @Note [Simulating main()]@ in @Options@.
 allocaArgv ::
   ( LCB.IsSymBackend sym bak
   , LCLM.HasLLVMAnn sym
@@ -1267,27 +1289,87 @@ allocaArgv ::
   IO (LCLM.LLVMPtr sym w, LCLM.MemImpl sym)
 allocaArgv bak mem0 argv = do
   let sym = LCB.backendGetSym bak
-  let sz = List.genericLength argv + 1 -- Note the (+ 1) here for the null pointer
+  let w8 = WI.knownNat @8
+  symArgv <-
+    Trav.for argv $ \arg ->
+    Trav.for (BS.unpack arg) $ \byte ->
+    WI.bvLit sym w8 $ BVS.mkBV w8 $ fromIntegral byte
+  allocaCStringArray bak mem0 symArgv "argv"
+
+-- | Allocate an @envp@ array for use in a @main(...)@ entry point function.
+-- Each environment variable is written in @KEY=VALUE@ format, where the bytes
+-- in @VALUE@ may be symbolic. By convention, the last element of the array
+-- will be a null pointer.
+--
+-- See @Note [Simulating main()]@ in @Options@.
+allocaEnvp ::
+  ( LCB.IsSymBackend sym bak
+  , LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  bak ->
+  LCLM.MemImpl sym ->
+  Map.Map BS.ByteString [WI.SymBV sym 8] ->
+  -- ^ The user-supplied environment variables
+  IO (LCLM.LLVMPtr sym w, LCLM.MemImpl sym)
+allocaEnvp bak mem0 envVars = do
+  let sym = LCB.backendGetSym bak
+  let w8 = WI.knownNat @8
+  equalsSign <- WI.bvLit sym w8 $ BVS.mkBV w8 $ toInteger $ C.ord '='
+  symEnvVars <-
+    Trav.for (Map.toAscList envVars) $ \(key, val) -> do
+      key' <- Trav.for (BS.unpack key) $ \byte ->
+              WI.bvLit sym w8 $ BVS.mkBV w8 $ fromIntegral byte
+      pure $ key' ++ [equalsSign] ++ val
+  allocaCStringArray bak mem0 symEnvVars "envp"
+
+-- | Allocate an array of C strings on the stack. The bytes in each C string
+-- may be symbolic, but each string will end with a concrete null terminator.
+-- The array of strings itself will be terminated with a null pointer.
+--
+-- See @Note [Simulating main()]@ in @Options@.
+allocaCStringArray ::
+  ( LCB.IsSymBackend sym bak
+  , LCLM.HasLLVMAnn sym
+  , LCLM.HasPtrWidth w
+  , ?memOpts :: LCLM.MemOptions
+  ) =>
+  bak ->
+  LCLM.MemImpl sym ->
+  [[WI.SymBV sym 8]] ->
+  -- ^ The sequence of C strings (where each string is represented as a series
+  -- of bytes) to turn into an array. Note that none of the strings here are
+  -- null-terminated; the null terminators will be added as a part of this
+  -- function.
+  String ->
+  -- ^ A label to describe each string's allocation in the memory model.
+  IO (LCLM.LLVMPtr sym w, LCLM.MemImpl sym)
+allocaCStringArray bak mem0 cstrs label = do
+  let sym = LCB.backendGetSym bak
+  let sz = List.genericLength cstrs + 1 -- Note the (+ 1) here for the null pointer
   let ptrWidthBytes = LCLB.bytesToInteger (LCLB.bitsToBytes (WI.intValue ?ptrWidth))
   let szBytes = sz * ptrWidthBytes
   szBytesBV <- WI.bvLit sym ?ptrWidth $ BVS.mkBV ?ptrWidth szBytes
-  let loc = "ambient-verifier allocation for argv"
-  (argvPtr, mem1) <- LCLM.doAlloca bak mem0 szBytesBV LCLD.noAlignment loc
+  let loc = "ambient-verifier allocation for " ++ label ++ " array"
+  (arrPtr, mem1) <- LCLM.doAlloca bak mem0 szBytesBV LCLD.noAlignment loc
   let memTy = LCLMT.ArrayType (fromIntegral sz) $ LCLMT.PtrType $ LCLMT.MemType $ LCLMT.IntType 8
   let tpr = LCT.VectorRepr $ LCLM.LLVMPointerRepr ?ptrWidth
   sty <- LCLM.toStorableType memTy
-  (argvArr0, mem2) <- CMS.runStateT
-                        (traverse (\arg -> CMS.StateT $ \mem -> allocaCString bak mem arg) argv)
-                        mem1
+  (arr0, mem2) <-
+    CMS.runStateT
+      (traverse (\cstr -> CMS.StateT $ \mem -> allocaCString bak mem cstr label) cstrs)
+      mem1
   nullPtr <- LCLM.mkNullPointer sym ?ptrWidth
-  let argvArr1 = argvArr0 ++ [nullPtr]
-  mem3 <- LCLM.doStore bak mem2 argvPtr tpr sty LCLD.noAlignment $ DV.fromList argvArr1
-  pure (argvPtr, mem3)
+  let arr1 = arr0 ++ [nullPtr]
+  mem3 <- LCLM.doStore bak mem2 arrPtr tpr sty LCLD.noAlignment $ DV.fromList arr1
+  pure (arrPtr, mem3)
 
--- | Allocate a 'BS.ByteString' on the stack as a C string. This adds a null
--- terminator at the end of the string in the process.
+-- | Allocate a sequence of bytes (some of which may be symbolic) on the stack
+-- as a C string. This adds a concrete null terminator at the end of the
+-- string in the process.
 --
--- See @Note [Simulating main(argc, argv)]@ in @Options@.
+-- See @Note [Simulating main()]@ in @Options@.
 allocaCString ::
   forall sym bak w.
   ( LCB.IsSymBackend sym bak
@@ -1297,23 +1379,24 @@ allocaCString ::
   ) =>
   bak ->
   LCLM.MemImpl sym ->
-  BS.ByteString ->
-  -- ^ The string to marshal. /Not/ null-terminated.
+  [WI.SymBV sym 8] ->
+  -- ^ The bytes to marshal. /Not/ null-terminated.
+  String ->
+  -- ^ A label to describe each string's allocation in the memory model.
   IO (LCLM.LLVMPtr sym w, LCLM.MemImpl sym)
-allocaCString bak mem0 str = do
+allocaCString bak mem0 bytes label = do
   let sym = LCB.backendGetSym bak
-  let sz = BS.length str + 1 -- Note the (+ 1) here for the null terminator
+  let sz = length bytes + 1 -- Note the (+ 1) here for the null terminator
   szBV <- WI.bvLit sym ?ptrWidth $ BVS.mkBV ?ptrWidth $ fromIntegral sz
-  let loc = "ambient-verifier allocation for an argv string"
+  let loc = "ambient-verifier allocation for " ++ label ++ " string"
   (strPtr, mem1) <- LCLM.doAlloca bak mem0 szBV LCLD.noAlignment loc
   let w8 = WI.knownNat @8
   let memTy = LCLMT.ArrayType (fromIntegral sz) $ LCLMT.IntType 8
   let tpr = LCT.VectorRepr $ LCLM.LLVMPointerRepr w8
   sty <- LCLM.toStorableType memTy
-  let bytes = BS.unpack str ++ [0] -- Note the (++ [0]) here for the null terminator
-  cstr <- Trav.for bytes $ \byte -> do
-            byteBV <- WI.bvLit sym w8 $ BVS.mkBV w8 $ fromIntegral byte
-            LCLM.llvmPointer_bv sym byteBV
+  bvNullTerminator <- liftIO $ WI.bvLit sym w8 $ BVS.zero w8
+  let bytes' = bytes ++ [bvNullTerminator]
+  cstr <- Trav.for bytes' $ LCLM.llvmPointer_bv sym
   mem2 <- LCLM.doStore bak mem1 strPtr tpr sty LCLD.noAlignment $ DV.fromList cstr
   pure (strPtr, mem2)
 
@@ -1365,8 +1448,10 @@ simulateFunction
   -- ^ Configuration parameters concerning functions and overrides
   -> [BS.ByteString]
   -- ^ The user-supplied command-line arguments
+  -> Map.Map BS.ByteString [WI.SymBV sym 8]
+  -- ^ The user-supplied environment variables
   -> m (SymbolicExecutionResult arch sym)
-simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot mFnCallLog binConf fnConf cliArgs = do
+simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot mFnCallLog binConf fnConf cliArgs envVars = do
   let sym = LCB.backendGetSym bak
   let symArchFns = DMS.archFunctions archVals
   let crucRegTypes = DMS.crucArchRegTypes symArchFns
@@ -1396,6 +1481,10 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
     LCCC.freshGlobalVar halloc
                         (DT.pack "AMBIENT_ObservableEventTrace")
                         AO.observableEventTraceRepr
+  environGlob <- liftIO $
+    LCCC.freshGlobalVar halloc
+                        (DT.pack "AMBIENT_environ")
+                        LCLM.PtrRepr
 
   let props = AVW.wmProperties wmConfig
   let oec = AO.ObservableEventConfig obsEventGlob recordObsEventFn
@@ -1407,19 +1496,22 @@ simulateFunction logAction bak execFeatures halloc archInfo archVals seConf init
                                      (ALB.bcUnsuportedRelocations binConf)
                                      (AFET.csoAddressOverrides csOverrides)
                                      (AFET.csoNamedOverrides csOverrides)
+                                     [Some environGlob]
 
   let mem0 = case LCSG.lookupGlobal (AM.imMemVar initialMem) globals1 of
                Just mem -> mem
                Nothing  -> AP.panic AP.FunctionOverride "simulateFunction"
                              [ "Failed to find global variable for memory: "
                                ++ show (LCCC.globalName (AM.imMemVar initialMem)) ]
-  (mainReg0, mainReg1) <-
+  (mainReg0, mainReg1, mainReg2) <-
     case AF.functionIntegerArgumentRegisters functionABI of
-      (reg0:reg1:_) -> pure (reg0, reg1)
+      (reg0:reg1:reg2:_) -> pure (reg0, reg1, reg2)
       _ -> AP.panic AP.SymbolicExecution "simulateFunction"
              [ "Not enough registers for the main() function" ]
-  (regsWithMainArgs, mem1) <- liftIO $ initMainArguments bak mem0 archVals mainReg0 mainReg1 cliArgs regsWithStack
-  let globals2 = LCSG.insertGlobal (AM.imMemVar initialMem) mem1 globals1
+  (mainArgVals, regsWithMainArgs, mem1) <- liftIO $
+    initMainArguments bak mem0 archVals mainReg0 mainReg1 mainReg2 cliArgs envVars regsWithStack
+  let globals2 = LCSG.insertGlobal (AM.imMemVar initialMem) mem1 $
+                 LCSG.insertGlobal environGlob (envpVal mainArgVals) globals1
   let arguments = LCS.RegMap (Ctx.singleton regsWithMainArgs)
 
   let mainBinaryPath = ALB.mainLoadedBinaryPath binConf
@@ -1541,8 +1633,10 @@ symbolicallyExecute
   -- ^ Configuration parameters concerning functions and overrides
   -> [BS.ByteString]
   -- ^ The user-supplied command-line arguments
+  -> Map.Map BS.ByteString [WI.SymBV sym 8]
+  -- ^ The user-supplied environment variables
   -> m (SymbolicExecutionResult arch sym)
-symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures entryPointAddr initGlobals mFsRoot mFnCallLog binConf fnConf cliArgs = do
+symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures entryPointAddr initGlobals mFsRoot mFnCallLog binConf fnConf cliArgs envVars = do
   let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
   initialMem <- initializeMemory bak
                                  halloc
@@ -1552,4 +1646,4 @@ symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures e
                                  (AFET.csoNamedOverrides (fcCrucibleSyntaxOverrides fnConf))
                                  (ALB.bcDynamicGlobalVarAddrs binConf)
                                  (ALB.bcSupportedRelocations binConf)
-  simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot mFnCallLog binConf fnConf cliArgs
+  simulateFunction logAction bak execFeatures halloc archInfo archVals seConf initialMem entryPointAddr mFsRoot mFnCallLog binConf fnConf cliArgs envVars

@@ -84,7 +84,7 @@ listOverrides logAction pinst = do
       -- FunctionOverrideContext.
       let functionABI = buildFunctionABI AF.TestContext
                                          fs initialMem archVals Map.empty
-                                         csoAddressOverrides csoNamedOverrides
+                                         csoAddressOverrides csoNamedOverrides []
 
       let ols = mkOverrideLists syscallABI functionABI
       LJ.writeLog logAction $ AD.ListingOverrides ols

@@ -41,6 +41,7 @@ import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
+import qualified Lang.Crucible.Syntax.Atoms as LCSA
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.BaseTypes as WT
 import qualified What4.Expr as WE
@@ -215,7 +216,7 @@ aarch32LinuxFunctionABI ::
   => LCCC.GlobalVar (LCLM.LLVMPointerType 32)
      -- ^ Global variable for TLS
   -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
-aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals unsupportedRelocs addrOvs namedOvs ->
+aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals unsupportedRelocs addrOvs namedOvs otherGlobs ->
   let ?ptrWidth = PN.knownNat @32 in
   -- NOTE: The order of elements in customNamedOvs is important.  See @Note
   -- [Override Specialization Order]@ in
@@ -241,10 +242,18 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem ar
                                          customNamedOvs ++ namedOvs
                                      ]
                  , AF.functionGlobalMapping =
-                     Map.unions [ AF.functionGlobals fo
-                                | AF.SomeFunctionOverride fo <-
-                                    customNamedOvs ++ namedOvs
-                                ]
+                     let otherGlobMap =
+                           Map.fromList
+                             [ (LCSA.GlobalName (LCS.globalName glob), sg)
+                             | sg@(Some glob) <- otherGlobs
+                             ] in
+                     let functionGlobMap =
+                           Map.unions $
+                             [ AF.functionGlobals fo
+                             | AF.SomeFunctionOverride fo <-
+                                 customNamedOvs ++ namedOvs
+                             ] in
+                     otherGlobMap `Map.union` functionGlobMap
                  , AF.functionAddrMapping =
                      Map.union (Map.fromList customKernelOvs) addrOvs
                  }
