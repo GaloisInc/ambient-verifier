@@ -312,6 +312,7 @@ Operations
 The extra operations supported in ``ambient-verifier`` are:
 
 - ``bv-typed-literal :: Type -> Integer -> Bitvector w`` where the first argument is a ``Bitvector`` type alias (see the Types section), the second argument is the value the ``Bitvector`` should contain, and ``w`` is the number of bits in the returned ``Bitvector`` (will match the width of the ``Type`` argument).
+- ``fresh-vec :: String Unicode -> forall (t :: Type) -> Nat -> Vector t``, where ``(fresh-vec s t n)`` generates a length-``n`` vector where each element is a fresh constant of type ``t`` with the name ``<s>_<i>`` (for each ``i`` between ``0`` and ``<n> - 1``). Note that ``t`` must be a scalar type (e.g., no nested ``Vector``\ s), and ``s`` and ``n`` must both be concrete values.
 - ``make-null :: Pointer`` returns a null pointer.
 - ``pointer-add :: Pointer -> Bitvector w -> Pointer`` where ``w`` is the number of bits in a pointer (usually 32 or 64).
 - ``pointer-diff :: Pointer -> Pointer -> Bitvector w`` where ``w`` is the number of bits in a pointer (usually 32 or 64).
@@ -364,19 +365,23 @@ The following overrides can only be invoked from syntax overrides:
 * ``malloc-global :: SizeT -> Pointer`` is like ``malloc``, except that it is
   explicitly meant for allocating memory for use in global variables.
 * ``read-bytes :: Pointer -> Vector (Bitvector 8)`` reads a null-terminated,
-  sequence of concrete bytes from the ``Pointer``. Unlike ``read-c-string``,
-  this reads the raw bytes without converting to a particular text encoding.
+  sequence of bytes from the ``Pointer``. The null terminator at the end of the
+  sequence of bytes will be concrete, but the preceding bytes may be symbolic.
+  Unlike ``read-c-string``, this function reads the raw bytes without converting
+  to a particular text encoding.
 * ``read-c-string :: Pointer -> String Unicode`` reads a null-terminated,
   UTF-8–encoded, concrete string from the ``Pointer`` and converts it to a
   ``String``. Representing it as a ``String`` can be more convenient in the
   syntax override language, as it is easier to manipulate and check for
   equality.
-* ``write-bytes :: Pointer -> Vector (Bitvector 8)`` writes a sequence of
-  concrete bytes to a ``Pointer``, including a null terminator. Unlike
-  ``write-c-string``, this writes the raw bytes without converting to a
-  particular text encoding. For example, to write the string ``"abc"``,
-  supply ``(vector (bv 8 97) (bv 8 98) (bv 8 99))`` as an argument, as
-  the bytes ``97``, ``98``, and ``99`` correspond to the numeric values of the
+* ``write-bytes :: Vector (Bitvector 8) -> Pointer`` writes a sequence of
+  bytes to a ``Pointer``, including a null terminator (which does not need to
+  be in the ``Vector``). The null terminator written at the end will be
+  concrete, but the preceding bytes may be symbolic. Unlike ``write-c-string``,
+  this function writes the raw bytes without converting to a particular text
+  encoding. For example, to write the string ``"abc"``, supply
+  ``(vector (bv 8 97) (bv 8 98) (bv 8 99))`` as an argument, as the bytes
+  ``97``, ``98``, and ``99`` correspond to the numeric values of the
   ``a``, ``b``, and ``c`` characters, respectively.
 * ``write-c-string :: Pointer -> String Unicode -> Unit`` writes a
   UTF-8–encoded, concrete string to a ``Pointer``, including a null

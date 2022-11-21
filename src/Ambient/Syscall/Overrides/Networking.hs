@@ -457,7 +457,7 @@ loadSockaddrUnPath bak mem initialMem unsupportedRelocs sockaddrUnPtr = do
   let sockaddrUnPathReg = LCS.RegEntry { LCS.regType = LCLM.PtrRepr, LCS.regValue = sockaddrUnPathPtr }
   -- Note that the maximum size of @sun_path@ is 108 characters, which is why
   -- we pass @Just 108@ here.
-  unPathBytes <- AExt.loadString bak mem initialMem unsupportedRelocs sockaddrUnPathReg (Just 108)
+  unPathBytes <- AExt.loadConcreteString bak mem initialMem unsupportedRelocs sockaddrUnPathReg (Just 108)
   pure $ BS.pack unPathBytes
 
 buildConnectOverride :: ( LCLM.HasPtrWidth w

@@ -119,7 +119,7 @@ callSprintf bak initialMem unsupportedRelocs
     let mvar = AM.imMemVar initialMem
     mem0 <- LCS.readGlobal mvar
     -- Read format string
-    formatStr <- AExt.loadString bak mem0 initialMem unsupportedRelocs strPtr Nothing
+    formatStr <- AExt.loadConcreteString bak mem0 initialMem unsupportedRelocs strPtr Nothing
     -- Parse format directives
     case LCLP.parseDirectives formatStr of
       Left err -> LCS.overrideError $
@@ -134,7 +134,7 @@ callSprintf bak initialMem unsupportedRelocs
             mem0
 
         -- Write to output pointer
-        mem2 <- AExt.storeString bak mem1 initialMem outPtr (BS.unpack str)
+        mem2 <- AExt.storeConcreteString bak mem1 initialMem outPtr (BS.unpack str)
         nBv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.mkBV ?ptrWidth (toInteger n))
         LCS.writeGlobal mvar mem2
         liftIO $ bvToPtr sym nBv ?ptrWidth
@@ -205,7 +205,7 @@ callSscanf bak initialMem unsupportedRelocs
     let mvar = AM.imMemVar initialMem
     mem0 <- LCS.readGlobal mvar
     -- Read format string
-    formatStr <- AExt.loadString bak mem0 initialMem unsupportedRelocs strPtr Nothing
+    formatStr <- AExt.loadConcreteString bak mem0 initialMem unsupportedRelocs strPtr Nothing
     -- Parse format directives
     case LCLP.parseDirectives formatStr of
       Left err -> LCS.overrideError $
@@ -213,7 +213,7 @@ callSscanf bak initialMem unsupportedRelocs
       Right ds -> do
         -- Compute output
         valist <- liftIO $ getScanfVarArgs (DV.fromList ds) gva
-        inStr <- AExt.loadString bak mem0 initialMem unsupportedRelocs inPtr Nothing
+        inStr <- AExt.loadConcreteString bak mem0 initialMem unsupportedRelocs inPtr Nothing
         (res, mem1) <-
           evalScanfOpsT mem0 (BS.pack inStr)
             (executeDirectivesScanf (scanfOps bak initialMem valist) ds)
@@ -326,7 +326,7 @@ printfOps bak initialMem unsupportedRelocs valist =
        Just (LCS.AnyValue LCLM.PtrRepr ptr) ->
            do mem <- CMS.get
               let reg = LCS.RegEntry (LCLM.LLVMPointerRepr ?ptrWidth) ptr
-              CMS.lift $ AExt.loadString bak mem initialMem unsupportedRelocs reg numchars
+              CMS.lift $ AExt.loadConcreteString bak mem initialMem unsupportedRelocs reg numchars
        Just (LCS.AnyValue tpr _) ->
          CMS.lift $ liftIO
                   $ LCB.addFailedAssertion bak
@@ -599,7 +599,7 @@ scanfOps bak initialMem valist =
       withArgIndex i $ \ptr ->
       AMS.stateM $ \mem ->
         let ptrEntry = LCS.RegEntry LCLM.PtrRepr ptr in
-        CMT.lift $ AExt.storeString bak mem initialMem ptrEntry str
+        CMT.lift $ AExt.storeConcreteString bak mem initialMem ptrEntry str
   }
   where
     sym = LCB.backendGetSym bak

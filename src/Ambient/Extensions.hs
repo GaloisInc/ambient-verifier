@@ -16,7 +16,9 @@ module Ambient.Extensions
   , readMem
   , resolveAndPopulate
   , loadString
+  , loadConcreteString
   , storeString
+  , storeConcreteString
   , AmbientSimulatorState(..)
   , incrementSimStat
   , lensNumOvsApplied
@@ -279,16 +281,19 @@ writeMem bak memImpl initialMem st addrWidth memRep ptr0 v =
 
 -- | Load a null-terminated string from the memory.
 --
--- The pointer to read from must be concrete and nonnull.  Moreover,
--- we require all the characters in the string to be concrete.
--- Otherwise it is very difficult to tell when the string has
--- terminated.  If a maximum number of characters is provided, no more
+-- The pointer to read from must be concrete and nonnull. We allow symbolic
+-- characters, but we require that the string end with a concrete null
+-- terminator character. Otherwise it is very difficult to tell when the string
+-- has terminated. If a maximum number of characters is provided, no more
 -- than that number of charcters will be read.  In either case,
 -- 'loadString' will stop reading if it encounters a null-terminator.
 --
--- NOTE: The only difference between this function and the version defined in
--- Crucible is that this function uses the Ambient @readMem@ function to load
--- through the string pointer.
+-- NOTE: The only differences between this function and the version defined in
+-- Crucible is that this function:
+--
+-- * Uses the Ambient @readMem@ function to load through the string pointer
+--
+-- * Permits symbolic characters
 loadString
   :: forall sym bak w p ext r args ret m arch scope st fs solver
    . ( LCB.IsSymBackend sym bak
@@ -316,12 +321,15 @@ loadString
   -- ^ pointer to string value
   -> Maybe Int
   -- ^ maximum characters to read
-  -> m [Word8]
+  -> m [WI.SymBV sym 8]
 loadString bak memImpl initialMem unsupportedRelocs = go id
  where
   sym = LCB.backendGetSym bak
 
-  go :: ([Word8] -> [Word8]) -> LCS.RegEntry sym (LCLM.LLVMPointerType w) -> Maybe Int -> m [Word8]
+  go :: ([WI.SymBV sym 8] -> [WI.SymBV sym 8])
+     -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+     -> Maybe Int
+     -> m [WI.SymBV sym 8]
   go f _ (Just 0) = return $ f []
   go f p maxChars = do
      let readInfo = DMC.BVMemRepr (WI.knownNat @1) DMC.LittleEndian
@@ -329,19 +337,116 @@ loadString bak memImpl initialMem unsupportedRelocs = go id
      (v, st') <- liftIO $ readMem bak memImpl initialMem unsupportedRelocs st (DMC.addrWidthRepr ?ptrWidth) readInfo p
      CMS.put st'
      x <- liftIO $ LCLM.projectLLVM_bv bak v
-     case BV.asUnsigned <$> WI.asBV x of
-       Just 0 -> return $ f []
-       Just c -> do
-           let c' :: Word8 = toEnum $ fromInteger c
-           p' <- liftIO $ LCLM.doPtrAddOffset bak memImpl (LCS.regValue p) =<< WI.bvLit sym LCLM.PtrWidth (BV.one LCLM.PtrWidth)
-           go (f . (c':)) (LCS.RegEntry (LCLM.LLVMPointerRepr ?ptrWidth) p') (fmap (\n -> n - 1) maxChars)
-       Nothing ->
-         liftIO $ LCB.addFailedAssertion bak
-            $ LCS.Unsupported GHC.callStack "Symbolic value encountered when loading a string"
+     if (BV.asUnsigned <$> WI.asBV x) == Just 0
+       then return $ f [] -- We have encountered a null terminator, so stop.
+       else do
+         p' <- liftIO $ LCLM.doPtrAddOffset bak memImpl (LCS.regValue p) =<< WI.bvLit sym LCLM.PtrWidth (BV.one LCLM.PtrWidth)
+         go (f . (x:)) (LCS.RegEntry (LCLM.LLVMPointerRepr ?ptrWidth) p') (fmap (\n -> n - 1) maxChars)
 
--- | Store a concrete string (represented as a list of bytes) to memory,
--- including a null terminator at the end.
+-- | Like 'loadString', except that each character read is asserted to be
+-- concrete. If a symbolic character is encountered, this function will
+-- generate a failing assertion.
+loadConcreteString
+  :: forall sym bak w p ext r args ret m arch scope st fs solver
+   . ( LCB.IsSymBackend sym bak
+     , LCLM.HasPtrWidth w
+     , LCLM.HasLLVMAnn sym
+     , ?memOpts :: LCLM.MemOptions
+     , GHC.HasCallStack
+     , DMC.MemWidth w
+     , w ~ DMC.ArchAddrWidth arch
+     , p ~ AmbientSimulatorState sym arch
+     , m ~ LCS.OverrideSim p sym ext r args ret
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , WPO.OnlineSolver solver
+     )
+  => bak
+  -> LCLM.MemImpl sym
+  -- ^ memory to read from
+  -> AM.InitialMemory sym w
+  -- ^ Initial memory state for symbolic execution
+  -> Map.Map (DMC.MemWord w) String
+  -- ^ Mapping from unsupported relocation addresses to the names of the
+  -- unsupported relocation types.
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -- ^ pointer to string value
+  -> Maybe Int
+  -- ^ maximum characters to read
+  -> m [Word8]
+loadConcreteString bak memImpl initialMem unsupportedRelocs p maxChars = do
+  symBytes <- loadString bak memImpl initialMem unsupportedRelocs p maxChars
+  traverse concretizeByte symBytes
+  where
+    concretizeByte :: WI.SymBV sym 8 -> m Word8
+    concretizeByte symByte =
+      case BV.asUnsigned <$> WI.asBV symByte of
+        Just byte -> pure $ fromInteger byte
+        Nothing ->
+          liftIO $ LCB.addFailedAssertion bak
+                 $ LCS.Unsupported GHC.callStack
+                     "Symbolic value encountered when loading a string"
+
+-- | Store a string (represented as a list of bytes) to memory,
+-- including a null terminator at the end. We permit symbolic bytes, but the
+-- null terminator written at the end will always be concrete.
 storeString
+  :: forall sym bak w p ext r args ret m arch scope st fs solver
+   . ( LCB.IsSymBackend sym bak
+     , LCLM.HasPtrWidth w
+     , LCLM.HasLLVMAnn sym
+     , ?memOpts :: LCLM.MemOptions
+     , GHC.HasCallStack
+     , DMC.MemWidth w
+     , w ~ DMC.ArchAddrWidth arch
+     , p ~ AmbientSimulatorState sym arch
+     , m ~ LCS.OverrideSim p sym ext r args ret
+     , sym ~ WE.ExprBuilder scope st fs
+     , bak ~ LCBO.OnlineBackend solver scope st fs
+     , WPO.OnlineSolver solver
+     )
+  => bak
+  -> LCLM.MemImpl sym
+  -- ^ Memory to write to
+  -> AM.InitialMemory sym w
+  -- ^ Initial memory state for symbolic execution
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -- ^ Pointer to write value to
+  -> [WI.SymBV sym 8]
+  -- ^ The bytes of the string to write (null terminator not included)
+  -> m (LCLM.MemImpl sym)
+  -- ^ The updated memory
+storeString bak memImpl initialMem = go memImpl
+  where
+    sym = LCB.backendGetSym bak
+    writeInfo = DMC.BVMemRepr (WI.knownNat @1) DMC.LittleEndian
+    byteRepr = WI.knownNat @8
+
+    go :: LCLM.MemImpl sym -> LCS.RegEntry sym (LCLM.LLVMPointerType w) -> [WI.SymBV sym 8] -> m (LCLM.MemImpl sym)
+    go mem p bytes
+      = case bytes of
+          [] -> do
+            bvNullTerminator <- liftIO $ WI.bvLit sym byteRepr $ BV.zero byteRepr
+            writeByte mem p bvNullTerminator
+
+          (bvByte:bs) -> do
+            mem' <- writeByte mem p bvByte
+            bvOne <- liftIO $ WI.bvLit sym LCLM.PtrWidth (BV.one LCLM.PtrWidth)
+            p' <- liftIO $ LCLM.doPtrAddOffset bak mem' (LCS.regValue p) bvOne
+            go mem' (LCS.RegEntry (LCLM.LLVMPointerRepr ?ptrWidth) p') bs
+
+    writeByte :: LCLM.MemImpl sym -> LCS.RegEntry sym (LCLM.LLVMPointerType w) -> WI.SymBV sym 8 -> m (LCLM.MemImpl sym)
+    writeByte mem p bvByte = do
+      ptrByte <- liftIO $ LCLM.llvmPointer_bv sym bvByte
+      let ptrByte' = LCS.RegEntry (LCLM.LLVMPointerRepr byteRepr) ptrByte
+      st <- CMS.get
+      (mem', st') <- liftIO $
+        writeMem bak mem initialMem st (DMC.addrWidthRepr ?ptrWidth) writeInfo p ptrByte'
+      CMS.put st'
+      pure mem'
+
+-- | Like 'storeString', except that each character in the string is concrete.
+storeConcreteString
   :: forall sym bak w p ext r args ret m arch scope st fs solver
    . ( LCB.IsSymBackend sym bak
      , LCLM.HasPtrWidth w
@@ -367,35 +472,13 @@ storeString
   -- ^ The bytes of the string to write (null terminator not included)
   -> m (LCLM.MemImpl sym)
   -- ^ The updated memory
-storeString bak memImpl initialMem = go memImpl
+storeConcreteString bak memImpl initialMem p bytes = do
+  symBytes <- liftIO $
+    traverse (WI.bvLit sym byteRepr . BV.mkBV byteRepr . toInteger) bytes
+  storeString bak memImpl initialMem p symBytes
   where
     sym = LCB.backendGetSym bak
-    writeInfo = DMC.BVMemRepr (WI.knownNat @1) DMC.LittleEndian
     byteRepr = WI.knownNat @8
-
-    go :: LCLM.MemImpl sym -> LCS.RegEntry sym (LCLM.LLVMPointerType w) -> [Word8] -> m (LCLM.MemImpl sym)
-    go mem p bytes
-      = case bytes of
-          [] -> do
-            bvNullTerminator <- liftIO $ WI.bvLit sym byteRepr $ BV.zero byteRepr
-            writeByte mem p bvNullTerminator
-
-          (b:bs) -> do
-            bvByte <- liftIO $ WI.bvLit sym byteRepr $ BV.mkBV byteRepr $ toInteger b
-            mem' <- writeByte mem p bvByte
-            bvOne <- liftIO $ WI.bvLit sym LCLM.PtrWidth (BV.one LCLM.PtrWidth)
-            p' <- liftIO $ LCLM.doPtrAddOffset bak mem' (LCS.regValue p) bvOne
-            go mem' (LCS.RegEntry (LCLM.LLVMPointerRepr ?ptrWidth) p') bs
-
-    writeByte :: LCLM.MemImpl sym -> LCS.RegEntry sym (LCLM.LLVMPointerType w) -> WI.SymBV sym 8 -> m (LCLM.MemImpl sym)
-    writeByte mem p bvByte = do
-      ptrByte <- liftIO $ LCLM.llvmPointer_bv sym bvByte
-      let ptrByte' = LCS.RegEntry (LCLM.LLVMPointerRepr byteRepr) ptrByte
-      st <- CMS.get
-      (mem', st') <- liftIO $
-        writeMem bak mem initialMem st (DMC.addrWidthRepr ?ptrWidth) writeInfo p ptrByte'
-      CMS.put st'
-      pure mem'
 
 -- | This evaluates a Macaw expression extension in the simulator.
 --

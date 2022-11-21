@@ -30,7 +30,6 @@ module Ambient.FunctionOverride.Overrides.CrucibleStrings
   ) where
 
 import           Control.Monad.IO.Class ( liftIO )
-import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
 import qualified Data.Foldable as F
 import qualified Data.Map.Strict as Map
@@ -38,7 +37,6 @@ import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Text as DT
 import qualified Data.Text.Encoding as DTE
 import qualified Data.Text.Encoding.Error as DTEE
-import qualified Data.Traversable as Trav
 import qualified Data.Vector as V
 
 import qualified Data.Macaw.CFG as DMC
@@ -119,11 +117,8 @@ callReadBytes ::
   LCS.RegEntry sym (LCLM.LLVMPointerType w) ->
   LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCT.VectorType (LCT.BVType 8)))
 callReadBytes bak initialMem unsupportedRelocs ptr = do
-  let sym = LCB.backendGetSym bak
   mem <- LCS.readGlobal $ AM.imMemVar initialMem
-  bytes <- AExt.loadString bak mem initialMem unsupportedRelocs ptr Nothing
-  let w8 = WI.knownNat @8
-  symBytes <- liftIO $ Trav.traverse (WI.bvLit sym w8 . BVS.mkBV w8 . toInteger) bytes
+  symBytes <- AExt.loadString bak mem initialMem unsupportedRelocs ptr Nothing
   pure $ V.fromList symBytes
 
 buildReadCStringOverride ::
@@ -166,7 +161,7 @@ callReadCString ::
 callReadCString bak initialMem unsupportedRelocs ptr = do
   let sym = LCB.backendGetSym bak
   mem <- LCS.readGlobal $ AM.imMemVar initialMem
-  bytes <- AExt.loadString bak mem initialMem unsupportedRelocs ptr Nothing
+  bytes <- AExt.loadConcreteString bak mem initialMem unsupportedRelocs ptr Nothing
   let lit = DTE.decodeUtf8With DTEE.lenientDecode $ BS.pack bytes
   liftIO $ WI.stringLit sym $ WI.UnicodeLiteral lit
 
@@ -208,14 +203,9 @@ callWriteBytes ::
   LCS.RegEntry sym (LCT.VectorType (LCT.BVType 8)) ->
   LCS.OverrideSim p sym ext r args ret ()
 callWriteBytes bak initialMem ptr (LCS.regValue -> symBytes) = do
-  bytes <- Trav.for symBytes $ \symByte ->
-    case WI.asBV symByte of
-      Nothing -> LCS.overrideError $
-        LCS.AssertFailureSimError "Call to @write-bytes with symbolic byte" ""
-      Just byte -> pure $ fromInteger $ BVS.asUnsigned byte
-  let bytesList = F.toList bytes
+  let symBytesList = F.toList symBytes
   LCS.modifyGlobal (AM.imMemVar initialMem) $ \mem -> do
-    mem' <- AExt.storeString bak mem initialMem ptr bytesList
+    mem' <- AExt.storeString bak mem initialMem ptr symBytesList
     pure ((), mem')
 
 buildWriteCStringOverride ::
@@ -269,7 +259,7 @@ callWriteCString bak initialMem ptr (LCS.regValue -> str) =
 
       -- Convert to bytes and write out
       let bytes = BS.unpack $ DTE.encodeUtf8 $ DT.pack txt'
-      mem' <- AExt.storeString bak mem initialMem ptr bytes
+      mem' <- AExt.storeConcreteString bak mem initialMem ptr bytes
       pure ((), mem')
 
 -- | Override for the @print-pointer@ function.  Renders a pointer as a

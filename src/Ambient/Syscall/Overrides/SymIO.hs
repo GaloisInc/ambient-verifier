@@ -321,7 +321,7 @@ loadFileIdent ::
 loadFileIdent bak initialMem unsupportedRelocs filename_ptr =
   do let mvar = AM.imMemVar initialMem
      mem <- LCS.readGlobal mvar
-     filename_bytes <- AExt.loadString bak mem initialMem unsupportedRelocs filename_ptr Nothing
+     filename_bytes <- AExt.loadConcreteString bak mem initialMem unsupportedRelocs filename_ptr Nothing
      liftIO $ WI.stringLit (LCB.backendGetSym bak) (WI.Char8Literal (BS.pack filename_bytes))
 
 -- | This is taken directly from @crucible-llvm@ with no changes. (We could
