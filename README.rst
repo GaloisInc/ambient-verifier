@@ -536,12 +536,18 @@ the following command-line arguments:
   In other words, these specify all of the elements of the ``argv`` array
   besides the first one. This can be supplied multiple times to pass multiple
   arguments (e.g., ``--argument foo --argument bar ...``.
-* ``--env-var <KEY>=<VALUE>`` defines a environment variable named ``KEY`` with
+* ``--env-var <KEY>=<VALUE>`` defines an environment variable named ``KEY`` with
   the concrete value ``VALUE`` for the duration of the process. In other words,
   these specify elements of the ``envp`` array. This can be supplied multiple
   times to define multiple environment variables.
 
-  ``--env-var-symbolic <KEY>[LEN]`` defines a environment variable named ``KEY``
+  ``--env-var-from-bytes <KEY>[FILE]`` defines an environment variable named
+  ``KEY`` with a concrete value consisting of the bytes in ``FILE``'s contents.
+  This is like ``--env-var``, but ``--env-var`` assumes a particular text
+  encoding for its value (by virtue of being supplied directly on the command
+  line), whereas ``--env-var-from-bytes`` does not assume any text encoding.
+
+  ``--env-var-symbolic <KEY>[LEN]`` defines an environment variable named ``KEY``
   with a value containing ``LEN`` symbolic characters (plus a null terminator)
   for the duration of the process. Like ``--env-var``, this is a way to specify
   elements of the ``envp`` array. This can be supplied multiple

@@ -28,5 +28,8 @@ int main(int argc, char *argv[]) {
   char *baz_val = getenv_naive("BAZ");
   ambient_assert(memcmp(baz_val, baz_val, 5) == 0);
   ambient_assert(baz_val[5] == '\0');
+  char *quux_val = getenv_naive("QUUX");
+  char quux_expected[4] = { 1, 2, 3, 97 };
+  ambient_assert(memcmp(quux_val, quux_expected, 4) == 0);
   return 0;
 }

@@ -109,6 +109,9 @@ data ProgramInstance =
                   , piConcreteEnvVars :: [AEnv.ConcreteEnvVar BS.ByteString]
                   -- ^ The environment variables to pass to the program, where
                   -- the values are concrete.
+                  , piConcreteEnvVarsFromBytes :: [AEnv.ConcreteEnvVarFromBytes BS.ByteString]
+                  -- ^ The environment variables to pass to the program, where
+                  -- the values are concrete bytes contained in a file.
                   , piSymbolicEnvVars :: [AEnv.SymbolicEnvVar BS.ByteString]
                   -- ^ The environment variables to pass to the program, where
                   -- the values are symbolic.
@@ -510,7 +513,11 @@ verify logAction pinst timeoutDuration = do
         , AVS.fcBuildFunctionABI = functionABI
         , AVS.fcCrucibleSyntaxOverrides = csOverrides
         }
-      envVarMap <- liftIO $ AEnv.mkEnvVarMap bak (piConcreteEnvVars pinst) (piSymbolicEnvVars pinst)
+      envVarMap <- liftIO $ AEnv.mkEnvVarMap
+                              bak
+                              (piConcreteEnvVars pinst)
+                              (piConcreteEnvVarsFromBytes pinst)
+                              (piSymbolicEnvVars pinst)
 
       ambientExecResult <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) (piLogFunctionCalls pinst) binConf fnConf (piCommandLineArguments pinst) envVarMap
       let crucibleExecResult = AVS.serCrucibleExecResult ambientExecResult

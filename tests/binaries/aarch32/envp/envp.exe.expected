@@ -5,4 +5,6 @@ concreteEnvVars:
   - "BAR=koala"
 symbolicEnvVars:
   - "BAZ[5]"
+concreteEnvVarsFromBytes:
+  - "QUUX[tests/binaries/aarch32/envp/quux.txt]"
 overrideDir: tests/binaries/aarch32/envp/overrides

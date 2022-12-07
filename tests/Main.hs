@@ -72,6 +72,9 @@ data ExpectedGoals =
                 , concreteEnvVars :: Maybe [AEnv.ConcreteEnvVar DT.Text]
                   -- Similar to above, Nothing represents the empty list, as
                   -- does Just [].
+                , concreteEnvVarsFromBytes :: Maybe [AEnv.ConcreteEnvVarFromBytes DT.Text]
+                  -- Similar to above, Nothing represents the empty list, as
+                  -- does Just [].
                 , symbolicEnvVars :: Maybe [AEnv.SymbolicEnvVar DT.Text]
                   -- Similar to above, Nothing represents the empty list, as
                   -- does Just [].
@@ -94,6 +97,7 @@ emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , argv0 = Nothing
                                    , arguments = Nothing
                                    , concreteEnvVars = Nothing
+                                   , concreteEnvVarsFromBytes = Nothing
                                    , symbolicEnvVars = Nothing
                                    , throwsException = Nothing
                                    }
@@ -170,6 +174,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                              (argv0 expectedResult)
                                              (fromMaybe [] (arguments expectedResult))
   let concreteEnvVars' = map (fmap AEnc.encodeCLIText) (fromMaybe [] (concreteEnvVars expectedResult))
+  let concreteEnvVarsFromBytes' = map (fmap AEnc.encodeCLIText) (fromMaybe [] (concreteEnvVarsFromBytes expectedResult))
   let symbolicEnvVars' = map (fmap AEnc.encodeCLIText) (fromMaybe [] (symbolicEnvVars expectedResult))
 
   -- Create a problem instance; note that we are currently providing no
@@ -182,6 +187,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piFloatMode = AS.Real
                                  , AV.piCommandLineArguments = args
                                  , AV.piConcreteEnvVars = concreteEnvVars'
+                                 , AV.piConcreteEnvVarsFromBytes = concreteEnvVarsFromBytes'
                                  , AV.piSymbolicEnvVars = symbolicEnvVars'
                                  , AV.piProperties = maybeToList mprop
                                  , AV.piEntryPoint = entryPoint

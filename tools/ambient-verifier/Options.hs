@@ -44,6 +44,10 @@ data VerifyOptions =
                 , concreteEnvVars :: [AEnv.ConcreteEnvVar T.Text]
                 -- ^ A list of environment variables to set up when simulating
                 --   the program, where the values are concrete.
+                , concreteEnvVarsFromBytes :: [AEnv.ConcreteEnvVarFromBytes T.Text]
+                -- ^ A list of environment variables to set up when simulating
+                --   the program, where the values are concrete bytes contained
+                --   in a file.
                 , symbolicEnvVars :: [AEnv.SymbolicEnvVar T.Text]
                 -- ^ A list of environment variables to set up when simulating
                 --   the program, where the values are symbolic.
@@ -243,6 +247,17 @@ verifyOptions = VerifyOptions
                                        , "concrete value VALUE for the duration of the process."
                                        , "This can be supplied multiple times to define"
                                        , "multiple environment variables."
+                                       ])
+                                 ))
+           <*> OA.many (OA.option (mkEnvVarReader AEnv.concreteEnvVarFromBytesParser)
+                                  ( OA.long "env-var-from-bytes"
+                                 <> OA.metavar "KEY[FILE]"
+                                 <> OA.help (unlines
+                                       [ "Define a environment variable named KEY with a"
+                                       , "concrete value for the duration of the process,"
+                                       , "where the value consists of the bytes of FILE's"
+                                       , "contents. This can be supplied multiple times to"
+                                       , "define multiple environment variables."
                                        ])
                                  ))
            <*> OA.many (OA.option (mkEnvVarReader AEnv.symbolicEnvVarParser)

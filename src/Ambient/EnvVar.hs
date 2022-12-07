@@ -6,9 +6,11 @@
 {-# LANGUAGE TypeApplications #-}
 module Ambient.EnvVar
   ( ConcreteEnvVar(..)
+  , ConcreteEnvVarFromBytes(..)
   , SymbolicEnvVar(..)
   , EnvVarParser
   , concreteEnvVarParser
+  , concreteEnvVarFromBytesParser
   , symbolicEnvVarParser
   , mkEnvVarMap
   ) where
@@ -40,6 +42,18 @@ instance (s ~ DT.Text) => DA.FromJSON (ConcreteEnvVar s) where
   parseJSON = DA.withText "ConcreteEnvVar" $ \t ->
     case TM.parse concreteEnvVarParser "" t of
       Left err -> fail $ "Could not parse concrete environment variable: "
+                      ++ TM.errorBundlePretty err
+      Right r  -> pure r
+
+-- | An environment variable definition consisting of a key and a file
+-- containing the value corresponding to the key.
+data ConcreteEnvVarFromBytes s = ConcreteEnvVarFromBytes s FilePath
+  deriving (Eq, Foldable, Functor, Ord, Read, Show, Traversable)
+
+instance (s ~ DT.Text) => DA.FromJSON (ConcreteEnvVarFromBytes s) where
+  parseJSON = DA.withText "ConcreteEnvVarFromBytes" $ \t ->
+    case TM.parse concreteEnvVarFromBytesParser "" t of
+      Left err -> fail $ "Could not parse concrete environment variable from bytes: "
                       ++ TM.errorBundlePretty err
       Right r  -> pure r
 
@@ -76,6 +90,15 @@ concreteEnvVarParser = do
   val <- TM.takeRest
   pure $ ConcreteEnvVar key val
 
+-- | A @megaparsec@ parser for 'ConcreteEnvVarFromBytes'.
+concreteEnvVarFromBytesParser ::
+  EnvVarParser DT.Text (ConcreteEnvVarFromBytes DT.Text)
+concreteEnvVarFromBytesParser = do
+  key <- TM.takeWhileP (Just "key") (/= '[')
+  file <- CAC.between (TMC.char '[') (TMC.char ']') $
+          TM.takeWhileP (Just "file") (/= ']')
+  pure $ ConcreteEnvVarFromBytes key (DT.unpack file)
+
 -- | A @megaparsec@ parser for 'SymbolicEnvVar's.
 symbolicEnvVarParser ::
      forall s.
@@ -91,6 +114,15 @@ symbolicEnvVarParser = do
   lenStr <- CAC.between (TMC.char '[') (TMC.char ']') (App.many TMC.digitChar)
   pure $ SymbolicEnvVar key (read lenStr)
 
+-- | Read the bytes of a 'ConcreteEnvVarFromBytes' file and convert it to a
+-- 'ConcreteEnvVar'.
+readConcreteEnvVarFromBytes ::
+     ConcreteEnvVarFromBytes BS.ByteString
+  -> IO (ConcreteEnvVar BS.ByteString)
+readConcreteEnvVarFromBytes (ConcreteEnvVarFromBytes key file) = do
+  val <- BS.readFile file
+  pure $ ConcreteEnvVar key val
+
 -- | Construct a 'Map.Map' from each environment variable's key to its value.
 -- This will convert all of the bytes in each value to 'WI.SymBV's in the
 -- process.
@@ -103,12 +135,16 @@ mkEnvVarMap ::
      LCB.IsSymBackend sym bak
   => bak
   -> [ConcreteEnvVar BS.ByteString]
+  -> [ConcreteEnvVarFromBytes BS.ByteString]
   -> [SymbolicEnvVar BS.ByteString]
   -> IO (Map.Map BS.ByteString [WI.SymBV sym 8])
-mkEnvVarMap bak cevs sevs = do
+mkEnvVarMap bak cevs cevfbs sevs = do
   let sym = LCB.backendGetSym bak
   let w8 = WI.knownNat @8
   let map0 = Map.empty
+
+  cevfbs' <- traverse readConcreteEnvVarFromBytes cevfbs
+  let allCevs = cevs ++ cevfbs'
 
   -- First, add all of the concrete environment variables...
   map1 <-
@@ -119,7 +155,7 @@ mkEnvVarMap bak cevs sevs = do
                                    $ fromIntegral byte
            pure $ Map.insert key val' m)
       map0
-      cevs
+      allCevs
 
   -- ...then, add all of the symbolic environment variables.
   F.foldlM

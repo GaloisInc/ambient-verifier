@@ -1,8 +1,10 @@
-successful: 18
+successful: 28
 failed: 0
 concreteEnvVars:
   - "FOO=wombat"
   - "BAR=koala"
 symbolicEnvVars:
   - "BAZ[5]"
+concreteEnvVarsFromBytes:
+  - "QUUX[tests/binaries/aarch32/environ/quux.txt]"
 overrideDir: tests/binaries/aarch32/environ/overrides

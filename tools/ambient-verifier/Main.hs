@@ -140,6 +140,7 @@ buildPinstFromVerifyOptions o = do
                                              (O.commandLineArgv0 o)
                                              (O.commandLineArguments o)
   let concreteEnvVars' = map (fmap AEnc.encodeCLIText) (O.concreteEnvVars o)
+  let concreteEnvVarsFromBytes' = map (fmap AEnc.encodeCLIText) (O.concreteEnvVarsFromBytes o)
   let symbolicEnvVars' = map (fmap AEnc.encodeCLIText) (O.symbolicEnvVars o)
 
   props <- mapM loadProperty (O.stateCharts o)
@@ -150,6 +151,7 @@ buildPinstFromVerifyOptions o = do
            , AV.piFsRoot = O.fsRoot o
            , AV.piCommandLineArguments = args
            , AV.piConcreteEnvVars = concreteEnvVars'
+           , AV.piConcreteEnvVarsFromBytes = concreteEnvVarsFromBytes'
            , AV.piSymbolicEnvVars = symbolicEnvVars'
            , AV.piSolver = O.solver o
            , AV.piFloatMode = O.floatMode o
