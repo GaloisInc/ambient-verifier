@@ -231,6 +231,12 @@ envp/envp.exe: envp/envp.c ambient_assert.h
 environ/environ.exe: environ/environ.c ambient_assert.h
 	$(MUSL_CC) -nostartfiles -static -no-pie -I. $^ -o $@
 
+abs32-relative-reloc/libfoo.so: abs32-relative-reloc/foo.c
+	$(CC) -nostdlib $< -o $@ -shared
+
+abs32-relative-reloc/abs32-relative-reloc.exe: abs32-relative-reloc/abs32-relative-reloc.c abs32-relative-reloc/libfoo.so ambient_assert.o
+	$(CC) -nostdlib -Labs32-relative-reloc/ -I./ abs32-relative-reloc/abs32-relative-reloc.c ambient_assert.o -lfoo -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

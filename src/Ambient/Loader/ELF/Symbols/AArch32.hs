@@ -83,6 +83,8 @@ elfAarch32Rels = fmap (Map.mapEither partitionSupported)
                        -> Either String ALR.RelocType
     partitionSupported rel =
       case DE.relType rel of
+        DE.R_ARM_ABS32    -> Right ALR.SymbolReloc
         DE.R_ARM_COPY     -> Right ALR.CopyReloc
-        DE.R_ARM_GLOB_DAT -> Right ALR.GlobDatReloc
+        DE.R_ARM_GLOB_DAT -> Right ALR.SymbolReloc
+        DE.R_ARM_RELATIVE -> Right ALR.RelativeReloc
         _                 -> Left $ show $ DE.relType rel

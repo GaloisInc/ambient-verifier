@@ -1,0 +1,4 @@
+successful: 0
+failed: 0
+sharedObjectsDir: tests/binaries/aarch32/abs32-relative-reloc
+overridesDir: tests/overrides

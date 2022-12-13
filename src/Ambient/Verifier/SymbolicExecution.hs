@@ -1024,18 +1024,21 @@ globalMemoryHooks :: forall w
                   -- ^ Supported relocation types
                   -> DMSM.GlobalMemoryHooks w
 globalMemoryHooks allMems globals supportedRelocs = DMSM.GlobalMemoryHooks {
-    DMSM.populateRelocation = \bak relocMem relocSeg relocAddr reloc -> do
+    DMSM.populateRelocation = \bak relocMem relocSeg relocBaseAddr reloc -> do
       -- This function populates relocation types we support as appropriate.
       -- It populates all other relocations with symbolic bytes.
       let sym = LCB.backendGetSym bak
-      let relocAbsAddr = memAddrToAbsAddr relocMem relocSeg relocAddr
-      case DMM.relocationSym reloc of
-        DMM.SymbolRelocation name version
-          |  Just relocType <- Map.lookup relocAbsAddr supportedRelocs
-          -> case relocType of
-               ALR.GlobDatReloc -> globDatRelocHook sym name version reloc
-               ALR.CopyReloc    -> copyRelocHook bak name version reloc
-        _ -> symbolicRelocation sym reloc Nothing
+      let relocAbsBaseAddr = memAddrToAbsAddr relocMem relocSeg relocBaseAddr
+      case Map.lookup relocAbsBaseAddr supportedRelocs of
+        Just relocType ->
+          case relocType of
+            ALR.RelativeReloc -> relativeRelocHook sym reloc relocAbsBaseAddr
+            ALR.SymbolReloc   -> withSymbolRelocation sym reloc $ \name version ->
+                                 symbolRelocHook sym name version reloc
+            ALR.CopyReloc     -> withSymbolRelocation sym reloc $ \name version ->
+                                 copyRelocHook bak name version reloc
+        Nothing ->
+          symbolicRelocation sym reloc Nothing
   }
   where
     -- Used for recursive calls to populateRelocation in copyRelocHook
@@ -1062,30 +1065,59 @@ globalMemoryHooks allMems globals supportedRelocs = DMSM.GlobalMemoryHooks {
         Nothing -> AP.panic AP.SymbolicExecution "memAddrToAbsAddr"
                      ["Failed to resolve function address: " ++ show addr]
 
-    -- Handle a GLOB_DAT relocation. This involves copying the address of a
-    -- global variable defined in another shared library. Discovering this
-    -- address is a straightforward matter of looking it up in the supplied
-    -- global variable Map.
-    globDatRelocHook :: forall sym
+    -- If the supplied Relocation is a SymbolRelocation, invoke the
+    -- continuation argument on its name and version. Otherwise, default to
+    -- returning symbolic bytes.
+    withSymbolRelocation ::
+         forall sym
+       . LCB.IsSymInterface sym
+      => sym
+      -> DMM.Relocation w
+      -> (DMM.SymbolName -> DMM.SymbolVersion -> IO [WI.SymBV sym 8])
+      -> IO [WI.SymBV sym 8]
+    withSymbolRelocation sym reloc k =
+      case DMM.relocationSym reloc of
+        DMM.SymbolRelocation name version -> k name version
+        _ -> symbolicRelocation sym reloc Nothing
+
+    -- Compute the address that a relocation references and convert it to a
+    -- list of bytes.
+    relocAddrBV ::
+         forall sym
+       . LCB.IsSymInterface sym
+      => sym
+      -> DMM.Relocation w
+      -> DMM.MemWord w
+      -> IO [WI.SymBV sym 8]
+    relocAddrBV sym reloc relocAbsBaseAddr = do
+      -- First, compute the address by adding the offset...
+      let relocAddr = relocAbsBaseAddr + DMM.relocationOffset reloc
+
+      -- ...next, chunk up the address into bytes...
+      let bv = BVS.mkBV (DMM.memWidthNatRepr @w) (fromIntegral relocAddr)
+      let bytesLE = fromMaybe
+            (AP.panic AP.SymbolicExecution
+                      "relocAddrToSymbolicBytes"
+                      ["Failed to split bitvector into bytes"])
+            (BVS.asBytesLE (DMM.memWidthNatRepr @w) bv)
+
+      --- ...finally, convert each byte to a SymBV.
+      traverse (WI.bvLit sym (WI.knownNat @8) . BVS.word8) bytesLE
+
+    -- Handle a symbol relocation. This involves copying the address of a
+    -- global variable defined elsewhere. Discovering this address is a
+    -- straightforward matter of looking it up in the supplied global variable
+    -- Map.
+    symbolRelocHook :: forall sym
                       . LCB.IsSymInterface sym
-                     => sym
-                     -> BS.ByteString
-                     -> BinSym.SymbolVersion
-                     -> DMM.Relocation w
-                     -> IO [WI.SymExpr sym (WI.BaseBVType 8)]
-    globDatRelocHook sym name version reloc =
+                    => sym
+                    -> BS.ByteString
+                    -> BinSym.SymbolVersion
+                    -> DMM.Relocation w
+                    -> IO [WI.SymBV sym 8]
+    symbolRelocHook sym name version reloc =
       case Map.lookup (ALV.VerSym name version) globals of
-        Just addr -> do
-          let bv = BVS.mkBV (DMM.memWidthNatRepr @w) (fromIntegral addr)
-          let bytesLE = fromMaybe
-                (AP.panic AP.SymbolicExecution
-                          "globDataRelocHook"
-                          ["Failed to split bitvector into bytes"])
-                (BVS.asBytesLE (DMM.memWidthNatRepr @w) bv)
-          mapM ( WI.bvLit sym (WI.knownNat @8)
-               . BVS.mkBV (WI.knownNat @8)
-               . fromIntegral )
-               bytesLE
+        Just relocAbsBaseAddr -> relocAddrBV sym reloc relocAbsBaseAddr
         Nothing -> symbolicRelocation sym reloc (Just (show name))
 
     -- Handle a COPY relocation. This involves copying the value of a global
@@ -1110,13 +1142,15 @@ globalMemoryHooks allMems globals supportedRelocs = DMSM.GlobalMemoryHooks {
                   -> BS.ByteString
                   -> BinSym.SymbolVersion
                   -> DMM.Relocation w
-                  -> IO [WI.SymExpr sym (WI.BaseBVType 8)]
+                  -> IO [WI.SymBV sym 8]
     copyRelocHook bak name version reloc =
       let sym = LCB.backendGetSym bak in
       -- Step (1)
       case Map.lookup (ALV.VerSym name version) globals of
-        Just addr -> do
-          (segOff, memIndex) <- resolveFuncAddrFromMems allMems addr
+        Just relocAddr -> do
+          -- NB: COPY relocations always have a relocationOffset of 0, so there
+          -- is no need to add it.
+          (segOff, memIndex) <- resolveFuncAddrFromMems allMems relocAddr
           let mem = allMems NEV.! memIndex
           let segRelAddr = DMM.segoffAddr segOff
           -- Step (2)
@@ -1151,6 +1185,17 @@ globalMemoryHooks allMems globals supportedRelocs = DMSM.GlobalMemoryHooks {
           -- Step (3)
           pure $ take (DMM.relocationSize reloc) chunkBytes
         _ -> symbolicRelocation sym reloc (Just (show name))
+
+    -- Handle a RELATIVE relocation. This is perhaps the simplest type of
+    -- relocation to handle, as there are no symbol names to cross-reference.
+    -- All we have to do is compute the address that the relocation references.
+    relativeRelocHook :: forall sym
+                       . LCB.IsSymInterface sym
+                      => sym
+                      -> DMM.Relocation w
+                      -> DMM.MemWord w
+                      -> IO [WI.SymBV sym 8]
+    relativeRelocHook = relocAddrBV
 
     w8 = WI.knownNat @8
 
