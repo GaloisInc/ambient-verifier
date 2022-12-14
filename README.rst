@@ -29,7 +29,8 @@ The verifier is built with the GHC Haskell compiler (versions 8.10, 9.0, and 9.2
 Then, in the ``verifier`` directory::
 
   ln -s cabal.project.dist cabal.project
-  cabal configure -w ghc-9.2.5 pkg:ambient-verifier
+  ulimit -n 2560 # Might be required on OSX.
+  cabal update && cabal configure -w ghc-9.2.5 pkg:ambient-verifier
   cabal build pkg:ambient-verifier
 
 Note that there is an optional dependency on a C compiler (``gcc`` by default)
