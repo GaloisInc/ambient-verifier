@@ -461,7 +461,7 @@ verify logAction pinst timeoutDuration = do
 
     -- Load up the binary, which existentially introduces the architecture of the
     -- binary in the context of the continuation
-    AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo archVals syscallABI functionABI parserHooks buildGlobals numBytes binConf -> DMA.withArchConstraints archInfo $ do
+    AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo abi archVals syscallABI functionABI parserHooks buildGlobals numBytes binConf -> DMA.withArchConstraints archInfo $ do
       entryPointAddr <- AEp.resolveEntryPointAddrOff binConf $ piEntryPoint pinst
 
       profFeature <- liftIO $ mapM setupProfiling (piProfileTo pinst)
@@ -506,7 +506,7 @@ verify logAction pinst timeoutDuration = do
       csOverrides <-
         case piOverrideDir pinst of
           Just dir -> do
-            liftIO $ AFE.loadCrucibleSyntaxOverrides archInfo dir (piCCompiler pinst) ng hdlAlloc parserHooks
+            liftIO $ AFE.loadCrucibleSyntaxOverrides abi dir (piCCompiler pinst) ng hdlAlloc parserHooks
           Nothing -> return AFE.emptyCrucibleSyntaxOverrides
       let fnConf = AVS.FunctionConfig {
           AVS.fcBuildSyscallABI = syscallABI

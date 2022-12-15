@@ -99,6 +99,7 @@ withBinary
         , w ~ DMC.RegAddrWidth (DMC.ArchReg arch)
         )
      => DMA.ArchitectureInfo arch
+     -> AA.ABI
      -> DMS.GenArchVals mem arch
      -> AS.BuildSyscallABI arch sym p
      -> AF.BuildFunctionABI arch sym p
@@ -143,6 +144,7 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
               -- Here we capture all of the necessary constraints required by the
               -- callback and pass them down along with the architecture info
               k DMX.x86_64_linux_info
+                AA.X86_64Linux
                 archVals
                 ASXL.x86_64LinuxSyscallABI
                 AFXL.x86_64LinuxFunctionABI
@@ -168,6 +170,7 @@ withBinary name bytes mbSharedObjectDir hdlAlloc _sym k = do
                                       unsupportedRels
                                       supportedRels
               k Macaw.AArch32.arm_linux_info
+                AA.AArch32Linux
                 archVals
                 ASAL.aarch32LinuxSyscallABI
                 (AFAL.aarch32LinuxFunctionABI tlsGlob)

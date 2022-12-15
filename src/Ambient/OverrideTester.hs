@@ -72,6 +72,7 @@ testOverrides logAction tinst timeoutDuration = do
             AFE.runOverrideTests logAction
                                  sym
                                  DMX.x86_64_linux_info
+                                 AA.X86_64Linux
                                  archVals
                                  AFXL.x86_64LinuxFunctionABI
                                  (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
@@ -90,6 +91,7 @@ testOverrides logAction tinst timeoutDuration = do
             AFE.runOverrideTests logAction
                                  sym
                                  Macaw.AArch32.arm_linux_info
+                                 AA.AArch32Linux
                                  archVals
                                  (AFAL.aarch32LinuxFunctionABI tlsGlob)
                                  (AMAL.aarch32LinuxInitGlobals tlsGlob)

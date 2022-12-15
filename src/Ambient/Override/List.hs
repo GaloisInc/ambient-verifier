@@ -57,13 +57,13 @@ listOverrides logAction pinst = do
     -- behaviors in overrides.
     let ?recordLLVMAnnotation = \_ _ _ -> return () in
     AL.withBinary (AV.piPath pinst) (AV.piBinary pinst) (AV.piSharedObjectDir pinst) hdlAlloc sym $
-        \(archInfo :: DMAI.ArchitectureInfo arch) archVals
+        \(archInfo :: DMAI.ArchitectureInfo arch) abi archVals
         (ASy.BuildSyscallABI buildSyscallABI) (AF.BuildFunctionABI buildFunctionABI)
         parserHooks buildGlobals _numBytes binConf -> do
       AFE.CrucibleSyntaxOverrides{AFE.csoAddressOverrides, AFE.csoNamedOverrides} <-
         case AV.piOverrideDir pinst of
           Just dir -> do
-            liftIO $ AFE.loadCrucibleSyntaxOverrides archInfo
+            liftIO $ AFE.loadCrucibleSyntaxOverrides abi
                        dir (AV.piCCompiler pinst)
                        ng hdlAlloc parserHooks
           Nothing -> return AFE.emptyCrucibleSyntaxOverrides
