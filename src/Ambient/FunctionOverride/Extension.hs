@@ -257,7 +257,7 @@ loadCOverride abi path cc ng halloc hooks =
     BS.hPutStr crucibleHeaderHdl AODSLED.odslCrucibleHeaderDataFile
     IO.hClose crucibleHeaderHdl
     -- ...next, parse the C file and compile it to crucible-syntax...
-    res <- runExceptT $ ODSLC.translateFile (odslImpl abi) odslIncludesDir path
+    res <- runExceptT $ ODSLC.translateFile (odslImpl abi) odslIncludesDir cc path
     prog <- case res of
       Left (ODSLC.ParseError err) -> CMC.throwM $ AE.COverrideParseError path err
       Left (ODSLC.TransError err) -> CMC.throwM $ AE.COverrideTransError path err
