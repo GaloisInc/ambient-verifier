@@ -461,7 +461,7 @@ verify logAction pinst timeoutDuration = do
 
     -- Load up the binary, which existentially introduces the architecture of the
     -- binary in the context of the continuation
-    AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo abi archVals syscallABI functionABI parserHooks buildGlobals numBytes binConf -> DMA.withArchConstraints archInfo $ do
+    AL.withBinary (piPath pinst) (piBinary pinst) (piSharedObjectDir pinst) hdlAlloc sym $ \archInfo abi archVals buildSyscallABI buildFunctionABI parserHooks buildGlobals numBytes binConf -> DMA.withArchConstraints archInfo $ do
       entryPointAddr <- AEp.resolveEntryPointAddrOff binConf $ piEntryPoint pinst
 
       profFeature <- liftIO $ mapM setupProfiling (piProfileTo pinst)
@@ -494,8 +494,8 @@ verify logAction pinst timeoutDuration = do
                                    ]
       let seConf = AVS.SymbolicExecutionConfig
                      { AVS.secProperties = piProperties pinst
-                     , AVS.secWMMCallback = \initialMem abi props oec ->
-                         AVWme.wmExecutor logAction bak initialMem binConf abi
+                     , AVS.secWMMCallback = \initialMem functionABI props oec ->
+                         AVWme.wmExecutor logAction bak initialMem binConf functionABI
                                           hdlAlloc archInfo props archVals
                                           (piLogFunctionCalls pinst) oec
                                           execFeatures
@@ -509,8 +509,8 @@ verify logAction pinst timeoutDuration = do
             liftIO $ AFE.loadCrucibleSyntaxOverrides abi dir (piCCompiler pinst) ng hdlAlloc parserHooks
           Nothing -> return AFE.emptyCrucibleSyntaxOverrides
       let fnConf = AVS.FunctionConfig {
-          AVS.fcBuildSyscallABI = syscallABI
-        , AVS.fcBuildFunctionABI = functionABI
+          AVS.fcBuildSyscallABI = buildSyscallABI
+        , AVS.fcBuildFunctionABI = buildFunctionABI
         , AVS.fcCrucibleSyntaxOverrides = csOverrides
         }
       envVarMap <- liftIO $ AEnv.mkEnvVarMap
