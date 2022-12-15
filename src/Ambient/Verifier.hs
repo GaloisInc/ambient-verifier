@@ -506,7 +506,7 @@ verify logAction pinst timeoutDuration = do
       csOverrides <-
         case piOverrideDir pinst of
           Just dir -> do
-            liftIO $ AFE.loadCrucibleSyntaxOverrides dir (piCCompiler pinst) ng hdlAlloc parserHooks
+            liftIO $ AFE.loadCrucibleSyntaxOverrides archInfo dir (piCCompiler pinst) ng hdlAlloc parserHooks
           Nothing -> return AFE.emptyCrucibleSyntaxOverrides
       let fnConf = AVS.FunctionConfig {
           AVS.fcBuildSyscallABI = syscallABI

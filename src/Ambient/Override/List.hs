@@ -63,7 +63,7 @@ listOverrides logAction pinst = do
       AFE.CrucibleSyntaxOverrides{AFE.csoAddressOverrides, AFE.csoNamedOverrides} <-
         case AV.piOverrideDir pinst of
           Just dir -> do
-            liftIO $ AFE.loadCrucibleSyntaxOverrides
+            liftIO $ AFE.loadCrucibleSyntaxOverrides archInfo
                        dir (AV.piCCompiler pinst)
                        ng hdlAlloc parserHooks
           Nothing -> return AFE.emptyCrucibleSyntaxOverrides
