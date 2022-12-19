@@ -9,6 +9,7 @@ import qualified Control.Exception as X
 import qualified Data.Aeson as DA
 import qualified Data.ByteString as BS
 import           Data.Foldable ( traverse_ )
+import qualified Data.Set as Set
 import qualified Data.Yaml as DY
 import qualified Lumberjack as LJ
 import qualified Options.Applicative as OA
@@ -166,7 +167,6 @@ buildPinstFromVerifyOptions o = do
            , AV.piLogSymbolicBranches = O.logSymbolicBranches o
            , AV.piLogFunctionCalls = O.logFunctionCalls o
            , AV.piCCompiler = O.cCompiler o
-           , AV.piLogObservableEvents = O.logObservableEvents o
            }
 
 -- | This is the real verification driver that takes the parsed out command line
@@ -178,8 +178,11 @@ verify o = withVerifyLogHandles o $ \logHdls -> do
   chan <- CC.newChan
   logger <- CCA.async (printLogs logHdls chan)
 
-  metrics <- AV.verify (logAction chan) pinst (O.timeoutDuration o)
-  traverse_ (\path -> DA.encodeFile path metrics) (O.metricsFile o)
+  results <- AV.verify (logAction chan) pinst (O.timeoutDuration o)
+  traverse_ (\path -> DA.encodeFile path (AV.metrics results)) (O.metricsFile o)
+  traverse_ (\path -> DA.encodeFile path
+                                    (Set.toList (AV.observableEvents results)))
+            (O.logObservableEvents o)
 
   -- Tear down the logger by sending the token that causes it to exit cleanly
   CC.writeChan chan Nothing

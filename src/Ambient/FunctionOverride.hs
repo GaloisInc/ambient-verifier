@@ -332,8 +332,8 @@ data FunctionABI arch sym p =
      -- Architecture-specific information
      -> LCT.TypeRepr t
      -- Function return type
-     -> LCS.OverrideSim p sym (DMS.MacawExt arch) r args rtp (OverrideResult sym arch t)
-     -- OverrideSim action producing the functions's return value
+     -> OverrideResult sym arch t
+     -- Function's return value
      -> LCS.RegValue sym (DMS.ArchRegStruct arch)
      -- Argument register values from before function execution
      -> LCS.OverrideSim p sym (DMS.MacawExt arch) r args rtp (LCS.RegValue sym (DMS.ArchRegStruct arch))

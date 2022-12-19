@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE ViewPatterns #-}
 module Ambient.Verifier.SymbolicExecution (
     SymbolicExecutionConfig(..)
   , SymbolicExecutionResult(..)
@@ -319,7 +320,6 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
 
     -- Record function event and emit a diagnostic
     let hdlName = LCF.handleName hdl
-    state2 <- APR.recordFunctionEvent bak hdlName props oec state1
     mbReturnAddr <-
       -- Checking the return address requires consulting an SMT solver, and the
       -- time it takes to do this could add up. We only care about this
@@ -332,7 +332,7 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
     LJ.writeLog logAction $
       AD.FunctionCall hdlName funcAddr mbReturnAddr
 
-    pure (hdl, state2)
+    pure (hdl, state1)
 
   where
     symArchFns :: DMS.MacawSymbolicArchFunctions arch
@@ -509,27 +509,27 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
         Just fnVersyms ->
           -- Look up each of the symbol names associated with each address.
           -- If we find a handle for one of the names, stop searching and
-          -- return that handle. Otherwise, fall back on 'discoverFuncAddrOff'.
+          -- return that handle. Otherwise, fall back on 'lookupOrDiscoverFuncAddrOff'.
           let findHandleForSym fnSym findNextSym =
                 lazilyRegisterHandle state fnSym
                                      AExt.functionOvHandles
                                      (AF.functionNameMapping abi)
                                      findNextSym in
-          let fallback = discoverFuncAddrOff funcAddrOff bin state in
+          let fallback = lookupOrDiscoverFuncAddrOff funcAddrOff bin state in
           -- NB: When looking up overrides, we only consult the function name
           -- and completely ignore the version. In the future, we will want
           -- to allow users to specify overrides that only apply to
           -- particular versions. See #104.
           foldr findHandleForSym fallback (fmap ALV.versymSymbol fnVersyms)
         Nothing ->
-          discoverFuncAddrOff funcAddrOff bin state
+          lookupOrDiscoverFuncAddrOff funcAddrOff bin state
 
     -- Look up the function handle for an address offset, performing code
     -- discovery if the address has not yet been encountered before.
     -- See Note [Incremental code discovery] in A.Extensions.
     --
     -- This corresponds to step (5) in lookupHandle's docs
-    discoverFuncAddrOff ::
+    lookupOrDiscoverFuncAddrOff ::
       DMM.MemSegmentOff w ->
       -- ^ The address offset
       ALB.LoadedBinaryPath arch binFmt ->
@@ -538,8 +538,8 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
       IO ( LCF.FnHandle args ret
          , LCS.CrucibleState p sym ext rtp blocks r ctx
          )
-    discoverFuncAddrOff funcAddrOff bin state0 =
-      case Map.lookup funcAddrOff (state0 ^. LCS.stateContext . LCS.cruciblePersonality . AExt.discoveredFunctionHandles) of
+    lookupOrDiscoverFuncAddrOff funcAddrOff bin state0 = do
+      (hdl, state3) <- case Map.lookup funcAddrOff (state0 ^. LCS.stateContext . LCS.cruciblePersonality . AExt.discoveredFunctionHandles) of
         Just handle -> pure (handle, state0)
         Nothing -> do
           LCCC.SomeCFG cfg <- buildCfg funcAddrOff bin
@@ -549,6 +549,12 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
                             (Map.insert funcAddrOff cfgHandle)
                             state1
           pure (LCCC.cfgHandle cfg, state2)
+      state4 <- APR.recordFunctionEvent bak
+                                        (LCF.handleName hdl)
+                                        props
+                                        (Just oec)
+                                        state3
+      pure (hdl, state4)
 
     mkAndBindOverride :: forall fnArgs fnRet rtp blocks r ctx
                        . LCS.CrucibleState p sym ext rtp blocks r ctx
@@ -571,11 +577,34 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
               AF.functionIntegerArguments abi bak
                                           (AF.functionArgTypes fnOverride)
                                           argReg mem
+            retVal <- AF.functionOverride fnOverride bak args getVarArg parents
             retRegs <-
               AF.functionIntegerReturnRegisters abi bak archVals
                                                 (AF.functionReturnType fnOverride)
-                                                (AF.functionOverride fnOverride bak args getVarArg parents)
+                                                retVal
                                                 argReg
+
+            -- Record override event
+            st <- CMS.get
+            let oeRetVal =
+                  case AF.functionReturnType fnOverride of
+                    LCT.UnitRepr -> Nothing
+                    LCLM.LLVMPointerRepr _ ->
+                      Just $ LCLM.SomePointer $ AF.result retVal
+                    _ -> AP.panic AP.Property
+                                  "recordOverrideEvent"
+                                  [ "Unexpected return type: " ++
+                                    show (AF.functionReturnType fnOverride) ]
+            st' <- liftIO $
+              APR.recordOverrideEvent bak
+                                      (AF.functionName fnOverride)
+                                      (AF.functionArgTypes fnOverride)
+                                      args
+                                      oeRetVal
+                                      props
+                                      oec
+                                      st
+            CMS.put st'
             pure retRegs
 
       let ov :: LCSO.Override p sym ext args ret
@@ -591,7 +620,6 @@ lookupFunction buildCfg logAction bak initialMem archVals binConf abi hdlAlloc p
                               .~ LCS.FnBindings newHandles
                           & LCSE.stateGlobals
                               .~ newGlobals
-
       -- Finally, build a function handle for the override and insert it into
       -- the state.
       bindOverrideHandle state1 hdlAlloc (Ctx.singleton regsRepr) crucRegTypes ov

@@ -107,34 +107,29 @@ aarch32LinuxIntegerReturnRegisters
   => bak
   -> DMS.GenArchVals mem DMA.ARM
   -> LCT.TypeRepr tp
-  -> LCS.OverrideSim p sym ext r args rtp (AF.OverrideResult sym DMA.ARM tp)
+  -> AF.OverrideResult sym DMA.ARM tp
   -> LCS.RegValue sym (DMS.ArchRegStruct DMA.ARM)
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMA.ARM))
-aarch32LinuxIntegerReturnRegisters bak _archVals ovTy ovSim initRegs =
+aarch32LinuxIntegerReturnRegisters bak _archVals ovTy result initRegs =
   case ovTy of
     LCT.UnitRepr -> do
-      result <- ovSim
-      return $ updateRegs initRegs result
+      return $ updateRegs initRegs
     LCLM.LLVMPointerRepr w
       | Just PC.Refl <- PC.testEquality w (PN.knownNat @32) -> do
-          result <- ovSim
           let r0 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
           return $! updateRegs (DMAS.updateReg r0 (const (LCS.RV (AF.result result))) initRegs)
-                               result
     LCLM.LLVMPointerRepr w
       | Just PC.Refl <- PC.testEquality w (PN.knownNat @8) -> do
           -- Zero extend 8-bit return value to fit in 32-bit register
-          result <- ovSim
           asBv <- liftIO $ LCLM.projectLLVM_bv bak (AF.result result)
           asPtr <- liftIO $ AO.bvToPtr sym asBv (PN.knownNat @32)
           let r0 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
           return $! updateRegs (DMAS.updateReg r0 (const (LCS.RV asPtr)) initRegs)
-                               result
     _ -> AP.panic AP.FunctionOverride "aarch32LinuxIntegerReturnRegisters" [ "Unsupported return type: " ++ show ovTy ]
   where
     sym = LCB.backendGetSym bak
 
-    updateRegs regs result =
+    updateRegs regs =
       foldl' (\r (reg, val) -> DMAS.updateReg reg (const (LCS.RV val)) r)
              regs
              (AF.regUpdates result)

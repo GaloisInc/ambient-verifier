@@ -6,11 +6,13 @@ module Main ( main ) where
 import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Async as CCA
 import qualified Control.Exception as CE
-import           Control.Monad ( unless )
+import           Control.Monad ( unless, when )
+import qualified Data.Aeson as DA
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.List as List
 import           Data.Maybe ( fromMaybe, maybeToList )
+import qualified Data.Set as Set
 import qualified Data.Text as DT
 import qualified Data.Text.Lazy as DTL
 import qualified Data.Text.Lazy.Encoding as TLE
@@ -140,11 +142,11 @@ showVerifyException (CaughtAmbientException ae) = show ae
 
 -- | The result of running verify
 --
--- Either the output metrics, or a caught exception (which might
+-- Either the output results, or a caught exception (which might
 -- be acceptable if the test expects it).
 data VerifyResult =
     CaughtVerifyException CaughtVerifyException
-  | VerifyOK AV.Metrics
+  | VerifyOK AV.VerificationProducts
 
 -- | Create a test for a given expected output
 --
@@ -200,31 +202,30 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piLogSymbolicBranches = Nothing
                                  , AV.piLogFunctionCalls = Nothing
                                  , AV.piCCompiler = "gcc"
-                                 , AV.piLogObservableEvents = Nothing
                                  }
 
   chan <- CC.newChan
   logger <- CCA.async (analyzeSolvedGoals chan)
-  metricsOrErr <- (VerifyOK <$> AV.verify (logAction chan) pinst AT.defaultTimeout)
+  resultsOrErr <- (VerifyOK <$> AV.verify (logAction chan) pinst AT.defaultTimeout)
                     `CE.catches` [CE.Handler (\ (ex :: LCB.AbortExecReason) -> return $ CaughtVerifyException (CaughtAbortExecReason ex)),
                                   CE.Handler (\ (ex :: AE.AmbientException) -> return $ CaughtVerifyException (CaughtAmbientException ex))]
 
   -- If throwsException is set, catch AbortExecReason's
   let doCatchErr = fromMaybe False $ throwsException expectedResult
   if doCatchErr then
-      case metricsOrErr of
+      case resultsOrErr of
         CaughtVerifyException e -> do
           handleExpectedException (showVerifyException e)
         VerifyOK _ -> do
           -- Failed! Didn't error when doCatchErr was true
           TTH.assertFailure "Exception was expected, but none were caught"
     else
-      case metricsOrErr of
+      case resultsOrErr of
         CaughtVerifyException e -> do
           -- Failed! Error when doCatchErr was false
           TTH.assertFailure $ "Unexpected exception: " ++ (showVerifyException e)
         VerifyOK metrics -> do
-          assertMetricsOK chan logger expectedResult metrics
+          assertResultsOK chan logger expectedResult metrics
 
   where
     testName = SF.dropExtension expectedOutputFile
@@ -245,7 +246,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
           -- Compare the exception file to the actual error
           TTH.assertEqual "Expected exception" excFile actualErr
 
-    assertMetricsOK chan logger expectedResult metrics = do
+    assertResultsOK chan logger expectedResult results = do
         -- We weren't expecting errors, and we didn't get any
         CC.writeChan chan Nothing
         res <- CCA.wait logger
@@ -261,7 +262,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
         TTH.assertEqual "Expected Output" expectedResult res'
 
         -- Check that goal values in metrics match the expected number of goals
-        let proofStats = AV.proofStats metrics
+        let proofStats = AV.proofStats (AV.metrics results)
         TTH.assertEqual "Total expected number of goals"
                         (successful expectedResult + failed expectedResult)
                         (AVP.psGoals proofStats)
@@ -273,6 +274,22 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                         (AVP.psFailedGoals proofStats)
         TTH.assertEqual "Expected timeouts" 0 (AVP.psTimeouts proofStats)
         TTH.assertEqual "Expected errors" 0 (AVP.psErrors proofStats)
+
+        -- If an expected observable events trace exists, check that the actual
+        -- trace matches it.
+        -- NOTE: This test compares the rendered JSON and not the
+        -- ObservableEvent lists themselves partially because the Eq instance
+        -- for ObservableEvents only checks the unique identifier within the
+        -- event.  Additionally, as it is ultimately the rendered output itself
+        -- that is important, we want the stricter check of validating the
+        -- output.
+        let oePath = SF.replaceExtension expectedOutputFile "events.json"
+        oeFileExists <- SD.doesFileExist oePath
+        when oeFileExists $ do
+          oeExpected <- BL.readFile oePath
+          TTH.assertEqual "Expected observable events"
+                          oeExpected
+                          (DA.encode (Set.toList (AV.observableEvents results)))
 
 -- | Create a test that is expected to fail for a given output
 --

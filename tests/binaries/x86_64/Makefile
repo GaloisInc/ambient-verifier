@@ -82,6 +82,9 @@ just-exit-pie.exe: just-exit.c
 function-call-pie.exe: function-call.c
 	$(CC) -nostartfiles -pie $^ -o $@
 
+oe-ov.exe: oe-ov.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $^ -o $@
+
 plt-ov.exe: plt-ov.c
 	$(CC) -nostartfiles -pie $^ -o $@
 

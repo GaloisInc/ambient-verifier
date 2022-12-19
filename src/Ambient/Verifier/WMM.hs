@@ -191,8 +191,8 @@ handleControlTransfer logAction adapter archVals props (WMMCallback action) regS
                 WMMResultNoChange -> do
                   -- No change from callback, but need to update SimState to
                   -- capture change to 'hitWm'
-                  let estate' = case estate of
-                                  LCSE.CallState ret call state ->
+                  estate' <- case estate of
+                                  LCSE.CallState ret call state -> do
                                     -- Here we are copying over all of the event
                                     -- traces from the Weird Machine excursion
                                     -- (otherwise, we lose their updates).
@@ -206,12 +206,20 @@ handleControlTransfer logAction adapter archVals props (WMMCallback action) regS
                                             Nothing -> AP.panic AP.WMM "handleControlTransfer" ["Missing global for property " <> show (APD.propertyName p)]
                                             Just rv -> LCSG.insertGlobal gv rv globs
                                         globals1 = F.foldl' copyVariable globals0 (AE.properties props)
-                                        state' = set LCSE.stateGlobals globals1 state
-                                    in LCSE.CallState ret call state'
+                                        oeGlob = AO.oecGlobal oec
+                                    oeTrace <-
+                                      lookupGlobal oeGlob
+                                                   (st' ^. LCSE.stateGlobals)
+                                    let globals2 = LCSG.insertGlobal oeGlob
+                                                                     oeTrace
+                                                                     globals1
+                                    let state' = set LCSE.stateGlobals globals2 state
+
+                                    return $ LCSE.CallState ret call state'
                                   LCSE.TailCallState v r _ ->
-                                    LCSE.TailCallState v r st'
+                                    return $ LCSE.TailCallState v r st'
                                   LCSE.ReturnState f v r _ ->
-                                    LCSE.ReturnState f v r st'
+                                    return $ LCSE.ReturnState f v r st'
                                   _ -> AP.panic AP.WMM
                                                 "handleControlTransfer"
                                                 ["Encountered unexpected ExecState type"]
@@ -255,7 +263,7 @@ handleControlTransfer logAction adapter archVals props (WMMCallback action) regS
               -- Record WM entry in observable event trace
               oeTrace <- lookupGlobal (AO.oecGlobal oec) globs0
               let AO.RecordObservableEvent oecRecordFn = AO.oecRecordFn oec
-              oeTrace' <- oecRecordFn sym (APD.EnterWeirdMachine (fromInteger wmEntry)) cond oeTrace
+              oeTrace' <- oecRecordFn sym (AO.Transition (APD.EnterWeirdMachine (fromInteger wmEntry))) cond oeTrace
               let globs1 = LCSG.insertGlobal (AO.oecGlobal oec) oeTrace' globs0
 
               let pleatM seed xs f = F.foldlM f seed xs

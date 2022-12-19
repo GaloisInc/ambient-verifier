@@ -13,6 +13,7 @@
 module Ambient.Verifier (
     ProgramInstance(..)
   , Metrics(..)
+  , VerificationProducts(..)
   , verify
   , buildRecordLLVMAnnotation
   ) where
@@ -44,6 +45,7 @@ import qualified System.Directory as Dir
 import qualified System.FilePath as FP
 
 import qualified Data.Macaw.Architecture.Info as DMA
+import qualified Data.Macaw.CFG as DMC
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.Backend.Online as LCBO
 import qualified Lang.Crucible.FunctionHandle as LCF
@@ -147,9 +149,6 @@ data ProgramInstance =
                   -- ^ Optional location to log function calls to
                   , piCCompiler :: FilePath
                   -- ^ The C compiler to use to preprocess C overrides
-                  , piLogObservableEvents :: Maybe FilePath
-                  -- ^ Optional file to write observable events occurring after
-                  -- weird machine entry to.
                   }
 
 -- | A set of metrics from a verification run
@@ -174,6 +173,14 @@ instance DA.ToJSON Metrics
 instance DA.ToJSON (LCSProf.Metrics Identity)
 deriving instance Generic WI.Statistics
 instance DA.ToJSON WI.Statistics
+
+-- | Data produced during the verification process
+data VerificationProducts =
+  VerificationProducts { metrics :: Metrics
+                       -- ^ Runtime metrics
+                       , observableEvents :: Set.Set AO.ObservableEvent
+                       -- ^ Observable events during weird machine execution
+                       }
 
 -- | Extract the final value from a global variable
 --
@@ -233,27 +240,27 @@ data ProcessedObsEventTrace =
  -- all traces.
 
 -- | Reason about the observable event trace to extract only the events that
--- occurred after weird machine entry.  This function writes the event trace
--- out to a JSON file.
-processObservableEvents :: forall arch sym
-                         . ( WI.IsExprBuilder sym )
+-- occurred after weird machine entry.  This function renders the event trace
+-- into a lazy bytestring.
+processObservableEvents :: forall arch sym w
+                         . ( WI.IsExprBuilder sym
+                           , w ~ DMC.ArchAddrWidth arch )
                         => sym
                         -> AVS.SymbolicExecutionResult arch sym
                         -- ^ Result from symbolic execution
-                        -> FilePath
-                        -- ^ File to write event trace to
-                        -> IO ()
-processObservableEvents sym execResult path = do
+                        -> IO (Set.Set AO.ObservableEvent)
+processObservableEvents sym execResult = do
   obsEvtTrace <- getFinalGlobal sym
                                 (LCSS.muxSymSequence sym)
                                 (AVS.serObservableEventGlob execResult)
                                 (AVS.serCrucibleExecResult execResult)
   evts <- processTrace obsEvtTrace Set.empty
-  DA.encodeFile path (Set.toList (fromHasWM evts))
+  pure $ fromHasWM evts
   where
     -- | If passed a 'HasWM', this function returns the set within.  Otherwise
     -- it returns an emtpy set.
-    fromHasWM :: ProcessedObsEventTrace -> Set.Set AO.ObservableEvent
+    fromHasWM :: ProcessedObsEventTrace
+              -> Set.Set AO.ObservableEvent
     fromHasWM processedTrace =
       case processedTrace of
         HasWM s -> s
@@ -279,7 +286,7 @@ processObservableEvents sym execResult path = do
         LCSS.SymSequenceCons _ h t' -> do
           let evt = idToEvent h
           case (AO.oeEvent evt) of
-            APD.EnterWeirdMachine _ -> do
+            AO.Transition (APD.EnterWeirdMachine _) -> do
               -- Done! We were in a WM!  Blank out the parent field as this is
               -- now the parent of the entire trace.
               let evt' = evt { AO.oeParents = [] }
@@ -439,7 +446,7 @@ verify
   -- ^ A description of the program (and its configuration) to verify
   -> AT.Timeout
   -- ^ The solver timeout for each goal
-  -> m Metrics
+  -> m VerificationProducts
 verify logAction pinst timeoutDuration = do
   t0 <- liftIO $ DTC.getCurrentTime
   hdlAlloc <- liftIO LCF.newHandleAllocator
@@ -536,11 +543,7 @@ verify logAction pinst timeoutDuration = do
       -- could easily support allowing the user to choose two different solvers.
       metricProofStats <- AVP.proveObligations logAction bak (AS.offlineSolver (piSolver pinst)) timeoutDuration badBehavior'
 
-      liftIO $
-        F.traverse_ (\path -> processObservableEvents sym
-                                                      ambientExecResult
-                                                      path)
-                    (piLogObservableEvents pinst)
+      oes <- liftIO $ processObservableEvents sym ambientExecResult
 
       crucMetrics <- liftIO $ LCSProf.readMetrics profTab
       _ <- liftIO $ mapM CCA.cancel (fmap snd profFeature)
@@ -555,15 +558,18 @@ verify logAction pinst timeoutDuration = do
       aSymSt <- liftIO $ getPersonality crucibleExecResult
 
       t1 <- liftIO $ DTC.getCurrentTime
-      return Metrics
-        { proofStats = metricProofStats
-        , crucibleMetrics = crucMetrics
-        , runtimeSeconds = t1 `DTC.diffUTCTime` t0
-        , simulationStats = aSymSt ^. AExt.simulationStats
-        , numBytesLoaded = numBytes
-        , blocksVisited = length blockEvents
-        , uniqueBlocksVisited = Set.size uniqueBlockEvents
-        }
+      let vMetrics = Metrics { proofStats = metricProofStats
+                             , crucibleMetrics = crucMetrics
+                             , runtimeSeconds = t1 `DTC.diffUTCTime` t0
+                             , simulationStats = aSymSt ^. AExt.simulationStats
+                             , numBytesLoaded = numBytes
+                             , blocksVisited = length blockEvents
+                             , uniqueBlocksVisited = Set.size uniqueBlockEvents
+                             }
+
+      return VerificationProducts { metrics = vMetrics
+                                  , observableEvents = oes
+                                  }
 
 
 {- Note [Entry Point]

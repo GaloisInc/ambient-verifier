@@ -99,27 +99,25 @@ x86_64LinuxIntegerReturnRegisters
   -- ^ x86_64-specific architecture information
   -> LCT.TypeRepr t
   -- ^ Override return type
-  -> LCS.OverrideSim p sym ext r args rtp (AF.OverrideResult sym DMX.X86_64 t)
-  -- ^ OverrideSim action producing the override's return value
+  -> AF.OverrideResult sym DMX.X86_64 t
+  -- ^ Override's return value
   -> LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64)
   -- ^ Argument register values from before override execution
   -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64))
-x86_64LinuxIntegerReturnRegisters bak archVals ovTyp ovSim initRegs = do
+x86_64LinuxIntegerReturnRegisters bak archVals ovTyp result initRegs = do
   case ovTyp of
     LCT.UnitRepr -> do
-      result <- ovSim
       pure $ updateRegs initRegs (AF.regUpdates result)
     LCLM.LLVMPointerRepr w
       | Just WI.Refl <- WI.testEquality w (WI.knownNat @64) -> do
-      result <- ovSim
       pure $ updateRegs initRegs ((DMXR.RAX, AF.result result) : AF.regUpdates result)
     LCLM.LLVMPointerRepr w
       | Just WI.Refl <- WI.testEquality w (WI.knownNat @8) -> do
-      (regs, result) <- bvZext ovSim
+      regs <- bvZextResult result
       pure $ updateRegs regs (AF.regUpdates result)
     LCLM.LLVMPointerRepr w
       | Just WI.Refl <- WI.testEquality w (WI.knownNat @32) -> do
-      (regs, result) <- bvZext ovSim
+      regs <- bvZextResult result
       pure $ updateRegs regs (AF.regUpdates result)
     _ -> AP.panic AP.FunctionOverride
                   "x86_64LinuxIntegerReturnRegisters"
@@ -129,17 +127,16 @@ x86_64LinuxIntegerReturnRegisters bak archVals ovTyp ovSim initRegs = do
   where
     sym = LCB.backendGetSym bak
 
-    -- | Zero extend an LLMVPointer in region 0 (a bitvector) to fit in an
+    -- | Zero extend result LLMVPointer in region 0 (a bitvector) to fit in an
     -- integer register
-    bvZext
+    bvZextResult
       :: (1 <= srcW, KnownNat srcW)
-      => LCS.OverrideSim p sym ext r args rtp (AF.OverrideResult sym DMX.X86_64 (LCLM.LLVMPointerType srcW))
-      -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64), AF.OverrideResult sym DMX.X86_64 (LCLM.LLVMPointerType srcW))
-    bvZext ov = do
-      result <- ov
-      asBv <- liftIO $ LCLM.projectLLVM_bv bak (AF.result result)
+      => AF.OverrideResult sym DMX.X86_64 (LCLM.LLVMPointerType srcW)
+      -> LCS.OverrideSim p sym ext r args rtp (LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64))
+    bvZextResult ovRes = do
+      asBv <- liftIO $ LCLM.projectLLVM_bv bak (AF.result ovRes)
       asPtr <- liftIO $ AO.bvToPtr sym asBv (WI.knownNat @64)
-      return (updateRegs initRegs [(DMXR.RAX, asPtr)], result)
+      return $ updateRegs initRegs [(DMXR.RAX, asPtr)]
 
     updateRegs :: LCS.RegValue sym (DMS.ArchRegStruct DMX.X86_64)
                -> [( DMC.ArchReg DMX.X86_64 (DMT.BVType 64)
