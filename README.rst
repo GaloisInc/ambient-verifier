@@ -304,6 +304,7 @@ Unlike C/C++, these pointers are untyped and essentially correspond to ``uint8_t
 - ``Int`` is an alias for ``Bitvector 32``.
 - ``Long`` is an alias for ``Bitvector 32`` on Arm32 and ``Bitvector 64`` on X86_64.
 - ``PidT`` is an alias for ``Bitvector 32``.
+- ``Short`` is an alias for ``Bitvector 16``.
 - ``SizeT`` is an alias for ``Bitvector 32`` on Arm32 and ``Bitvector 64`` on X86_64.
 - ``UidT`` is an alias for ``Bitvector 32``.
 

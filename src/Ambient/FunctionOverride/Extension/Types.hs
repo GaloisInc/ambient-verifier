@@ -39,7 +39,7 @@ import qualified Ambient.FunctionOverride as AF
 
 -- | The additional types ambient-verifier supports beyond those built into
 -- crucible-syntax.
-data TypeAlias = Byte | Int | Long | PidT | Pointer | SizeT | UidT
+data TypeAlias = Byte | Int | Long | PidT | Pointer | Short | SizeT | UidT
   deriving (Show, Eq, Enum, Bounded)
 
 -- | Lookup function from a 'TypeAlias' to the underlying crucible type it

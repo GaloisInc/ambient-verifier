@@ -116,6 +116,10 @@ x86_64LinuxIntegerReturnRegisters bak archVals ovTyp result initRegs = do
       regs <- bvZextResult result
       pure $ updateRegs regs (AF.regUpdates result)
     LCLM.LLVMPointerRepr w
+      | Just WI.Refl <- WI.testEquality w (WI.knownNat @16) -> do
+      regs <- bvZextResult result
+      pure $ updateRegs regs (AF.regUpdates result)
+    LCLM.LLVMPointerRepr w
       | Just WI.Refl <- WI.testEquality w (WI.knownNat @32) -> do
       regs <- bvZextResult result
       pure $ updateRegs regs (AF.regUpdates result)
@@ -250,6 +254,7 @@ x86_64LinuxTypes = AFE.TypeLookup $ \tp ->
     AFE.Long -> Some (LCT.BVRepr (PN.knownNat @64))
     AFE.PidT -> Some (LCT.BVRepr (PN.knownNat @32))
     AFE.Pointer -> Some (LCLM.LLVMPointerRepr (PN.knownNat @64))
+    AFE.Short -> Some (LCT.BVRepr (PN.knownNat @16))
     AFE.SizeT -> Some (LCT.BVRepr (PN.knownNat @64))
     AFE.UidT -> Some (LCT.BVRepr (PN.knownNat @32))
 

@@ -237,6 +237,9 @@ abs32-relative-reloc/libfoo.so: abs32-relative-reloc/foo.c
 abs32-relative-reloc/abs32-relative-reloc.exe: abs32-relative-reloc/abs32-relative-reloc.c abs32-relative-reloc/libfoo.so ambient_assert.o
 	$(CC) -nostdlib -Labs32-relative-reloc/ -I./ abs32-relative-reloc/abs32-relative-reloc.c ambient_assert.o -lfoo -o $@
 
+short-ov.exe: short-ov.c ambient_assert.o
+	$(CC) -nostartfiles -static $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

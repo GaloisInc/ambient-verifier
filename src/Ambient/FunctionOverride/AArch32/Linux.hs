@@ -103,7 +103,8 @@ aarch32LinuxIntegerArgumentRegisters =
 --
 -- Otherwise, an integer return value is placed into r0
 aarch32LinuxIntegerReturnRegisters
-  :: (LCB.IsSymBackend sym bak)
+  :: forall sym bak mem tp p ext r args rtp
+   . (LCB.IsSymBackend sym bak)
   => bak
   -> DMS.GenArchVals mem DMA.ARM
   -> LCT.TypeRepr tp
@@ -119,15 +120,26 @@ aarch32LinuxIntegerReturnRegisters bak _archVals ovTy result initRegs =
           let r0 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
           return $! updateRegs (DMAS.updateReg r0 (const (LCS.RV (AF.result result))) initRegs)
     LCLM.LLVMPointerRepr w
+      | Just PC.Refl <- PC.testEquality w (PN.knownNat @16) -> do
+          liftIO $ extendResult result
+    LCLM.LLVMPointerRepr w
       | Just PC.Refl <- PC.testEquality w (PN.knownNat @8) -> do
-          -- Zero extend 8-bit return value to fit in 32-bit register
-          asBv <- liftIO $ LCLM.projectLLVM_bv bak (AF.result result)
-          asPtr <- liftIO $ AO.bvToPtr sym asBv (PN.knownNat @32)
-          let r0 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
-          return $! updateRegs (DMAS.updateReg r0 (const (LCS.RV asPtr)) initRegs)
+          liftIO $ extendResult result
     _ -> AP.panic AP.FunctionOverride "aarch32LinuxIntegerReturnRegisters" [ "Unsupported return type: " ++ show ovTy ]
   where
     sym = LCB.backendGetSym bak
+
+    -- Zero extend return value to fit in 32-bit register and update register
+    -- state.
+    extendResult
+      :: (1 WI.<= srcW, DMT.KnownNat srcW)
+      => AF.OverrideResult sym DMA.ARM (LCLM.LLVMPointerType srcW)
+      -> IO (LCS.RegValue sym (DMS.ArchRegStruct DMA.ARM))
+    extendResult ovRes = do
+      asBv <- LCLM.projectLLVM_bv bak (AF.result ovRes)
+      asPtr <- AO.bvToPtr sym asBv (PN.knownNat @32)
+      let r0 = ARMReg.ARMGlobalBV (ASL.knownGlobalRef @"_R0")
+      return $! updateRegs (DMAS.updateReg r0 (const (LCS.RV asPtr)) initRegs)
 
     updateRegs regs =
       foldl' (\r (reg, val) -> DMAS.updateReg reg (const (LCS.RV val)) r)
@@ -263,6 +275,7 @@ aarch32LinuxTypes = AFE.TypeLookup $ \tp ->
     AFE.Long -> Some (LCT.BVRepr (PN.knownNat @32))
     AFE.PidT -> Some (LCT.BVRepr (PN.knownNat @32))
     AFE.Pointer -> Some (LCLM.LLVMPointerRepr (PN.knownNat @32))
+    AFE.Short -> Some (LCT.BVRepr (PN.knownNat @16))
     AFE.SizeT -> Some (LCT.BVRepr (PN.knownNat @32))
     AFE.UidT -> Some (LCT.BVRepr (PN.knownNat @32))
 

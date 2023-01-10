@@ -204,6 +204,9 @@ sprintf-bof.exe: sprintf-bof.c
 specialized-sprintf-bof.exe: specialized-sprintf-bof.c
 	$(MUSL_CC) -fcf-protection=none -fno-stack-protector -static $^ -o $@
 
+short-ov.exe: short-ov.c ambient_assert.o
+	$(MUSL_CC) -nostartfiles -static $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

@@ -153,6 +153,7 @@ narrowPointerType bak narrowTypeRepr wideEntry
                    MapF.MapF LCT.TypeRepr (BvNarrowing sym widePtrW)
     conversions widePtrW =
       MapF.fromList [ MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @8)) (BvNarrowing (bvTrunc (WI.knownNat @8)))
+                    , MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @16)) (BvNarrowing (bvTrunc (WI.knownNat @16)))
                     , MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @32)) (BvNarrowing (bvTrunc (WI.knownNat @32)))
                     , MapF.Pair (LCLM.LLVMPointerRepr widePtrW) (BvNarrowing return)
                     ]
@@ -205,6 +206,7 @@ extendPointerType bak wideTypeRepr narrowEntry
                    MapF.MapF LCT.TypeRepr (BvExtension sym widePtrW)
     conversions widePtrW =
       MapF.fromList [ MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @8)) (BvExtension (bvZext widePtrW))
+                    , MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @16)) (BvExtension (bvZext widePtrW))
                     , MapF.Pair (LCLM.LLVMPointerRepr (WI.knownNat @32)) (BvExtension (bvZext widePtrW))
                     , MapF.Pair (LCLM.LLVMPointerRepr widePtrW) (BvExtension return)
                     ]
