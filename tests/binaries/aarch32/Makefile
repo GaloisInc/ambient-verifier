@@ -240,6 +240,9 @@ abs32-relative-reloc/abs32-relative-reloc.exe: abs32-relative-reloc/abs32-relati
 short-ov.exe: short-ov.c ambient_assert.o
 	$(CC) -nostartfiles -static $^ -o $@
 
+sprintf-symbolic/sprintf-symbolic.exe: sprintf-symbolic/sprintf-symbolic.c ambient_assert.o
+	$(CC) -nostartfiles -static -no-pie -I. $^ -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

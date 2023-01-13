@@ -30,11 +30,11 @@ import qualified Control.Monad.State as CMS
 import qualified Control.Monad.Trans as CMT
 import qualified Data.BitVector.Sized as BVS
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Char as C
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe )
 import qualified Data.Parameterized.Context as Ctx
+import qualified Data.Traversable as T
 import qualified Data.Vector as DV
 import           Data.Void ( Void )
 import           Data.Word ( Word8 )
@@ -83,10 +83,15 @@ printfFamilyOverrides initialMem unsupportedRelocs =
   , SomeFunctionOverride (buildSscanfOverride initialMem unsupportedRelocs)
   ]
 
--- | Override for the @sprintf@ function.  This override has the limitation
--- that all string arguments must be concrete.  This override adds failing
--- assertions for symbolic strings.  The override renders symbolic integers as
--- @?@ characters.  See ticket #118.
+-- | Override for the @sprintf@ function. This override has some limitations
+-- on what arguments are allowed to be symbolic:
+--
+-- * The output string and the format string must be concrete, and the override
+--   will add failing assertions if this is not the case. Other string arguments
+--   are allowed to be symbolic.
+--
+-- * Arguments of any type besides string can be symbolic, but the override will
+--   render them with @?@ characters. See ticket #118.
 callSprintf
   :: forall sym bak w p ext r args ret arch scope st fs solver
    . ( LCB.IsSymBackend sym bak
@@ -129,12 +134,13 @@ callSprintf bak initialMem unsupportedRelocs
         valist <- liftIO $ getPrintfVarArgs (DV.fromList ds) gva
         ((str, n), mem1) <-
           CMS.runStateT
-            (executeDirectivesPrintf (printfOps bak initialMem unsupportedRelocs valist)
+            (executeDirectivesPrintf sym
+                                     (printfOps bak initialMem unsupportedRelocs valist)
                                      ds)
             mem0
 
         -- Write to output pointer
-        mem2 <- AExt.storeConcreteString bak mem1 initialMem outPtr (BS.unpack str)
+        mem2 <- AExt.storeString bak mem1 initialMem outPtr str
         nBv <- liftIO $ WI.bvLit sym ?ptrWidth (BVS.mkBV ?ptrWidth (toInteger n))
         LCS.writeGlobal mvar mem2
         liftIO $ bvToPtr sym nBv ?ptrWidth
@@ -274,15 +280,15 @@ printfOps :: ( LCB.IsSymBackend sym bak
           -- ^ Mapping from unsupported relocation addresses to the names of the
           -- unsupported relocation types.
           -> DV.Vector (LCS.AnyValue sym)
-          -> LCLP.PrintfOperations (CMS.StateT (LCLM.MemImpl sym) (LCS.OverrideSim p sym ext r args ret))
+          -> PrintfOperations (CMS.StateT (LCLM.MemImpl sym) (LCS.OverrideSim p sym ext r args ret)) sym
 printfOps bak initialMem unsupportedRelocs valist =
   let sym = LCB.backendGetSym bak in
-  LCLP.PrintfOperations
-  { LCLP.printfUnsupported = \x ->CMS.lift $ liftIO
-                                           $ LCB.addFailedAssertion bak
-                                           $ LCS.Unsupported GHC.callStack x
+  PrintfOperations
+  { printfUnsupported = \x ->CMS.lift $ liftIO
+                                      $ LCB.addFailedAssertion bak
+                                      $ LCS.Unsupported GHC.callStack x
 
-  , LCLP.printfGetInteger = \i sgn _len ->
+  , printfGetInteger = \i sgn _len ->
      case valist DV.!? (i-1) of
        Just (LCS.AnyValue (LCLM.LLVMPointerRepr w) x) ->
          do bv <- liftIO (LCLM.projectLLVM_bv bak x)
@@ -303,7 +309,7 @@ printfOps bak initialMem unsupportedRelocs valist =
                    "Out-of-bounds argument access in printf"
                    (unwords ["Index:", show i])
 
-  , LCLP.printfGetFloat = \i _len ->
+  , printfGetFloat = \i _len ->
      case valist DV.!? (i-1) of
        Just (LCS.AnyValue (LCT.FloatRepr (_fi :: LCT.FloatInfoRepr fi)) x) ->
          do xr <- liftIO (WIFloat.iFloatToReal @_ @fi sym x)
@@ -321,12 +327,12 @@ printfOps bak initialMem unsupportedRelocs valist =
                     "Out-of-bounds argument access in printf:"
                     (unwords ["Index:", show i])
 
-  , LCLP.printfGetString  = \i numchars ->
+  , printfGetString  = \i numchars ->
      case valist DV.!? (i-1) of
        Just (LCS.AnyValue LCLM.PtrRepr ptr) ->
            do mem <- CMS.get
               let reg = LCS.RegEntry (LCLM.LLVMPointerRepr ?ptrWidth) ptr
-              CMS.lift $ AExt.loadConcreteString bak mem initialMem unsupportedRelocs reg numchars
+              CMS.lift $ AExt.loadString bak mem initialMem unsupportedRelocs reg numchars
        Just (LCS.AnyValue tpr _) ->
          CMS.lift $ liftIO
                   $ LCB.addFailedAssertion bak
@@ -340,7 +346,7 @@ printfOps bak initialMem unsupportedRelocs valist =
                     "Out-of-bounds argument access in printf:"
                     (unwords ["Index:", show i])
 
-  , LCLP.printfGetPointer = \i ->
+  , printfGetPointer = \i ->
      case valist DV.!? (i-1) of
        Just (LCS.AnyValue LCLM.PtrRepr ptr) ->
          return $ show (LCLM.ppPtr ptr)
@@ -357,7 +363,7 @@ printfOps bak initialMem unsupportedRelocs valist =
                     "Out-of-bounds argument access in printf:"
                     (unwords ["Index:", show i])
 
-  , LCLP.printfSetInteger = \i len v ->
+  , printfSetInteger = \i len v ->
      case valist DV.!? (i-1) of
        Just (LCS.AnyValue LCLM.PtrRepr ptr) ->
          do mem <- CMS.get
@@ -713,69 +719,131 @@ getScanfVarArg pd gva@(GetVarArg getVarArg) =
       (LCS.RegEntry _ val, gva') <- getVarArg LCLM.PtrRepr
       pure (Just val, gva')
 
+-- | A description of how to process the different types of arguments in the
+-- @printf@ family of functions.
+--
+-- This is heavily based on 'Lang.Crucible.LLVM.Printf.PrintfOperations', but
+-- with the following differences:
+--
+-- * This version has an additional @sym@ type parameter.
+--
+-- * The return types of 'printfGetString' is @m ['WI.SymBV' sym 8]@ rather than
+--   @m ['Word8']@ to permit the possibility of symbolic string arguments.
+data PrintfOperations m sym
+  = PrintfOperations
+    { printfGetInteger  :: Int  -- Field number
+                        -> Bool -- is Signed?
+                        -> LCLP.PrintfLengthModifier
+                        -> m (Maybe Integer)
+    , printfGetFloat    :: Int -- FieldNumber
+                        -> LCLP.PrintfLengthModifier
+                        -> m (Maybe Rational)
+    , printfGetPointer  :: Int -- FieldNumber
+                        -> m String
+    , printfGetString   :: Int -- FieldNumber
+                        -> Maybe Int -- Number of chars to read; if Nothing, read until null terminator
+                        -> m [WI.SymBV sym 8]
+    , printfSetInteger  :: Int -- FieldNumber
+                        -> LCLP.PrintfLengthModifier
+                        -> Int -- value to set
+                        -> m ()
+
+    , printfUnsupported :: !(forall a. GHC.HasCallStack => String -> m a)
+    }
+
 -- | Given a set of 'PrintfOperations' to perform and a list of directives in a
 -- @printf@ format string, parse the input string and perform the appropriate
 -- operation for each directive.  This function returns a bytestring containing
 -- the rendered string and an int containing the number of bytes in the
 -- rendered string.
 --
--- This is heavily based on 'Lang.Crucible.LLVM.Printf.executeDirectives' with
--- the notable difference that this implementation treats the rendered string as
--- a sequence of bytes, while the Crucible implementation treats the string as
--- UTF-8 encoded.  This distinction is important for us because interpreting
--- exploit payloads as UTF-8 encoded can break them.  See Crucible issue #1010
--- (https://github.com/GaloisInc/crucible/issues/1010) for more info.
-executeDirectivesPrintf :: forall m. Monad m
-                        => LCLP.PrintfOperations m
+-- This is heavily based on 'Lang.Crucible.LLVM.Printf.executeDirectives', but
+-- with the following differences:
+--
+-- * This implementation treats the rendered string as a sequence of bytes,
+--   while the Crucible implementation treats the string as UTF-8 encoded. This
+--   distinction is important for us because interpreting exploit payloads as
+--   UTF-8 encoded can break them.  See Crucible issue #1010
+--   (https://github.com/GaloisInc/crucible/issues/1010) for more info.
+--
+-- * This implementation allows strings to be symbolic in the
+--   'LCLP.Conversion_String' case, whereas the Crucible implementation requires
+--   them to be concrete.
+executeDirectivesPrintf :: forall m sym.
+                         ( MonadIO m
+                         , LCB.IsSymInterface sym
+                         )
+                        => sym
+                        -> PrintfOperations m sym
                         -> [LCLP.PrintfDirective]
-                        -> m (BS.ByteString, Int)
-executeDirectivesPrintf ops = go id 0 0
+                        -> m ([WI.SymBV sym 8], Int)
+executeDirectivesPrintf sym ops = go id 0 0
   where
-    go :: (BS.ByteString -> BS.ByteString) -> Int -> Int -> [LCLP.PrintfDirective] -> m (BS.ByteString, Int)
-    go fstr !len !_fld [] = return (fstr BS.empty, len)
+    w8 = WI.knownNat @8
+
+    go :: ([WI.SymBV sym 8] -> [WI.SymBV sym 8])
+       -> Int
+       -> Int
+       -> [LCLP.PrintfDirective]
+       -> m ([WI.SymBV sym 8], Int)
+    go fstr !len !_fld [] = return (fstr [], len)
     go fstr !len !fld ((LCLP.StringDirective bs):xs) = do
+        bs' <- liftIO $ T.for (BS.unpack bs) $ \byte ->
+               WI.bvLit sym w8 $ BVS.mkBV w8 $ fromIntegral byte
         let len'  = len + BS.length bs
-        let fstr' = fstr . BS.append bs
+        let fstr' = fstr . (bs' ++)
         go fstr' len' fld xs
     go fstr !len !fld (LCLP.ConversionDirective d:xs) =
         let fld' = fromMaybe (fld+1) (LCLP.printfAccessField d) in
         case LCLP.printfType d of
           LCLP.Conversion_Integer fmt -> do
             let sgn = signedIntFormat fmt
-            i <- LCLP.printfGetInteger ops fld' sgn (LCLP.printfLengthMod d)
-            let istr  = BSC.pack $ LCLP.formatInteger i fmt (LCLP.printfMinWidth d) (LCLP.printfPrecision d) (LCLP.printfFlags d)
-            let len'  = len + BS.length istr
-            let fstr' = fstr . BS.append istr
+            i <- printfGetInteger ops fld' sgn (LCLP.printfLengthMod d)
+            let istr = LCLP.formatInteger i fmt (LCLP.printfMinWidth d) (LCLP.printfPrecision d) (LCLP.printfFlags d)
+            istr' <- asciiStrToSymBVs istr
+            let len'  = len + length istr'
+            let fstr' = fstr . (istr' ++)
             go fstr' len' fld' xs
           LCLP.Conversion_Floating fmt -> do
-            r <- LCLP.printfGetFloat ops fld' (LCLP.printfLengthMod d)
-            rstr <- BSC.pack <$>
-                    case LCLP.formatRational r fmt
+            r <- printfGetFloat ops fld' (LCLP.printfLengthMod d)
+            rstr <- case LCLP.formatRational r fmt
                             (LCLP.printfMinWidth d)
                             (LCLP.printfPrecision d)
                             (LCLP.printfFlags d) of
-                      Left err -> LCLP.printfUnsupported ops err
+                      Left err -> printfUnsupported ops err
                       Right a -> return a
-            let len'  = len + BS.length rstr
-            let fstr' = fstr . BS.append rstr
+            rstr' <- asciiStrToSymBVs rstr
+            let len'  = len + length rstr'
+            let fstr' = fstr . (rstr' ++)
             go fstr' len' fld' xs
           LCLP.Conversion_String -> do
-            s <- BS.pack <$> LCLP.printfGetString ops fld' (LCLP.printfPrecision d)
-            let len'  = len + BS.length s
-            let fstr' = fstr . BS.append s
+            s <- printfGetString ops fld' (LCLP.printfPrecision d)
+            let len'  = len + length s
+            let fstr' = fstr . (s ++)
             go fstr' len' fld' xs
           LCLP.Conversion_Char -> do
             let sgn  = False -- unsigned
-            i <- LCLP.printfGetInteger ops fld' sgn LCLP.Len_NoMod
-            let c :: Char = maybe '?' (toEnum . fromInteger) i
+            i <- printfGetInteger ops fld' sgn LCLP.Len_NoMod
+            let c :: Word8 = maybe (fromIntegral (C.ord '?')) fromInteger i
+            c' <- asciiCharToSymBV c
             let len'  = len + 1
-            let fstr' = fstr . BSC.cons c
+            let fstr' = fstr . (c' :)
             go fstr' len' fld' xs
           LCLP.Conversion_Pointer -> do
-            pstr <- BSC.pack <$> LCLP.printfGetPointer ops fld'
-            let len'  = len + BS.length pstr
-            let fstr' = fstr . BS.append pstr
+            pstr <- printfGetPointer ops fld'
+            pstr' <- asciiStrToSymBVs pstr
+            let len'  = len + length pstr'
+            let fstr' = fstr . (pstr' ++)
             go fstr' len' fld' xs
           LCLP.Conversion_CountChars -> do
-            LCLP.printfSetInteger ops fld' (LCLP.printfLengthMod d) len
+            printfSetInteger ops fld' (LCLP.printfLengthMod d) len
             go fstr len fld' xs
+
+    -- Note that this function will only work as expected if the string consists
+    -- entirely of characters within the ASCII character set! (I believe this
+    -- to be the case for each of these functions' call sites.)
+    asciiStrToSymBVs :: String -> m [WI.SymBV sym 8]
+    asciiStrToSymBVs = T.traverse (asciiCharToSymBV . fromIntegral . C.ord)
+
+    asciiCharToSymBV :: Word8 -> m (WI.SymBV sym 8)
+    asciiCharToSymBV = liftIO . WI.bvLit sym w8 . BVS.mkBV w8 . fromIntegral
