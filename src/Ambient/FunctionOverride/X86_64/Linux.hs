@@ -18,9 +18,7 @@ module Ambient.FunctionOverride.X86_64.Linux (
 import           Control.Monad.IO.Class ( liftIO )
 import           Data.Foldable ( foldl' )
 import qualified Data.BitVector.Sized as BVS
-import qualified Data.List.NonEmpty as NEL
 import qualified Data.Macaw.Memory as DMM
-import qualified Data.Map.Strict as Map
 import qualified Data.Parameterized.Context as Ctx
 import qualified Data.Parameterized.NatRepr as PN
 import           Data.Parameterized.Some ( Some(..) )
@@ -38,7 +36,6 @@ import qualified Lang.Crucible.LLVM.DataLayout as LCLD
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.Simulator as LCS
-import qualified Lang.Crucible.Syntax.Atoms as LCSA
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.BaseTypes as WT
 import qualified What4.Expr as WE
@@ -50,8 +47,8 @@ import qualified Ambient.Extensions as AE
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.FunctionOverride.Common as AFC
 import qualified Ambient.FunctionOverride.Extension as AFE
-import qualified Ambient.FunctionOverride.Overrides as AFO
 import qualified Ambient.FunctionOverride.StackArguments as AFS
 import qualified Ambient.FunctionOverride.X86_64.Linux.Specialized as AFXLS
 import qualified Ambient.Verifier.Concretize as AVC
@@ -213,34 +210,16 @@ x86_64LinuxFunctionABI :: ( LCLM.HasLLVMAnn sym
                        => AF.BuildFunctionABI DMX.X86_64 sym (AE.AmbientSimulatorState sym DMX.X86_64)
 x86_64LinuxFunctionABI = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals unsupportedRelocs addrOvs namedOvs otherGlobs ->
   let ?ptrWidth = PN.knownNat @64 in
-  -- NOTE: The order of elements in customNamedOvs is important.  See @Note
-  -- [Override Specialization Order]@ for more information.
-  let customNamedOvs = AFO.builtinGenericOverrides fovCtx fs initialMem unsupportedRelocs
-                    ++ AFXLS.x86_64LinuxSpecializedOverrides
+  let (nameMap, globMap) = AFC.mkFunctionNameGlobMaps
+                             fovCtx fs initialMem unsupportedRelocs namedOvs
+                             otherGlobs AFXLS.x86_64LinuxSpecializedOverrides
   in AF.FunctionABI { AF.functionIntegerArguments = \bak ->
                         x86_64LinuxIntegerArguments bak archVals
                     , AF.functionIntegerArgumentRegisters = DMX.x86ArgumentRegs
                     , AF.functionIntegerReturnRegisters = x86_64LinuxIntegerReturnRegisters
                     , AF.functionReturnAddr = x86_64LinuxReturnAddr
-                    , AF.functionNameMapping =
-                      Map.fromListWith (<>)
-                                       [ (AF.functionName fo, sfo NEL.:| [])
-                                       | sfo@(AF.SomeFunctionOverride fo) <-
-                                           customNamedOvs ++ namedOvs
-                                       ]
-                    , AF.functionGlobalMapping =
-                        let otherGlobMap =
-                              Map.fromList
-                                [ (LCSA.GlobalName (LCS.globalName glob), sg)
-                                | sg@(Some glob) <- otherGlobs
-                                ] in
-                        let functionGlobMap =
-                              Map.unions $
-                                [ AF.functionGlobals fo
-                                | AF.SomeFunctionOverride fo <-
-                                    customNamedOvs ++ namedOvs
-                                ] in
-                        otherGlobMap `Map.union` functionGlobMap
+                    , AF.functionNameMapping = nameMap
+                    , AF.functionGlobalMapping = globMap
                     , AF.functionAddrMapping = addrOvs
                     }
 
@@ -257,26 +236,3 @@ x86_64LinuxTypes = AFE.TypeLookup $ \tp ->
     AFE.Short -> Some (LCT.BVRepr (PN.knownNat @16))
     AFE.SizeT -> Some (LCT.BVRepr (PN.knownNat @64))
     AFE.UidT -> Some (LCT.BVRepr (PN.knownNat @32))
-
-{-
-Note [Override Specialization Order]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The order in which overrides appear in @customNamedOvs@ in
-'x86_64LinuxFunctionABI' and the AArch32 equivalent function
-'Ambient.FunctionOverride.AArch32.Linux.aarch32LinuxFunctionABI' determines the
-hierarchy of overrides that specialize or refine other overrides.  In the event
-that multiple overrides in this list have the same name, the verifier will
-treat overrides later in the list as children of overrides earlier in the list.
-Child overrides receive a list of their parents on invocation and may
-optionally call into parent overrides.
-
-We chose this design for the flexibility it provides.  It allows specialized
-child overrides to insert computation before and/or after calling into parent
-overrides.  It also allows child overrides to completely replace parent
-overrides by simply not calling into the parent override.
-
-For example, a child override may call into a parent override, then modify
-register state to capture a side effect to a caller saved register (such as in
-our specialized @sprintf@ override in
-'Ambient.FunctionOverride.X86_64.Linux.Specialized').
--}

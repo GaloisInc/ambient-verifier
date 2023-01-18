@@ -41,7 +41,6 @@ import qualified Lang.Crucible.LLVM.MemModel.Pointer as LCLMP
 import qualified Lang.Crucible.Simulator as LCS
 import qualified Lang.Crucible.Simulator.ExecutionTree as LCSE
 import qualified Lang.Crucible.Simulator.GlobalState as LCSG
-import qualified Lang.Crucible.Syntax.Atoms as LCSA
 import qualified Lang.Crucible.Types as LCT
 import qualified What4.BaseTypes as WT
 import qualified What4.Expr as WE
@@ -51,8 +50,8 @@ import qualified What4.Protocol.Online as WPO
 
 import qualified Ambient.Extensions as AE
 import qualified Ambient.FunctionOverride as AF
+import qualified Ambient.FunctionOverride.Common as AFC
 import qualified Ambient.FunctionOverride.Extension as AFE
-import qualified Ambient.FunctionOverride.Overrides as AFO
 import qualified Ambient.FunctionOverride.StackArguments as AFS
 import qualified Ambient.Override as AO
 import qualified Ambient.Panic as AP
@@ -225,10 +224,9 @@ aarch32LinuxFunctionABI ::
   -> AF.BuildFunctionABI DMA.ARM sym (AE.AmbientSimulatorState sym DMA.ARM)
 aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem archVals unsupportedRelocs addrOvs namedOvs otherGlobs ->
   let ?ptrWidth = PN.knownNat @32 in
-  -- NOTE: The order of elements in customNamedOvs is important.  See @Note
-  -- [Override Specialization Order]@ in
-  -- 'Ambient.FunctionOverride.X86_64.Linux' for more information.
-  let customNamedOvs = AFO.builtinGenericOverrides fovCtx fs initialMem unsupportedRelocs in
+  let (nameMap, globMap) = AFC.mkFunctionNameGlobMaps
+                             fovCtx fs initialMem unsupportedRelocs namedOvs
+                             otherGlobs [] in
   let customKernelOvs =
         -- The addresses are taken from
         -- https://github.com/torvalds/linux/blob/5bfc75d92efd494db37f5c4c173d3639d4772966/Documentation/arm/kernel_user_helpers.rst
@@ -242,25 +240,8 @@ aarch32LinuxFunctionABI tlsGlob = AF.BuildFunctionABI $ \fovCtx fs initialMem ar
                  , AF.functionIntegerArgumentRegisters = aarch32LinuxIntegerArgumentRegisters
                  , AF.functionIntegerReturnRegisters = aarch32LinuxIntegerReturnRegisters
                  , AF.functionReturnAddr = aarch32LinuxReturnAddr
-                 , AF.functionNameMapping =
-                    Map.fromListWith (<>)
-                                     [ (AF.functionName fo, sfo NEL.:| [])
-                                     | sfo@(AF.SomeFunctionOverride fo) <-
-                                         customNamedOvs ++ namedOvs
-                                     ]
-                 , AF.functionGlobalMapping =
-                     let otherGlobMap =
-                           Map.fromList
-                             [ (LCSA.GlobalName (LCS.globalName glob), sg)
-                             | sg@(Some glob) <- otherGlobs
-                             ] in
-                     let functionGlobMap =
-                           Map.unions $
-                             [ AF.functionGlobals fo
-                             | AF.SomeFunctionOverride fo <-
-                                 customNamedOvs ++ namedOvs
-                             ] in
-                     otherGlobMap `Map.union` functionGlobMap
+                 , AF.functionNameMapping = nameMap
+                 , AF.functionGlobalMapping = globMap
                  , AF.functionAddrMapping =
                      Map.union (Map.fromList customKernelOvs) addrOvs
                  }
