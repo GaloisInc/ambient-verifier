@@ -15,6 +15,7 @@ import           Text.Read (readMaybe)
 import qualified Ambient.ABI as AA
 import qualified Ambient.EntryPoint as AEp
 import qualified Ambient.EnvVar as AEnv
+import qualified Ambient.Memory as AM
 import qualified Ambient.Solver as AS
 import qualified Ambient.Timeout as AT
 
@@ -63,6 +64,8 @@ data VerifyOptions =
                 -- ^ File paths to a state charts encoding properties to verify
                 , entryPoint :: AEp.EntryPoint
                 -- ^ Where to begin simulation
+                , memoryModel :: AM.MemoryModel ()
+                -- ^ Which memory model configuration to use
                 , profileTo :: Maybe FilePath
                 -- ^ Optional directory to write profiler-related files to
                 , overrideDir :: Maybe FilePath
@@ -113,6 +116,8 @@ data TestOverridesOptions =
                        -- discharging verification conditions
                        , testTimeoutDuration :: AT.Timeout
                        -- ^ The solver timeout for each goal
+                       , testMemoryModel :: AM.MemoryModel ()
+                       -- ^ Which memory model configuration to use
                        , testCCompiler :: FilePath
                        -- ^ The C compiler to use to preprocess C overrides
                        }
@@ -179,6 +184,24 @@ entryPointParser =
                    ])
                ))
   OA.<|> pure AEp.DefaultEntryPoint
+
+-- | A parser for a 'AM.MemoryModel', which may be supplied by way of the
+-- @--memory-model@ option.
+memoryModelParser :: OA.Parser (AM.MemoryModel ())
+memoryModelParser =
+  OA.option (mkEnvVarReader AM.memoryModelParser)
+            ( OA.long "memory-model"
+           <> OA.metavar "MODEL-NAME"
+           <> OA.help (unlines
+                [ "The memory model configuration to use. MODEL-NAME must be one"
+                , "of the following:"
+                , ""
+                , "* default"
+                , "* bump-allocator"
+                , ""
+                , "See the verifier README for detailed explanantions of each of"
+                , "these configurations."
+                ]))
 
 -- | A parser for the @--overrides@ option
 overridesParser :: OA.Parser FilePath
@@ -279,6 +302,7 @@ verifyOptions = VerifyOptions
                                     <> OA.help "A path to a state chart encoding a property to verify"
                                      ))
            <*> entryPointParser
+           <*> memoryModelParser
            <*> OA.optional (OA.strOption ( OA.long "profile-to"
                                       <> OA.metavar "DIR"
                                       <> OA.help (unlines
@@ -351,6 +375,7 @@ testOverridesParser = TestOverrides <$> (TestOverridesOptions
            <*> solverParser
            <*> floatModeParser
            <*> timeoutParser
+           <*> memoryModelParser
            <*> withCCParser
            )
 

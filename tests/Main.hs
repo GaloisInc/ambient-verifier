@@ -39,6 +39,7 @@ import qualified Ambient.Encoding as AEnc
 import qualified Ambient.EntryPoint as AEp
 import qualified Ambient.EnvVar as AEnv
 import qualified Ambient.Exception as AE
+import qualified Ambient.Memory as AM
 import qualified Ambient.OverrideTester as AO
 import qualified Ambient.Property.Definition as APD
 import qualified Ambient.Solver as AS
@@ -58,6 +59,7 @@ data ExpectedGoals =
                   -- We may also wish to allow specifying entry point names
                   -- in the future, but for the time being, let's keep it
                   -- simple.
+                , memoryModel :: Maybe (AM.MemoryModel ())
                 , argv0 :: Maybe DT.Text
                 , arguments :: Maybe [DT.Text]
                   -- Here, Nothing denotes the empty list. We use Maybe as a
@@ -96,6 +98,7 @@ emptyExpectedGoals = ExpectedGoals { successful = 0
                                    , recursionBound = Nothing
                                    , sharedObjectsDir = Nothing
                                    , entryPointAddr = Nothing
+                                   , memoryModel = Nothing
                                    , argv0 = Nothing
                                    , arguments = Nothing
                                    , concreteEnvVars = Nothing
@@ -172,6 +175,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
   let entryPoint = maybe AEp.DefaultEntryPoint AEp.EntryPointAddr
                          (entryPointAddr expectedResult)
 
+  let memModel = fromMaybe AM.DefaultMemoryModel (memoryModel expectedResult)
   let args = AEnc.encodeCommandLineArguments binaryFilePath
                                              (argv0 expectedResult)
                                              (fromMaybe [] (arguments expectedResult))
@@ -193,6 +197,7 @@ toTest expectedOutputFile = TTH.testCase testName $ do
                                  , AV.piSymbolicEnvVars = symbolicEnvVars'
                                  , AV.piProperties = maybeToList mprop
                                  , AV.piEntryPoint = entryPoint
+                                 , AV.piMemoryModel = memModel
                                  , AV.piProfileTo = Nothing
                                  , AV.piOverrideDir = overrideDir expectedResult
                                  , AV.piIterationBound = iterationBound expectedResult
@@ -332,6 +337,7 @@ overrideTests abi = TTH.testCase ((show abi) ++ " override tests") $ do
                               , AO.tiFloatMode = AS.Real
                               , AO.tiOverrideDir = "tests/overrides"
                               , AO.tiAbi = abi
+                              , AO.tiMemoryModel = AM.DefaultMemoryModel
                               , AO.tiCCompiler = "gcc"
                               }
 

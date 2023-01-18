@@ -1,0 +1,16 @@
+statechart:
+  name: BumpAlloc
+  root state:
+    name: Root
+    initial: NormalExecution
+    states:
+      - name: NormalExecution
+        description: |
+          Execution before the out of bounds write
+        transitions:
+          - target: DidExec
+            event: IssuesSyscall(execve)
+      - name: DidExec
+        description: |
+          Control flow compromised
+        type: final

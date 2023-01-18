@@ -155,6 +155,10 @@ stackSize = 2 * 1024 * 1024
 stackOffset :: Integer
 stackOffset = stackSize `div` 2
 
+-- | Heap size in bytes
+heapSize :: Integer
+heapSize = 2 * 1024 * 1024 * 1024
+
 -- | An execution feature that logs all symbolic branches that occur
 sbsFeature :: LJ.LogAction IO AD.Diagnostic
   -> LCSEv.ExecutionFeature p sym ext rtp
@@ -1245,6 +1249,8 @@ initializeMemory
   -> NEV.NonEmptyVector (DMM.Memory w)
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
+  -> AM.MemoryModel ()
+  -- ^ Which memory model configuration to use
   -> [ AF.SomeFunctionOverride p sym arch ]
   -- ^ A list of additional function overrides to register.
   -> Map.Map ALV.VersionedGlobalVarName (DMM.MemWord w)
@@ -1253,7 +1259,7 @@ initializeMemory
   -- ^ Supported relocation types
   -> m ( AM.InitialMemory sym w )
 initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobals)
-                 functionOvs globals supportedRelocs = do
+                 memModel functionOvs globals supportedRelocs = do
   let sym = LCB.backendGetSym bak
 
   -- Initialize memory
@@ -1270,15 +1276,32 @@ initializeMemory bak halloc archInfo mems (AM.InitArchSpecificGlobals initGlobal
   let ?ptrWidth = WI.knownRepr
   (stackBasePtr, mem1) <- liftIO $ LCLM.doMalloc bak LCLM.StackAlloc LCLM.Mutable "stack_alloc" initMem stackSizeBV LCLD.noAlignment
   mem2 <- liftIO $ LCLM.doArrayStore bak mem1 stackBasePtr LCLD.noAlignment stackArrayStorage stackSizeBV
-
-  memVar <- liftIO $ LCLM.mkMemVar (DT.pack "ambient-verifier::memory") halloc
   (mem3, globals0) <- liftIO $ initGlobals bak mem2
-  let globals1 = LCSG.insertGlobal memVar mem3 globals0
+  memVar <- liftIO $ LCLM.mkMemVar (DT.pack "ambient-verifier::memory") halloc
+
+  (memModel', globals1) <-
+    case memModel of
+      AM.DefaultMemoryModel ->
+        let globals1 = LCSG.insertGlobal memVar mem3 globals0 in
+        pure (AM.DefaultMemoryModel, globals1)
+      AM.BumpAllocator () -> do
+        -- Initialize heap memory for bump allocator
+        heapSizeBv <- liftIO $ WI.bvLit sym WI.knownRepr (BVS.mkBV WI.knownRepr heapSize)
+        (heapBasePtr, mem4) <- liftIO $ LCLM.doMalloc bak LCLM.HeapAlloc LCLM.Mutable "<malloc bump>" mem3 heapSizeBv LCLD.noAlignment
+        heapEndPtr <- liftIO $ LCLM.ptrAdd sym WI.knownRepr heapBasePtr heapSizeBv
+        heapEndGlob <- liftIO $ LCCC.freshGlobalVar halloc
+                                                    (DT.pack "heapFreeEnd")
+                                                    (LCLM.LLVMPointerRepr WI.knownNat)
+        let globals1 = LCSG.insertGlobal memVar mem4 $
+                       LCSG.insertGlobal heapEndGlob heapEndPtr globals0
+        pure (AM.BumpAllocator heapEndGlob, globals1)
+
   let functionOvGlobals = Map.unions [ AF.functionGlobals ov
                                      | AF.SomeFunctionOverride ov <- functionOvs ]
   globals2 <- liftIO $ insertFreshGlobals sym functionOvGlobals globals1
 
-  return (AM.InitialMemory { AM.imMemVar = memVar
+  return (AM.InitialMemory { AM.imMemModel = memModel'
+                           , AM.imMemVar = memVar
                            , AM.imGlobals = globals2
                            , AM.imStackBasePtr = stackBasePtr
                            , AM.imValidityCheck = validityCheck
@@ -1693,6 +1716,8 @@ symbolicallyExecute
   -> [LCS.GenericExecutionFeature sym]
   -> DMC.ArchSegmentOff arch
   -- ^ The address of the entry point function
+  -> AM.MemoryModel ()
+  -- ^ Which memory model configuration to use
   -> AM.InitArchSpecificGlobals arch
   -- ^ Function to initialize special global variables needed for 'arch'
   -> Maybe FilePath
@@ -1709,13 +1734,14 @@ symbolicallyExecute
   -> Map.Map BS.ByteString [WI.SymBV sym 8]
   -- ^ The user-supplied environment variables
   -> m (SymbolicExecutionResult arch sym)
-symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures entryPointAddr initGlobals mFsRoot mFnCallLog binConf fnConf cliArgs envVars = do
+symbolicallyExecute logAction bak halloc archInfo archVals seConf execFeatures entryPointAddr memModel initGlobals mFsRoot mFnCallLog binConf fnConf cliArgs envVars = do
   let mems = fmap (DMB.memoryImage . ALB.lbpBinary) (ALB.bcBinaries binConf)
   initialMem <- initializeMemory bak
                                  halloc
                                  archInfo
                                  mems
                                  initGlobals
+                                 memModel
                                  (AFET.csoNamedOverrides (fcCrucibleSyntaxOverrides fnConf))
                                  (ALB.bcDynamicGlobalVarAddrs binConf)
                                  (ALB.bcSupportedRelocations binConf)

@@ -74,6 +74,7 @@ import qualified Ambient.Exception as AE
 import qualified Ambient.Extensions as AExt
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.Loader as AL
+import qualified Ambient.Memory as AM
 import qualified Ambient.ObservableEvents as AO
 import qualified Ambient.Panic as AP
 import qualified Ambient.Profiler.EmbeddedData as APE
@@ -126,6 +127,8 @@ data ProgramInstance =
                   -- ^ A property to verify that the program satisfies
                   , piEntryPoint :: AEp.EntryPoint
                   -- ^ Where to begin simulation
+                  , piMemoryModel :: AM.MemoryModel ()
+                  -- ^ Which memory model configuration to use
                   , piProfileTo :: Maybe FilePath
                   -- ^ Optional directory to write profiler-related files to
                   , piOverrideDir :: Maybe FilePath
@@ -526,7 +529,7 @@ verify logAction pinst timeoutDuration = do
                               (piConcreteEnvVarsFromBytes pinst)
                               (piSymbolicEnvVars pinst)
 
-      ambientExecResult <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr buildGlobals (piFsRoot pinst) (piLogFunctionCalls pinst) binConf fnConf (piCommandLineArguments pinst) envVarMap
+      ambientExecResult <- AVS.symbolicallyExecute logAction bak hdlAlloc archInfo archVals seConf execFeatures entryPointAddr (piMemoryModel pinst) buildGlobals (piFsRoot pinst) (piLogFunctionCalls pinst) binConf fnConf (piCommandLineArguments pinst) envVarMap
       let crucibleExecResult = AVS.serCrucibleExecResult ambientExecResult
       badBehavior' <- liftIO $ readIORef badBehavior
 

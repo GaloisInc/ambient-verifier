@@ -158,6 +158,7 @@ buildPinstFromVerifyOptions o = do
            , AV.piFloatMode = O.floatMode o
            , AV.piProperties = props
            , AV.piEntryPoint = O.entryPoint o
+           , AV.piMemoryModel = O.memoryModel o
            , AV.piProfileTo = O.profileTo o
            , AV.piOverrideDir = O.overrideDir o
            , AV.piIterationBound = O.iterationBound o
@@ -198,6 +199,7 @@ testOverrides o = do
                                , AO.tiFloatMode = O.testFloatMode o
                                , AO.tiOverrideDir = O.testOverrideDir o
                                , AO.tiAbi = O.testAbi o
+                               , AO.tiMemoryModel = O.testMemoryModel o
                                , AO.tiCCompiler = O.testCCompiler o
                                }
   chan <- CC.newChan

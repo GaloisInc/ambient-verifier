@@ -23,6 +23,7 @@ import qualified Ambient.Diagnostic as AD
 import qualified Ambient.FunctionOverride.AArch32.Linux as AFAL
 import qualified Ambient.FunctionOverride.Extension as AFE
 import qualified Ambient.FunctionOverride.X86_64.Linux as AFXL
+import qualified Ambient.Memory as AM
 import qualified Ambient.Memory.AArch32.Linux as AMAL
 import qualified Ambient.Memory.X86_64.Linux as AMXL
 import qualified Ambient.Solver as AS
@@ -41,6 +42,8 @@ data TestInstance =
                -- ^ Path to the crucible syntax overrides directory
                , tiAbi :: AA.ABI
                -- ^ ABI to use when loading crucible syntax functions
+               , tiMemoryModel :: AM.MemoryModel ()
+               -- ^ Which memory model configuration to use
                , tiCCompiler :: FilePath
                -- ^ The C compiler to use to preprocess C overrides
                }
@@ -76,6 +79,7 @@ testOverrides logAction tinst timeoutDuration = do
                                  archVals
                                  AFXL.x86_64LinuxFunctionABI
                                  (AMXL.x86_64LinuxInitGlobals fsbaseGlob gsbaseGlob)
+                                 (tiMemoryModel tinst)
                                  (tiOverrideDir tinst)
                                  (tiCCompiler tinst)
                                  ng
@@ -95,6 +99,7 @@ testOverrides logAction tinst timeoutDuration = do
                                  archVals
                                  (AFAL.aarch32LinuxFunctionABI tlsGlob)
                                  (AMAL.aarch32LinuxInitGlobals tlsGlob)
+                                 (tiMemoryModel tinst)
                                  (tiOverrideDir tinst)
                                  (tiCCompiler tinst)
                                  ng

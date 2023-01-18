@@ -338,6 +338,8 @@ runOverrideTests :: forall ext s sym bak arch w solver scope st fs p
                  -> DMS.GenArchVals DMS.LLVMMemory arch
                  -> AF.BuildFunctionABI arch sym p
                  -> AM.InitArchSpecificGlobals arch
+                 -> AM.MemoryModel ()
+                 -- ^ Which memory model configuration to use
                  -> FilePath
                  -- ^ Override directory
                  -> FilePath
@@ -348,7 +350,7 @@ runOverrideTests :: forall ext s sym bak arch w solver scope st fs p
                  -- ^ ParserHooks for the desired syntax extension
                  -> IO ()
 runOverrideTests logAction bak archInfo abi archVals (AF.BuildFunctionABI buildFunctionABI)
-                 initGlobals dirPath cc ng halloc hooks = do
+                 initGlobals memModel dirPath cc ng halloc hooks = do
   RawSyntaxOverrides{cblFiles, cFiles} <- findRawSyntaxOverrides dirPath
   cblProgs <-
     traverse (\path -> (path,) <$> loadCblOverride path ng halloc hooks)
@@ -403,6 +405,7 @@ runOverrideTests logAction bak archInfo abi archVals (AF.BuildFunctionABI buildF
                        archInfo
                        (NEV.singleton mem)
                        initGlobals
+                       memModel
                        cblNameOvs
                        Map.empty -- Because we are testing outside of a binary,
                                  -- there are no binary-specific global

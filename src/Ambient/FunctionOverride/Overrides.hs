@@ -15,10 +15,12 @@ module Ambient.FunctionOverride.Overrides
   , memOverrides
   , buildMallocOverride
   , callMalloc
+  , callMallocBumpAllocator
   , buildMallocGlobalOverride
   , callMallocGlobal
   , buildCallocOverride
   , callCalloc
+  , callCallocBumpAllocator
   , buildMemcpyOverride
   , callMemcpy
   , buildMemsetOverride
@@ -129,8 +131,8 @@ memOverrides ::
   -- ^ Initial memory state for symbolic execution
   [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym arch]
 memOverrides initialMem =
-  [ SomeFunctionOverride (buildCallocOverride memVar)
-  , SomeFunctionOverride (buildMallocOverride memVar)
+  [ SomeFunctionOverride (buildCallocOverride initialMem)
+  , SomeFunctionOverride (buildMallocOverride initialMem)
   , SomeFunctionOverride (buildMallocGlobalOverride memVar)
   , SomeFunctionOverride (buildMemcpyOverride initialMem)
   , SomeFunctionOverride (buildMemsetOverride initialMem)
@@ -138,18 +140,32 @@ memOverrides initialMem =
   where
     memVar = AM.imMemVar initialMem
 
-buildCallocOverride :: ( LCLM.HasLLVMAnn sym
+buildCallocOverride :: forall sym w arch p.
+                       ( LCLM.HasLLVMAnn sym
                        , ?memOpts :: LCLM.MemOptions
                        , LCLM.HasPtrWidth w
                        )
-                    => LCS.GlobalVar LCLM.Mem
+                    => AM.InitialMemory sym w
                     -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w
                                                             Ctx.::> LCLM.LLVMPointerType w) arch
                                               (LCLM.LLVMPointerType w)
-buildCallocOverride mvar =
+buildCallocOverride initialMem =
   WI.withKnownNat ?ptrWidth $
   mkFunctionOverride "calloc" $ \bak args ->
-    Ctx.uncurryAssignment (callCalloc bak mvar) args
+    Ctx.uncurryAssignment (callOv bak) args
+  where
+    memVar = AM.imMemVar initialMem
+
+    callOv :: forall bak ext r args ret.
+              LCB.IsSymBackend sym bak
+           => bak
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+    callOv bak =
+      case AM.imMemModel initialMem of
+        AM.DefaultMemoryModel    -> callCalloc bak memVar
+        AM.BumpAllocator endGlob -> callCallocBumpAllocator bak endGlob memVar
 
 callCalloc :: ( LCB.IsSymBackend sym bak
               , LCLM.HasLLVMAnn sym
@@ -169,17 +185,60 @@ callCalloc bak mvar (LCS.regValue -> num) (LCS.regValue -> sz) =
      szBV  <- LCLM.projectLLVM_bv bak sz
      LCLM.doCalloc bak mem szBV numBV LCLD.noAlignment
 
-buildMallocOverride :: ( ?memOpts :: LCLM.MemOptions
+-- | In the @bump-allocator@ memory model configuration, hand out some unused
+-- memory, zero it, and bump the pointer to the end of the heap.
+callCallocBumpAllocator ::
+     ( LCB.IsSymBackend sym bak
+     , LCLM.HasLLVMAnn sym
+     , LCLM.HasPtrWidth w
+     )
+  => bak
+  -> LCS.GlobalVar (LCLM.LLVMPointerType w)
+  -- ^ Global pointing to end of heap bump allocation
+  -> LCS.GlobalVar LCLM.Mem
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -- ^ The number of elements in the array
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+  -- ^ The number of bytes to allocate
+  -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callCallocBumpAllocator bak endGlob memVar (LCS.regValue -> num) (LCS.regValue -> sz) = do
+  let sym = LCB.backendGetSym bak
+  LCS.modifyGlobal endGlob $ \endPtr -> do
+    res <- LCS.modifyGlobal memVar $ \mem -> liftIO $ do
+      -- Bump up end pointer
+      numBV <- LCLM.projectLLVM_bv bak num
+      szBV  <- LCLM.projectLLVM_bv bak sz
+      allocSzBv <- WI.bvMul sym numBV szBV
+      endPtr' <- LCLM.ptrSub sym ?ptrWidth endPtr allocSzBv
+
+      -- Zero memory
+      zero <- WI.bvLit sym WI.knownNat (BVS.zero WI.knownNat)
+      mem' <- LCLM.doMemset bak ?ptrWidth mem endPtr' zero allocSzBv
+      return (endPtr', mem')
+    return (res, res)
+
+buildMallocOverride :: forall sym w arch p.
+                       ( ?memOpts :: LCLM.MemOptions
                        , LCLM.HasLLVMAnn sym
                        , LCLM.HasPtrWidth w
                        )
-                    => LCS.GlobalVar LCLM.Mem
+                    => AM.InitialMemory sym w
                     -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) arch
                                               (LCLM.LLVMPointerType w)
-buildMallocOverride mvar =
+buildMallocOverride initialMem =
   WI.withKnownNat ?ptrWidth $
   mkFunctionOverride "malloc" $ \bak args ->
-    Ctx.uncurryAssignment (callMalloc bak mvar) args
+    Ctx.uncurryAssignment (callOv bak) args
+  where
+    callOv :: forall bak ext r args ret.
+              LCB.IsSymBackend sym bak
+           => bak
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+    callOv bak =
+      case AM.imMemModel initialMem of
+        AM.DefaultMemoryModel    -> callMalloc bak (AM.imMemVar initialMem)
+        AM.BumpAllocator endGlob -> callMallocBumpAllocator bak endGlob
 
 callMalloc :: ( LCB.IsSymBackend sym bak
               , ?memOpts :: LCLM.MemOptions
@@ -196,6 +255,28 @@ callMalloc bak mvar (LCS.regValue -> sz) =
   do let displayString = "<malloc function override>"
      szBV <- LCLM.projectLLVM_bv bak sz
      LCLM.doMalloc bak LCLM.HeapAlloc LCLM.Mutable displayString mem szBV LCLD.noAlignment
+
+-- | In the @bump-allocator@ memory model configuration, hand out some unused
+-- memory and bump the pointer to the end of the heap.
+callMallocBumpAllocator ::
+     ( LCB.IsSymBackend sym bak
+     , ?memOpts :: LCLM.MemOptions
+     , LCLM.HasLLVMAnn sym
+     , LCLM.HasPtrWidth w
+     )
+  => bak
+  -> LCS.GlobalVar (LCLM.LLVMPointerType w)
+     -- ^ Global pointing to end of heap bump allocation
+  -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+     -- ^ The number of bytes to allocate
+  -> LCS.OverrideSim p sym ext r args ret (LCS.RegValue sym (LCLM.LLVMPointerType w))
+callMallocBumpAllocator bak endGlob (LCS.regValue -> sz) = do
+  let sym = LCB.backendGetSym bak
+  szBv <- liftIO $ LCLM.projectLLVM_bv bak sz
+  LCS.modifyGlobal endGlob $ \endPtr -> liftIO $ do
+    -- Bump up end pointer
+    endPtr' <- LCLM.ptrSub sym ?ptrWidth endPtr szBv
+    return (endPtr', endPtr')
 
 buildMallocGlobalOverride ::
   ( ?memOpts :: LCLM.MemOptions

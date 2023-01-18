@@ -502,6 +502,22 @@ mandatory options:
   example, using the ``X86_64Linux`` will cause the verifier to execute
   function override tests using the X86_64 ``Bitvector`` type aliases.
 
+Memory Model Configurations
+===========================
+
+There are various pre-set configurations for controlling the behavior of how
+memory is represented during simulation. These configurations can be selected
+with the ``--memory-model MODEL-NAME`` flag, where ``MODEL-NAME`` must be one
+of the following:
+
+- ``default``: The default memory model. Each call to ``malloc`` or ``calloc``
+  allocates a single, contiguous region of memory on the verifier's heap model.
+
+- ``bump-allocator``: There is a single allocation representing the entire
+  heap, and there is a global variable pointing to the start of unused memory
+  in the heap. Each call to ``malloc`` or ``calloc`` will hand out some unused
+  memory from the heap and bump the global variable accordingly.
+
 Entry Points
 ============
 
