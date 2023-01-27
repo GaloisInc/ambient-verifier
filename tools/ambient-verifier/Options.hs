@@ -192,6 +192,7 @@ memoryModelParser =
   OA.option (mkEnvVarReader AM.memoryModelParser)
             ( OA.long "memory-model"
            <> OA.metavar "MODEL-NAME"
+           <> OA.value AM.DefaultMemoryModel
            <> OA.help (unlines
                 [ "The memory model configuration to use. MODEL-NAME must be one"
                 , "of the following:"
