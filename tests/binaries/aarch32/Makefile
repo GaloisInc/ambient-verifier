@@ -243,6 +243,12 @@ short-ov.exe: short-ov.c ambient_assert.o
 sprintf-symbolic/sprintf-symbolic.exe: sprintf-symbolic/sprintf-symbolic.c ambient_assert.o
 	$(CC) -nostartfiles -static -no-pie -I. $^ -o $@
 
+free-basic/free-basic.exe: free-basic/free-basic.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
+free-invalid/free-invalid.exe: free-invalid/free-invalid.c
+	$(MUSL_CC) -nostartfiles -static -no-pie $< -o $@
+
 %.exe: %.c
 	$(CC) -nostdlib -static -no-pie $< -o $@
 

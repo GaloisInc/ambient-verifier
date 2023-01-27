@@ -21,6 +21,9 @@ module Ambient.FunctionOverride.Overrides
   , buildCallocOverride
   , callCalloc
   , callCallocBumpAllocator
+  , buildFreeOverride
+  , callFree
+  , callFreeBumpAllocator
   , buildMemcpyOverride
   , callMemcpy
   , buildMemsetOverride
@@ -132,6 +135,7 @@ memOverrides ::
   [SomeFunctionOverride (AExt.AmbientSimulatorState sym arch) sym arch]
 memOverrides initialMem =
   [ SomeFunctionOverride (buildCallocOverride initialMem)
+  , SomeFunctionOverride (buildFreeOverride initialMem)
   , SomeFunctionOverride (buildMallocOverride initialMem)
   , SomeFunctionOverride (buildMallocGlobalOverride memVar)
   , SomeFunctionOverride (buildMemcpyOverride initialMem)
@@ -216,6 +220,65 @@ callCallocBumpAllocator bak endGlob memVar (LCS.regValue -> num) (LCS.regValue -
       mem' <- LCLM.doMemset bak ?ptrWidth mem endPtr' zero allocSzBv
       return (endPtr', mem')
     return (res, res)
+
+buildFreeOverride :: forall sym w arch p.
+                     ( LCLM.HasLLVMAnn sym
+                     , ?memOpts :: LCLM.MemOptions
+                     , LCLM.HasPtrWidth w
+                     )
+                  => AM.InitialMemory sym w
+                  -> FunctionOverride p sym (Ctx.EmptyCtx Ctx.::> LCLM.LLVMPointerType w) arch
+                                            LCT.UnitType
+buildFreeOverride initialMem =
+  WI.withKnownNat ?ptrWidth $
+  mkFunctionOverride "free" $ \bak args ->
+    Ctx.uncurryAssignment (callOv bak) args
+  where
+    memVar = AM.imMemVar initialMem
+
+    callOv :: forall bak ext r args ret.
+              LCB.IsSymBackend sym bak
+           => bak
+           -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+           -> LCS.OverrideSim p sym ext r args ret ()
+    callOv bak =
+      case AM.imMemModel initialMem of
+        AM.DefaultMemoryModel    -> callFree bak memVar
+        AM.BumpAllocator endGlob -> callFreeBumpAllocator bak endGlob memVar
+
+callFree :: ( LCB.IsSymBackend sym bak
+            , LCLM.HasLLVMAnn sym
+            , ?memOpts :: LCLM.MemOptions
+            , LCLM.HasPtrWidth w
+            )
+         => bak
+         -> LCS.GlobalVar LCLM.Mem
+         -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+            -- ^ The pointer to free
+         -> LCS.OverrideSim p sym ext r args ret ()
+callFree bak mvar (LCS.regValue -> ptr) =
+  LCS.modifyGlobal mvar $ \mem -> liftIO $
+  do mem' <- LCLM.doFree bak mem ptr
+     pure ((), mem')
+
+-- | In the @bump-allocator@ memory model configuration, @free@ is a no-op.
+-- This is a crude but practical choice, as we cannot simply go back through
+-- the end pointer and "punch a hole" in the already allocated address space.
+-- (Well, maybe we could with enough bookkeeping, but no one has asked for this
+-- yet.)
+callFreeBumpAllocator :: ( LCB.IsSymBackend sym bak
+                         , LCLM.HasLLVMAnn sym
+                         , ?memOpts :: LCLM.MemOptions
+                         , LCLM.HasPtrWidth w
+                         )
+                      => bak
+                      -> LCS.GlobalVar (LCLM.LLVMPointerType w)
+                      -- ^ Global pointing to end of heap bump allocation
+                      -> LCS.GlobalVar LCLM.Mem
+                      -> LCS.RegEntry sym (LCLM.LLVMPointerType w)
+                         -- ^ The pointer to free
+                      -> LCS.OverrideSim p sym ext r args ret ()
+callFreeBumpAllocator _bak _endGlob _mvar _ptr = pure ()
 
 buildMallocOverride :: forall sym w arch p.
                        ( ?memOpts :: LCLM.MemOptions

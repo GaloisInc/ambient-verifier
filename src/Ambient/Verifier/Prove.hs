@@ -29,6 +29,7 @@ import qualified What4.Solver as WS
 
 import qualified Lang.Crucible.Backend as LCB
 import qualified Lang.Crucible.LLVM.Errors as LCLE
+import qualified Lang.Crucible.LLVM.Errors.UndefinedBehavior as LCLEUB
 import qualified Lang.Crucible.LLVM.MemModel as LCLM
 import qualified Lang.Crucible.LLVM.MemModel.Partial as LCLMP
 import qualified Lang.Crucible.Simulator.SimError as LCSS
@@ -214,26 +215,59 @@ proveObligations logAction bak adapter timeoutDuration badBehaviors = do
           go workers sem assumptionsInScope children1
           go workers sem assumptionsInScope children2
         LCB.Prove p ->
-          -- Prove a goal, unless it is a check for undefined behavior.  If the
-          -- goal is an undefined behavior check, skip it.
-          --
-          -- Skipping checks for undefined behavior is motivated by the exploit
-          -- demonstrated in the X86_64 sprintf_bof test.  This exploit
-          -- overwrites the lower 4 bytes of a stored return address and leaves
-          -- the upper 4 bytes untouched.  The resulting pointer is therefore a
-          -- combination of 2 writes, which triggers a failing undefined
-          -- behavior check.  Although this behavior may be undefined at the C
-          -- level, it has defined semantics at the X86_64 binary level.
-          -- Because many exploits rely on C level undefined behavior, we elide
-          -- these checks.
-          unless (isUndefinedBehaviorPred p)
+          -- Prove a goal, unless it is a check for an undefined behavior that
+          -- we wish to elide, in which case we skip it.
+          -- See Note [Undefined behavior and machine code].
+          unless (isElidedUndefinedBehaviorPred p)
             (liftIO $ proveOneGoal logAction sym adapter workers sem assumptionsInScope p timeoutDuration)
 
     -- Check whether a predicate is annotated as an undefined behavior check
-    isUndefinedBehaviorPred p = isJust $ do
+    -- that we wish to elide in the verifier.
+    -- See Note [Undefined behavior and machine code].
+    isElidedUndefinedBehaviorPred p = isJust $ do
       ann <- WI.getAnnotation sym (p ^. LCB.labeledPred)
       (_, badBehavior) <- Map.lookup (LCLMP.BoolAnn ann) badBehaviors
       case badBehavior of
-        LCLE.BBUndefinedBehavior{} -> Just ()
-        LCLE.BBMemoryError{} -> Nothing
+        LCLE.BBUndefinedBehavior ub ->
+          case ub of
+            LCLEUB.FreeBadOffset{}   -> Nothing
+            LCLEUB.FreeUnallocated{} -> Nothing
+            LCLEUB.DoubleFree{}      -> Nothing
+            _                        -> Just ()
+        LCLE.BBMemoryError{}         -> Nothing
 
+{-
+Note [Undefined behavior and machine code]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The verifier uses Crucible's LLVM memory model to reason about the behavior of
+machine code. While the semantics of LLVM correspond to that of machine code in
+many ways, there are also some awkward discrepancies. For instance, the LLVM
+memory model is very careful to throw failing assertions for things that would
+constitute undefined behavior in C, but these do not always correspond to
+undefined behavior at the machine code level.
+
+As an example, consider the undefined behavior demonstrated in the X86_64
+sprintf_bof test's exploit. This exploit overwrites the lower 4 bytes of a
+stored return address and leaves the upper 4 bytes untouched. The resulting
+pointer is therefore a combination of 2 writes, which triggers a failing
+undefined behavior check in the LLVM memory model.
+
+Although this behavior may be undefined at the C level, it has defined
+semantics at the X86_64 binary level. Because many exploits rely on C level
+undefined behavior, we simply elide most of these checks. The
+`isElidedUndefinedBehaviorPred` function detects checks of this sort by looking
+for the BBUndefinedBehavior class of BadBehavior.
+
+While we elide most of the LLVM memory model's undefined behavior checks, we do
+make special exceptions for some of them. In particular, the built-in free
+override can exhibit undefined behavior if a program performs a double-free or
+a use-after-free error. These are arguably just as bad at the machine code
+level as they are at the C level (some binary exploits might even be triggered
+by these undefined uses of free!), so we do /not/ elide these checks.
+
+Ultimately, there is not a single set of guidelines that governs whether an
+undefined behavior check should be elided or not. If a class of undefined
+behavior makes sense at the machine code level, then it could be worth catching
+in the verifier. Determining what does or does not make sense at the machine
+code level is ultimately a judgment call, however.
+-}

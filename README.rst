@@ -339,6 +339,7 @@ overrides:
 * ``connect :: Int -> Pointer -> SizeT -> Int``
 * ``execve :: Pointer -> Pointer -> Pointer -> Int``
 * ``exit :: Int -> Void``
+* ``free :: Pointer -> Unit``
 * ``getppid :: PidT``
 * ``listen :: Int -> Int -> Int``
 * ``recv :: Int -> Pointer -> SizeT -> Int -> SizeT``
@@ -517,6 +518,11 @@ of the following:
   heap, and there is a global variable pointing to the start of unused memory
   in the heap. Each call to ``malloc`` or ``calloc`` will hand out some unused
   memory from the heap and bump the global variable accordingly.
+
+Note that the choice of allocator may affect the number of goals that the
+verifier produces. As a result, running the verifier on a program with one
+allocator may produce failing goals that would not arise with a different
+choice of allocator.
 
 Entry Points
 ============
