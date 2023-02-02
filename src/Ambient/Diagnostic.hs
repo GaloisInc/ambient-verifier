@@ -3,8 +3,10 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE InstanceSigs #-}
 module Ambient.Diagnostic (
-  Diagnostic(..)
+  Diagnostic(..),
+  ppDiagnostic
   ) where
 
 import qualified Control.Exception as X
@@ -37,6 +39,7 @@ import qualified Lang.Crucible.Syntax.Concrete as LCSC
 
 import qualified Ambient.FunctionOverride as AF
 import qualified Ambient.Override.List.Types as AOLT
+import qualified Ambient.Style as STY
 
 data Diagnostic where
   -- | Report an event from the code discovery phase
@@ -92,113 +95,127 @@ ppSymbol (Just fnName) addr = show addr ++ " (" ++ BSC.unpack fnName ++ ")"
 ppSymbol Nothing addr = show addr
 
 instance PP.Pretty Diagnostic where
-  pretty d =
-    case d of
-      DiscoveryEvent symMap de ->
-        case de of
-          DMD.ReportAnalyzeFunction memOff ->
-            PP.pretty "Starting to analyze a function at address " <> PP.pretty memOff <> PP.line
-          DMD.ReportAnalyzeFunctionDone memOff ->
-            PP.pretty "Finished analyzing a function at address " <> PP.pretty memOff <> PP.line
-          DMD.ReportIdentifyFunction _ tgt rsn ->
-            PP.hcat [ PP.pretty "Identified a candidate function entry point for function "
-                    , PP.pretty (ppSymbol (Map.lookup tgt symMap) tgt)
-                    , PP.pretty " because "
-                    , PP.pretty (DMD.ppFunReason rsn)
-                    , PP.line
-                    ]
-          DMD.ReportAnalyzeBlock _ baddr ->
-            PP.pretty "Analyzing a block at address " <> PP.pretty baddr <> PP.line
-      What4SolverDebugEvent verb msg ->
-        PP.pretty "Solver debug event " <>
-        PP.parens (PP.pretty "verbosity" PP.<+> PP.pretty verb) <>
-        PP.colon PP.<+> PP.pretty msg <> PP.line
-      GoalTimeout _sym p ->
-        mconcat [ PP.pretty "Timeout while solving goal" <> PP.line
-                , PP.indent 2 (ppSimErrorLoc p) <> PP.line
-                ]
-      ErrorProvingGoal _sym p exn ->
-        mconcat [ PP.pretty "Error while proving goal: " <> PP.viaShow exn <> PP.line
-                , PP.indent 2 (ppSimErrorLoc p) <> PP.line
-                ]
-      ProvedGoal _sym p elapsed ->
-        mconcat [ PP.pretty "Proved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
-                , PP.indent 2 (ppSimErrorLoc p) <> PP.line
-                ]
-      DisprovedGoal _sym p elapsed ->
-        mconcat [ PP.pretty "Disproved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
-                , PP.indent 2 (PP.viaShow (p ^. WL.labeledPredMsg)) <> PP.line
-                ]
-      ExecutingWeirdMachineAt addr ->
-        PP.pretty "Execution transferred to a Weird Machine at 0x" <> PP.pretty (showHex addr "") <> PP.line
-      AssertingGoalsForProperty name mdesc ->
-        let desc = maybe mempty ((PP.line <>) . PP.pretty) mdesc
-        in PP.pretty "Asserting goals for property " <> PP.pretty name <> desc <> PP.line
-      ExecutingOverrideTest (LCSC.ACFG _ _ g) path ->
-           PP.pretty "Executing override test '"
-        <> PP.pretty (LCF.handleName (LCCR.cfgHandle g))
-        <> PP.pretty "' in '"
-        <> PP.pretty path
-        <> PP.pretty "'"
-        <> PP.line
-      ListingOverrides (AOLT.OverrideLists{ AOLT.syscallOverrides
-                                          , AOLT.functionAddrOverrides
-                                          , AOLT.functionNameOverrides
-                                          }) ->
-        PP.vcat
-          [ overridesHeader "Syscall overrides"
-            <> foldMap (\name ->
-                         PP.pretty "- " <> PP.pretty name <> PP.line)
-                       syscallOverrides
+  -- | The Pretty instance for Diagnostic is for printing plain text to files.
+  pretty :: Diagnostic -> PP.Doc ann
+  pretty = PP.unAnnotate . ppDiagnostic
 
-          , overridesHeader "Function overrides"
-            <> foldMap (\(name, addrLoc) ->
-                         PP.pretty "- " <> PP.pretty name PP.<+>
-                         PP.parens (case addrLoc of
-                           AF.AddrInBinary addr binPath ->
-                             PP.pretty "at address" PP.<+> PP.pretty binPath <>
-                             PP.colon <> PP.pretty addr
-                           AF.AddrFromKernel addr ->
-                             PP.pretty "kernel function at address" PP.<+>
-                             PP.pretty addr) <>
-                         PP.line)
-                       functionAddrOverrides
-            <> foldMap (\name ->
-                         PP.pretty "- " <> PP.pretty name <> PP.line)
-                       functionNameOverrides
-          ]
-      SymbolicBranch maybeLoc ->
-        let ppShowMaybe mb =
-              case mb of
-                Just v  -> show (PP.pretty v)
-                Nothing -> "unknown"
-        in PP.pretty (DBSL.unpack $ DA.encode $
-          DA.object [ DAK.fromString "symbolicBranchFunction" DA..= ppShowMaybe (WP.plFunction <$> maybeLoc)
-                    , DAK.fromString "symbolicBranchLocation" DA..= ppShowMaybe (WP.plSourceLoc <$> maybeLoc)
-                    ]) <> PP.line
-      FunctionCall fnName fnAddr mbRetAddr ->
-        PP.pretty "Invoking the" PP.<+> PP.squotes (PP.pretty fnName)
-          PP.<+> PP.pretty "function"
-          PP.<+> PP.parens (PP.pretty "address" PP.<+> PP.pretty fnAddr)
-          PP.<>  foldMap
-                   (\retAddr -> PP.pretty ", which returns to address"
-                         PP.<+> PP.pretty retAddr)
-                   mbRetAddr
-          PP.<> PP.line
+-- | Produces an annotated Doc (for colorized ANSI terminal printing), 
+-- which is not possible with a Pretty instance.
+ppDiagnostic :: Diagnostic -> PP.Doc STY.Style
+ppDiagnostic d = 
+  case d of
+    DiscoveryEvent symMap de ->
+      case de of
+        DMD.ReportAnalyzeFunction memOff ->
+          PP.pretty "Starting to analyze a function at address " <> PP.pretty memOff <> PP.line
+        DMD.ReportAnalyzeFunctionDone memOff ->
+          PP.pretty "Finished analyzing a function at address " <> PP.pretty memOff <> PP.line
+        DMD.ReportIdentifyFunction _ tgt rsn ->
+          PP.hcat [ PP.pretty "Identified a candidate function entry point for function "
+                  , PP.pretty (ppSymbol (Map.lookup tgt symMap) tgt)
+                  , PP.pretty " because "
+                  , PP.pretty (DMD.ppFunReason rsn)
+                  , PP.line
+                  ]
+        DMD.ReportAnalyzeBlock _ baddr ->
+          PP.pretty "Analyzing a block at address " <> PP.pretty baddr <> PP.line
+    What4SolverDebugEvent verb msg ->
+      PP.pretty "Solver debug event " <>
+      PP.parens (PP.pretty "verbosity" PP.<+> PP.pretty verb) <>
+      PP.colon PP.<+> PP.pretty msg <> PP.line
+    GoalTimeout _sym p ->
+      mconcat [ STY.failure $ PP.pretty "Failure: "
+              , PP.pretty "Timeout while solving goal" <> PP.line
+              , PP.indent 2 (ppSimErrorLoc p) <> PP.line
+              ]
+    ErrorProvingGoal _sym p exn ->
+      mconcat [ STY.failure $ PP.pretty "Failure: "
+              , PP.pretty "Error while proving goal: " <> PP.viaShow exn <> PP.line
+              , PP.indent 2 (ppSimErrorLoc p) <> PP.line
+              ]
+    ProvedGoal _sym p elapsed ->
+      mconcat [ STY.success $ PP.pretty "Success: "
+              , PP.pretty "Proved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
+              , PP.indent 2 (ppSimErrorLoc p) <> PP.line
+              ]
+    DisprovedGoal _sym p elapsed ->
+      mconcat [ STY.failure $ PP.pretty "Failure: "
+              , PP.pretty "Disproved a goal in " <> PP.viaShow elapsed <> PP.pretty " seconds" <> PP.line
+              , PP.indent 2 (PP.viaShow (p ^. WL.labeledPredMsg)) <> PP.line
+              ]
+    ExecutingWeirdMachineAt addr ->
+      
+      mconcat [ STY.success $ PP.pretty "Success:" <> PP.line
+              , PP.pretty "Execution transferred to a Weird Machine at 0x" <> PP.pretty (showHex addr "") <> PP.line ]
+    AssertingGoalsForProperty name mdesc ->
+      let desc = maybe mempty ((PP.line <>) . PP.pretty) mdesc
+      in PP.pretty "Asserting goals for property " <> PP.pretty name <> desc <> PP.line
+    ExecutingOverrideTest (LCSC.ACFG _ _ g) path ->
+          PP.pretty "Executing override test '"
+      <> PP.pretty (LCF.handleName (LCCR.cfgHandle g))
+      <> PP.pretty "' in '"
+      <> PP.pretty path
+      <> PP.pretty "'"
+      <> PP.line
+    ListingOverrides (AOLT.OverrideLists{ AOLT.syscallOverrides
+                                        , AOLT.functionAddrOverrides
+                                        , AOLT.functionNameOverrides
+                                        }) ->
+      PP.vcat
+        [ overridesHeader "Syscall overrides"
+          <> foldMap (\name ->
+                        PP.pretty "- " <> PP.pretty name <> PP.line)
+                      syscallOverrides
 
-    where
-      overridesHeader title = PP.vcat
-        [ PP.pretty "============================"
-        , PP.pretty "== " <> PP.pretty title
-        , PP.pretty "============================"
-        ] <> PP.line
+        , overridesHeader "Function overrides"
+          <> foldMap (\(name, addrLoc) ->
+                        PP.pretty "- " <> PP.pretty name PP.<+>
+                        PP.parens (case addrLoc of
+                          AF.AddrInBinary addr binPath ->
+                            PP.pretty "at address" PP.<+> PP.pretty binPath <>
+                            PP.colon <> PP.pretty addr
+                          AF.AddrFromKernel addr ->
+                            PP.pretty "kernel function at address" PP.<+>
+                            PP.pretty addr) <>
+                        PP.line)
+                      functionAddrOverrides
+          <> foldMap (\name ->
+                        PP.pretty "- " <> PP.pretty name <> PP.line)
+                      functionNameOverrides
+        ]
+    SymbolicBranch maybeLoc ->
+      let ppShowMaybe mb =
+            case mb of
+              Just v  -> show (PP.pretty v)
+              Nothing -> "unknown"
+      in PP.pretty (DBSL.unpack $ DA.encode $
+        DA.object [ DAK.fromString "symbolicBranchFunction" DA..= ppShowMaybe (WP.plFunction <$> maybeLoc)
+                  , DAK.fromString "symbolicBranchLocation" DA..= ppShowMaybe (WP.plSourceLoc <$> maybeLoc)
+                  ]) <> PP.line
+    FunctionCall fnName fnAddr mbRetAddr ->
+      PP.pretty "Invoking the" PP.<+> PP.squotes (PP.pretty fnName)
+        PP.<+> PP.pretty "function"
+        PP.<+> PP.parens (PP.pretty "address" PP.<+> PP.pretty fnAddr)
+        PP.<>  foldMap
+                  (\retAddr -> PP.pretty ", which returns to address"
+                        PP.<+> PP.pretty retAddr)
+                  mbRetAddr
+        PP.<> PP.line
 
-      -- Print the location of a labeled SimError without printing the entire
-      -- SimErrorReason, as the latter is often quite large.
-      ppSimErrorLoc :: LCB.LabeledPred pred LCSS.SimError -> PP.Doc a
-      ppSimErrorLoc p = ppLoc (p ^. WL.labeledPredMsg . Lens.to LCSS.simErrorLoc)
+  where
+    overridesHeader title = PP.vcat
+      [ PP.pretty "============================"
+      , PP.pretty "== " <> PP.pretty title
+      , PP.pretty "============================"
+      ] <> PP.line
 
-      ppLoc :: WP.ProgramLoc -> PP.Doc a
-      ppLoc loc = PP.pretty (WP.plSourceLoc loc) <>
-                  PP.pretty ": in the function" PP.<+>
-                  PP.squotes (PP.pretty (WP.plFunction loc))
+    -- Print the location of a labeled SimError without printing the entire
+    -- SimErrorReason, as the latter is often quite large.
+    ppSimErrorLoc :: LCB.LabeledPred pred LCSS.SimError -> PP.Doc a
+    ppSimErrorLoc p = ppLoc (p ^. WL.labeledPredMsg . Lens.to LCSS.simErrorLoc)
+
+    ppLoc :: WP.ProgramLoc -> PP.Doc a
+    ppLoc loc = PP.pretty (WP.plSourceLoc loc) <>
+                PP.pretty ": in the function" PP.<+>
+                PP.squotes (PP.pretty (WP.plFunction loc))
+

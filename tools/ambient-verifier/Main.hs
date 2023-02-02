@@ -18,6 +18,7 @@ import qualified Prettyprinter.Render.Text as PPT
 import qualified System.IO as IO
 
 import qualified Ambient.Diagnostic as AD
+import qualified Ambient.Style as STY
 import qualified Ambient.Encoding as AEnc
 import qualified Ambient.Exception as AE
 import qualified Ambient.Override.List as AOL
@@ -91,6 +92,7 @@ printLogs logHdls chan = go
         Nothing -> return ()
         Just d -> do
           let ppd = PP.pretty d
+          let ppdAnn = AD.ppDiagnostic d
           case d of
             AD.What4SolverDebugEvent{} ->
               case mbSolverDebugMessagesHandle logHdls of
@@ -112,12 +114,16 @@ printLogs logHdls chan = go
                 Nothing -> pure ()
                 Just functionCallsHdl
                   -> hPutDocAndFlush functionCallsHdl ppd
-            _ -> hPutDocAndFlush (defaultHandle logHdls) ppd
+            _ -> hPutDocAnsiAndFlush (defaultHandle logHdls) ppdAnn
           go
 
-    hPutDocAndFlush :: IO.Handle -> PP.Doc a -> IO ()
+    hPutDocAndFlush :: IO.Handle -> PP.Doc ann -> IO ()
     hPutDocAndFlush hdl doc = do
       PPT.hPutDoc hdl doc
+      IO.hFlush hdl
+    hPutDocAnsiAndFlush :: IO.Handle -> PP.Doc STY.Style -> IO ()
+    hPutDocAnsiAndFlush hdl doc = do
+      STY.hPutDocAnsi hdl doc
       IO.hFlush hdl
 
 loadProperty :: FilePath -> IO (APD.Property APD.StateID)

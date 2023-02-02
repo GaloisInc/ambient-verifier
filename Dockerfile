@@ -42,6 +42,7 @@ RUN mkdir -p /root/.ghcup && ghcup --version && ghcup install cabal 3.6.2.0 && g
 
 ######################################################################
 ENV PATH="/root/.ghcup/bin:${PATH}"
+ENV TERM=xterm-256-color
 RUN cabal update
 RUN mkdir -p /home/src
 COPY . /home/src
