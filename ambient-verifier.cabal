@@ -12,11 +12,11 @@ homepage:
 -- bug-reports:
 license:            BSD-3-Clause
 license-file:       LICENSE
-author:             Tristan Ravitch
-maintainer:         tristan@galois.com, boston@galois.com
+author:             Galois, Inc.
+maintainer:         rscott@galois.com, boston@galois.com
 
 -- A copyright notice.
--- copyright:
+copyright:          (C) 2021-2023 Galois, Inc.
 category:           Verification
 extra-source-files: CHANGELOG.md
 
